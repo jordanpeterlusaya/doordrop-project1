@@ -3,76 +3,171 @@ import 'react-native-reanimated';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import {
   Manrope_400Regular,
-  Manrope_500Medium,
   Manrope_600SemiBold,
   Manrope_700Bold,
-  Manrope_800ExtraBold,
 } from '@expo-google-fonts/manrope';
 import { useFonts } from 'expo-font';
-import { Stack, type ErrorBoundaryProps } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import * as ExpoSplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { InteractionManager, StyleSheet, Text, View } from 'react-native';
 
-import { cargoTheme } from '@/constants/cargo-theme';
-import { typography } from '@/constants/typography';
+import { RouteErrorBoundary, ScreenErrorBoundary } from '@/components/ErrorBoundary';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  installGlobalErrorLogging,
+  logAsyncFailure,
+  logAsyncStart,
+  logAsyncSuccess,
+} from '@/lib/debug-logger';
+import { recordAppActivity } from '@/lib/app-analytics';
+import { AuthProvider, useAuthSession } from '@/providers/auth-provider';
+import { LanguageProvider } from '@/providers/language-provider';
+import { NotificationProvider } from '@/providers/notification-provider';
 
-void ExpoSplashScreen.preventAutoHideAsync().catch(() => null);
+function keepNativeSplashVisible() {
+  try {
+    void ExpoSplashScreen.preventAutoHideAsync().catch((error) => {
+      logAsyncFailure('RootLayout', 'preventAutoHideAsync', error);
+    });
+  } catch (error) {
+    logAsyncFailure('RootLayout', 'preventAutoHideAsync', error);
+  }
+}
+
+function hideNativeSplash() {
+  try {
+    logAsyncStart('RootLayout', 'hideSplash');
+    ExpoSplashScreen.hideAsync()
+      .then(() => {
+        logAsyncSuccess('RootLayout', 'hideSplash');
+      })
+      .catch((error) => {
+        logAsyncFailure('RootLayout', 'hideSplash', error);
+      });
+  } catch (error) {
+    logAsyncFailure('RootLayout', 'hideSplash', error);
+  }
+}
+
+keepNativeSplashVisible();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   const [fontsLoaded, fontError] = useFonts({
     Manrope_400Regular,
-    Manrope_500Medium,
     Manrope_600SemiBold,
     Manrope_700Bold,
-    Manrope_800ExtraBold,
   });
   const appAssetsReady = fontsLoaded || Boolean(fontError) || startupTimedOut;
 
   useEffect(() => {
+    installGlobalErrorLogging();
+  }, []);
+
+  useEffect(() => {
     const timeoutId = setTimeout(() => {
       setStartupTimedOut(true);
-    }, 2500);
+    }, 700);
 
     return () => clearTimeout(timeoutId);
   }, []);
+
+  useEffect(() => {
+    if (fontsLoaded) {
+      logAsyncSuccess('RootLayout', 'loadFonts');
+    }
+
+    if (fontError) {
+      logAsyncFailure('RootLayout', 'loadFonts', fontError);
+    }
+  }, [fontError, fontsLoaded]);
 
   useEffect(() => {
     if (!appAssetsReady) {
       return;
     }
 
-    ExpoSplashScreen.hideAsync().catch(() => null);
+    hideNativeSplash();
   }, [appAssetsReady]);
 
   if (!appAssetsReady) {
-    return null;
+    return <StartupFallback />;
   }
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <RootNavigator />
+      <ScreenErrorBoundary screenName="Root navigator">
+        <AuthProvider>
+          <UsageTracker />
+          <LanguageProvider>
+            <NotificationProvider>
+              <RootNavigator />
+            </NotificationProvider>
+          </LanguageProvider>
+        </AuthProvider>
+      </ScreenErrorBoundary>
       <StatusBar style="auto" />
     </ThemeProvider>
   );
 }
 
-export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+function StartupFallback() {
   return (
-    <View style={styles.errorBoundary}>
-      <Text style={styles.errorTitle}>DoorDrop hit a screen error</Text>
-      <Text style={styles.errorMessage}>
-        {error.message || 'A route failed while loading. Retry to continue into the app.'}
-      </Text>
-      <TouchableOpacity activeOpacity={0.88} style={styles.errorButton} onPress={retry}>
-        <Text style={styles.errorButtonText}>Try again</Text>
-      </TouchableOpacity>
+    <View style={styles.startupRoot}>
+      <Text style={styles.startupTitle}>DoorDrop</Text>
+      <View style={styles.startupTrack}>
+        <View style={styles.startupFill} />
+      </View>
     </View>
   );
+}
+
+export const ErrorBoundary = RouteErrorBoundary;
+
+function UsageTracker() {
+  const pathname = usePathname();
+  const { profile, user } = useAuthSession();
+  const lastTrackedRef = useRef('');
+
+  useEffect(() => {
+    if (!user?.uid || !pathname) {
+      return;
+    }
+
+    const trackKey = `${user.uid}:${pathname}`;
+    if (lastTrackedRef.current === trackKey) {
+      return;
+    }
+
+    lastTrackedRef.current = trackKey;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const interactionTask = InteractionManager.runAfterInteractions(() => {
+      timeoutId = setTimeout(() => {
+        void recordAppActivity({
+          userId: user.uid,
+          userName: profile?.fullName || user.displayName || user.email || 'DoorDrop User',
+          userRole: 'customer',
+          eventName: 'screen_view',
+          featureKey: pathname,
+          featureLabel: pathname === '/' ? 'app start' : pathname.replace('/', ''),
+          screen: pathname,
+          route: pathname,
+        });
+      }, 900);
+    });
+
+    return () => {
+      interactionTask.cancel();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [pathname, profile?.fullName, user?.displayName, user?.email, user?.uid]);
+
+  return null;
 }
 
 function RootNavigator() {
@@ -91,7 +186,6 @@ function RootNavigator() {
       <Stack.Screen name="send-parcel" />
       <Stack.Screen name="book-cargo" />
       <Stack.Screen name="order-review" />
-      <Stack.Screen name="order-created" />
       <Stack.Screen name="track-order" />
       <Stack.Screen name="history" />
       <Stack.Screen name="account" />
@@ -107,41 +201,32 @@ function RootNavigator() {
 }
 
 const styles = StyleSheet.create({
-  errorBoundary: {
+  startupRoot: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
-    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 28,
+    backgroundColor: '#16A34A',
   },
-  errorTitle: {
-    color: cargoTheme.colors.text,
-    fontSize: 24,
-    lineHeight: 30,
-    fontFamily: typography.extrabold,
-    textAlign: 'center',
-    marginBottom: 10,
-  },
-  errorMessage: {
-    color: cargoTheme.colors.subtext,
-    fontSize: 14,
-    lineHeight: 21,
-    textAlign: 'center',
-    marginBottom: 18,
-    maxWidth: 340,
-  },
-  errorButton: {
-    minHeight: 52,
-    minWidth: 160,
-    borderRadius: 18,
-    paddingHorizontal: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: cargoTheme.colors.primary,
-  },
-  errorButtonText: {
+  startupTitle: {
     color: '#FFFFFF',
-    fontSize: 15,
-    fontFamily: typography.extrabold,
+    fontSize: 42,
+    fontWeight: '800',
+    lineHeight: 48,
+    marginBottom: 22,
+  },
+  startupTrack: {
+    width: '72%',
+    maxWidth: 280,
+    height: 8,
+    overflow: 'hidden',
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.32)',
+  },
+  startupFill: {
+    width: '58%',
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
   },
 });

@@ -19,7 +19,7 @@ export default function BookCargoWebScreen() {
       <View style={styles.card}>
         <Text style={styles.title}>Cargo booking uses the native app route tools</Text>
         <Text style={styles.text}>
-          The full cargo request flow calculates route distance and dynamic pricing from the mobile app. Once the customer confirms it, the order is written to Firestore and the DoorDrop team handles assignment and status updates.
+          The full cargo request flow calculates route distance and hybrid distance-based pricing from the mobile app. Once the customer confirms it, the order is written to Firestore and the DoorDrop team handles assignment and status updates.
         </Text>
       </View>
 

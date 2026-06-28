@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Linking, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { PrimaryButton } from '@/components/cargo-ui';
@@ -9,6 +9,8 @@ import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { resolveAuthReturnTo } from '@/lib/auth-navigation';
 import { useAuthSession } from '@/providers/auth-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
 
 function RegisterScreenContent() {
   const router = useRouter();
@@ -21,13 +23,15 @@ function RegisterScreenContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [formError, setFormError] = useState('');
   const returnTo = resolveAuthReturnTo(params.returnTo);
+  const TERMS_URL = 'https://doordrop-terms.vercel.app/';
+  const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
 
   useEffect(() => {
     if (!user) {
       return;
     }
 
-    if (returnTo === '/order-review' && router.canGoBack()) {
+    if (returnTo.startsWith('/order-review') && router.canGoBack()) {
       router.back();
       return;
     }
@@ -96,11 +100,11 @@ function RegisterScreenContent() {
             <View style={styles.termsCopy}>
               <Text style={styles.termsText}>
                 By continuing, you agree to the{' '}
-                <Text style={styles.termsLink} onPress={() => router.push('/terms')}>
+                <Text style={styles.termsLink} onPress={() => void Linking.openURL(TERMS_URL)}>
                   Terms & Conditions
                 </Text>{' '}
                 and{' '}
-                <Text style={styles.termsLink} onPress={() => router.push('/privacy-policy')}>
+                <Text style={styles.termsLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
                   Privacy Policy
                 </Text>
                 .

@@ -1,16 +1,15 @@
 import type { ReactNode } from 'react';
 
-import { AuthProvider } from '@/providers/auth-provider';
-import { NotificationProvider } from '@/providers/notification-provider';
+import { ScreenErrorBoundary } from '@/components/ErrorBoundary';
 
 export function AuthSessionBoundary({ children }: { children: ReactNode }) {
-  return <AuthProvider>{children}</AuthProvider>;
+  return <ScreenErrorBoundary screenName="Auth session boundary">{children}</ScreenErrorBoundary>;
 }
 
 export function AuthNotificationBoundary({ children }: { children: ReactNode }) {
   return (
-    <AuthProvider>
-      <NotificationProvider>{children}</NotificationProvider>
-    </AuthProvider>
+    <ScreenErrorBoundary screenName="Auth notification boundary">
+      {children}
+    </ScreenErrorBoundary>
   );
 }

@@ -16,7 +16,12 @@ import {
 
 import { cargoTheme } from '@/constants/cargo-theme';
 import { getFirebasePasswordResetErrorMessage } from '@/lib/auth-errors';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const screenScope = 'ForgotPasswordScreen';
 
 export default function ForgotPassword() {
   const router = useRouter();
@@ -57,17 +62,26 @@ export default function ForgotPassword() {
 
   const sendReset = async () => {
     if (!emailLooksValid || submitting) {
+      logWarning(screenScope, 'sendReset skipped', {
+        emailLooksValid,
+        submitting,
+      });
       return;
     }
 
     setSubmitting(true);
     setError('');
     setMessage('');
+    logAsyncStart(screenScope, 'sendPasswordResetEmail', { email: email.trim().toLowerCase() });
 
     try {
       await sendPasswordResetEmail(auth, email.trim().toLowerCase());
       setMessage('Password reset email sent. Check your inbox and spam folder.');
+      logAsyncSuccess(screenScope, 'sendPasswordResetEmail', { email: email.trim().toLowerCase() });
     } catch (authError) {
+      logAsyncFailure(screenScope, 'sendPasswordResetEmail', authError, {
+        email: email.trim().toLowerCase(),
+      });
       const nextError =
         authError instanceof FirebaseError
           ? getFirebasePasswordResetErrorMessage(authError.code)

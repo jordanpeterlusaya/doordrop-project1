@@ -12,6 +12,9 @@ expo-env.d.ts
 # Native
 .kotlin/
 *.orig.*
+*.apk
+*.aab
+*.ipa
 *.jks
 *.p8
 *.p12
@@ -25,13 +28,27 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+eas-local-build.log
+firebase-debug.log
+firebase-debug.*.log
 
 # macOS
 .DS_Store
 *.pem
 
 # local env files
-.env*.local
+.env
+.env.*
+!.env.example
+!.env*.example
+backend/service-account*.json
+backend/*service-account*.json
+google-services.json
+**/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+admin-website/firebase-config.local.js
+.firebase/
 
 # typescript
 *.tsbuildinfo

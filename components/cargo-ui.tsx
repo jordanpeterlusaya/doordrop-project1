@@ -1,16 +1,18 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React from 'react';
+import React, { useCallback, useRef } from 'react';
 import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleProp,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  ViewStyle,
+    SafeAreaView,
+    ScrollView,
+    StatusBar,
+    KeyboardAvoidingView,
+    Platform,
+    StyleProp,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+    ViewStyle,
 } from 'react-native';
 
 import { bottomTabs, cargoTheme, type AppTabKey, type CargoIcon } from '@/constants/cargo-theme';
@@ -23,6 +25,8 @@ type CargoScreenProps = {
   backgroundColor?: string;
   footer?: React.ReactNode;
   statusBarStyle?: 'light-content' | 'dark-content';
+  keyboardAvoiding?: boolean;
+  keyboardVerticalOffset?: number;
 };
 
 type CargoHeaderProps = {
@@ -41,6 +45,7 @@ type ButtonProps = {
   icon?: CargoIcon;
   variant?: 'primary' | 'secondary' | 'dark';
   style?: StyleProp<ViewStyle>;
+  disabled?: boolean;
 };
 
 type SectionHeaderProps = {
@@ -68,6 +73,25 @@ const leftIconMap = {
   menu: 'menu',
   close: 'close',
 } as const;
+const PRESS_GUARD_MS = 650;
+
+function useGuardedPress(onPress?: () => void, disabled = false) {
+  const lastPressRef = useRef(0);
+
+  return useCallback(() => {
+    if (disabled || !onPress) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastPressRef.current < PRESS_GUARD_MS) {
+      return;
+    }
+
+    lastPressRef.current = now;
+    onPress();
+  }, [disabled, onPress]);
+}
 
 export function CargoScreen({
   children,
@@ -76,14 +100,18 @@ export function CargoScreen({
   backgroundColor = cargoTheme.colors.canvas,
   footer,
   statusBarStyle = 'dark-content',
+  keyboardAvoiding = false,
+  keyboardVerticalOffset = 0,
 }: CargoScreenProps) {
-  return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
-      <StatusBar barStyle={statusBarStyle} backgroundColor="transparent" translucent />
+  const shouldUseKeyboardAvoiding = keyboardAvoiding && Platform.OS === 'ios';
+  const body = (
+    <>
       {scroll ? (
         <ScrollView
           style={[styles.screen, { backgroundColor }]}
           contentContainerStyle={[styles.content, contentContainerStyle]}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
           {children}
         </ScrollView>
@@ -93,6 +121,22 @@ export function CargoScreen({
         </View>
       )}
       {footer}
+    </>
+  );
+
+  return (
+    <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
+      <StatusBar barStyle={statusBarStyle} backgroundColor="transparent" translucent />
+      {shouldUseKeyboardAvoiding ? (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={keyboardVerticalOffset}
+          style={styles.keyboardAvoiding}>
+          {body}
+        </KeyboardAvoidingView>
+      ) : (
+        body
+      )}
     </SafeAreaView>
   );
 }
@@ -110,6 +154,8 @@ export function CargoHeader({
   const subtitleColor = light ? '#DCE3EC' : cargoTheme.colors.subtext;
   const chromeBg = light ? 'rgba(255,255,255,0.12)' : cargoTheme.colors.surface;
   const chromeIcon = light ? '#FFFFFF' : cargoTheme.colors.text;
+  const handleLeftPress = useGuardedPress(onLeftPress);
+  const handleRightPress = useGuardedPress(onRightPress);
 
   return (
     <View style={styles.header}>
@@ -117,13 +163,13 @@ export function CargoHeader({
         {leftAction === 'none' ? (
           <View style={styles.headerSpacer} />
         ) : (
-          <TouchableOpacity style={[styles.headerButton, { backgroundColor: chromeBg }]} onPress={onLeftPress}>
+          <TouchableOpacity style={[styles.headerButton, { backgroundColor: chromeBg }]} onPress={handleLeftPress}>
             <MaterialCommunityIcons name={leftIconMap[leftAction]} size={22} color={chromeIcon} />
           </TouchableOpacity>
         )}
 
         {rightIcon ? (
-          <TouchableOpacity style={[styles.headerButton, { backgroundColor: chromeBg }]} onPress={onRightPress}>
+          <TouchableOpacity style={[styles.headerButton, { backgroundColor: chromeBg }]} onPress={handleRightPress}>
             <MaterialCommunityIcons name={rightIcon} size={22} color={chromeIcon} />
           </TouchableOpacity>
         ) : (
@@ -137,7 +183,8 @@ export function CargoHeader({
   );
 }
 
-export function PrimaryButton({ label, onPress, icon, variant = 'primary', style }: ButtonProps) {
+export function PrimaryButton({ label, onPress, icon, variant = 'primary', style, disabled = false }: ButtonProps) {
+  const handlePress = useGuardedPress(onPress, disabled || !onPress);
   const variantStyles = {
     primary: {
       backgroundColor: cargoTheme.colors.primary,
@@ -159,13 +206,17 @@ export function PrimaryButton({ label, onPress, icon, variant = 'primary', style
   return (
     <TouchableOpacity
       activeOpacity={0.88}
-      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled || !onPress}
+      onPress={handlePress}
       style={[
         styles.button,
         {
           backgroundColor: variantStyles.backgroundColor,
           borderColor: variantStyles.borderColor,
         },
+        disabled && styles.buttonDisabled,
         style,
       ]}>
       <View style={styles.buttonInner}>
@@ -177,11 +228,13 @@ export function PrimaryButton({ label, onPress, icon, variant = 'primary', style
 }
 
 export function SectionHeader({ title, actionLabel, onActionPress }: SectionHeaderProps) {
+  const handleActionPress = useGuardedPress(onActionPress, !onActionPress);
+
   return (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {actionLabel ? (
-        <TouchableOpacity onPress={onActionPress}>
+        <TouchableOpacity onPress={handleActionPress}>
           <Text style={styles.sectionAction}>{actionLabel}</Text>
         </TouchableOpacity>
       ) : null}
@@ -190,8 +243,16 @@ export function SectionHeader({ title, actionLabel, onActionPress }: SectionHead
 }
 
 export function MenuRow({ icon, title, subtitle, onPress, trailingLabel }: MenuRowProps) {
+  const handlePress = useGuardedPress(onPress, !onPress);
+
   return (
-    <TouchableOpacity style={styles.menuRow} onPress={onPress} activeOpacity={0.88}>
+    <TouchableOpacity
+      style={styles.menuRow}
+      onPress={handlePress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !onPress }}
+      activeOpacity={0.88}>
       <View style={styles.menuLeading}>
         <View style={styles.menuIconWrap}>
           <MaterialCommunityIcons name={icon} size={20} color={cargoTheme.colors.text} />
@@ -219,6 +280,24 @@ export function SummaryRow({ label, value, emphasis = false }: SummaryRowProps) 
 
 export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
   const router = useRouter();
+  const lastNavPressRef = useRef(0);
+
+  const handleTabPress = useCallback(
+    (tab: (typeof bottomTabs)[number]) => {
+      if (tab.key === activeTab) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastNavPressRef.current < PRESS_GUARD_MS) {
+        return;
+      }
+
+      lastNavPressRef.current = now;
+      router.push(tab.route);
+    },
+    [activeTab, router]
+  );
 
   return (
     <View style={styles.bottomNav}>
@@ -228,8 +307,11 @@ export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
           <TouchableOpacity
             key={tab.key}
             activeOpacity={0.88}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive, disabled: isActive }}
+            disabled={isActive}
             style={styles.navItem}
-            onPress={() => router.replace(tab.route)}>
+            onPress={() => handleTabPress(tab)}>
             <View style={[styles.navIconWrap, isActive && styles.navIconWrapActive]}>
               <MaterialCommunityIcons
                 name={tab.icon}
@@ -247,6 +329,9 @@ export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
 
 const styles = StyleSheet.create({
   safeArea: {
+    flex: 1,
+  },
+  keyboardAvoiding: {
     flex: 1,
   },
   screen: {
@@ -293,6 +378,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: 'center',
     paddingHorizontal: 16,
+  },
+  buttonDisabled: {
+    opacity: 0.55,
   },
   buttonInner: {
     flexDirection: 'row',

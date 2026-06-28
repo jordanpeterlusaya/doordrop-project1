@@ -35,6 +35,46 @@ npm run admin:serve
 
 Then open `http://localhost:4173`.
 
+## Production API setup
+
+Shared APKs must not use `localhost`, `10.0.2.2`, or `192.168.x.x` for `EXPO_PUBLIC_API_BASE_URL`.
+Those addresses only work on your machine or your Wi-Fi. The backend is configured for Firebase Cloud Functions at the `api` HTTPS function.
+
+Local backend start command:
+
+```bash
+npm install
+npm run backend:start
+```
+
+Required backend environment variables:
+
+```bash
+GOOGLE_SERVER_API_KEY=your-server-google-key
+CORS_ALLOWED_ORIGINS=*
+```
+
+Deploy the backend to Firebase:
+
+```bash
+npm --prefix backend install
+firebase deploy --only functions:api
+```
+
+After deployment, confirm:
+
+```bash
+curl https://us-central1-efootball-app-9d175.cloudfunctions.net/api/health
+```
+
+Then set the app build environment:
+
+```bash
+EXPO_PUBLIC_API_BASE_URL=https://us-central1-efootball-app-9d175.cloudfunctions.net/api
+```
+
+Preview and production Android builds fail early if the API URL is missing or points to a private/local IP.
+
 ## DoorDropDrive app
 
 The repo also includes a separate driver-facing Expo app in `doordropdrive/`.

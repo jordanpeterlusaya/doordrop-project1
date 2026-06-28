@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { NativeModules, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
 const memoryStorage = new Map<string, string>();
 
@@ -7,21 +7,14 @@ function canUseBrowserStorage() {
   return Platform.OS === 'web' && typeof window !== 'undefined';
 }
 
-function hasNativeAsyncStorageModule() {
+export function hasNativeAsyncStorage() {
   if (Platform.OS === 'web') {
     return false;
   }
 
-  const nativeModules = NativeModules as Record<string, unknown>;
-  return Boolean(nativeModules.RNCAsyncStorage);
-}
-
-export function hasNativeAsyncStorage() {
-  return (
-    hasNativeAsyncStorageModule() &&
-    typeof AsyncStorage?.getItem === 'function' &&
-    typeof AsyncStorage?.setItem === 'function'
-  );
+  // New-architecture builds may not expose AsyncStorage under NativeModules.
+  // The imported module methods are the safer capability check here.
+  return typeof AsyncStorage?.getItem === 'function' && typeof AsyncStorage?.setItem === 'function';
 }
 
 export function getFirebasePersistenceStorage() {

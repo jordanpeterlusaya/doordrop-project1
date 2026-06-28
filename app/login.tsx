@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Linking, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { PrimaryButton } from '@/components/cargo-ui';
@@ -9,6 +9,10 @@ import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { resolveAuthReturnTo } from '@/lib/auth-navigation';
 import { useAuthSession } from '@/providers/auth-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const TERMS_URL = 'https://doordrop-terms.vercel.app/';
 
 function LoginScreenContent() {
   const router = useRouter();
@@ -24,7 +28,7 @@ function LoginScreenContent() {
       return;
     }
 
-    if (returnTo === '/order-review' && router.canGoBack()) {
+    if (returnTo.startsWith('/order-review') && router.canGoBack()) {
       router.back();
       return;
     }
@@ -123,6 +127,16 @@ function LoginScreenContent() {
           <TouchableOpacity style={styles.resetLinkWrap} onPress={() => router.push('/forgot-password')}>
             <Text style={styles.resetLink}>Forgot password?</Text>
           </TouchableOpacity>
+
+          <View style={styles.legalCard}>
+            <Text style={styles.legalText}>
+              By continuing, you agree to the{' '}
+              <Text style={styles.legalLink} onPress={() => void Linking.openURL(TERMS_URL)}>
+                Terms & Conditions
+              </Text>
+              .
+            </Text>
+          </View>
 
           <View style={styles.footerRow}>
             <Text style={styles.footerText}>Don&apos;t have an account?</Text>
@@ -237,6 +251,21 @@ const styles = StyleSheet.create({
   resetLink: {
     color: cargoTheme.colors.info,
     fontSize: 13,
+    fontFamily: typography.bold,
+  },
+  legalCard: {
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#F8FAFC',
+  },
+  legalText: {
+    color: cargoTheme.colors.subtext,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  legalLink: {
+    color: cargoTheme.colors.primary,
     fontFamily: typography.bold,
   },
   footerRow: {

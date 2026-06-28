@@ -64,7 +64,7 @@ export const menuSections: {
       },
       {
         title: 'Book cargo',
-        subtitle: 'Request the right cargo carrier from bike to truck',
+        subtitle: 'Request a TOYO or Kirikuu cargo carrier',
         icon: 'truck-fast-outline',
         route: '/book-cargo',
       },
@@ -155,34 +155,24 @@ export const cargoVehicles: {
   accentBg: string;
 }[] = [
   {
+    key: 'toyo',
+    title: 'TOYO',
+    capacity: 'Up to 1 ton',
+    eta: '14-24 min',
+    price: 'TZS 5,000',
+    icon: 'car-estate',
+    accentColor: '#0284C7',
+    accentBg: '#E0F2FE',
+  },
+  {
     key: 'kirikuu',
     title: 'Kirikuu',
-    capacity: 'Up to 30 kg',
-    eta: '10-15 min',
-    price: 'TZS 4,500',
+    capacity: 'Up to 1 ton',
+    eta: '10-18 min',
+    price: 'TZS 3,000',
     icon: 'motorbike',
     accentColor: '#EA580C',
     accentBg: '#FFF7ED',
-  },
-  {
-    key: 'pickup',
-    title: 'Pickup',
-    capacity: 'Up to 350 kg',
-    eta: '15-20 min',
-    price: 'TZS 18,000',
-    icon: 'car-pickup',
-    accentColor: '#2563EB',
-    accentBg: '#EFF6FF',
-  },
-  {
-    key: 'toyo',
-    title: 'Toyo',
-    capacity: 'Up to 2 tons',
-    eta: '25-40 min',
-    price: 'TZS 55,000',
-    icon: 'truck-outline',
-    accentColor: '#15803D',
-    accentBg: '#DCFCE7',
   },
 ];
 

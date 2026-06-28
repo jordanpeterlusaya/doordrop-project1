@@ -27,8 +27,13 @@ import {
   getFirebasePasswordChangeErrorMessage,
   getFirebasePasswordResetErrorMessage,
 } from '@/lib/auth-errors';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
 import { useAuthSession } from '@/providers/auth-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const screenScope = 'ChangePasswordScreen';
 
 function ChangePasswordScreenContent() {
   const router = useRouter();
@@ -125,12 +130,18 @@ function ChangePasswordScreenContent() {
 
   const handleChangePassword = async () => {
     if (!user || !email || !canSubmit) {
+      logWarning(screenScope, 'handleChangePassword skipped', {
+        hasUser: Boolean(user),
+        hasEmail: Boolean(email),
+        canSubmit,
+      });
       return;
     }
 
     setSubmitting(true);
     setError('');
     setMessage('');
+    logAsyncStart(screenScope, 'handleChangePassword', { email });
 
     try {
       const credential = EmailAuthProvider.credential(email, trimmedCurrentPassword);
@@ -142,7 +153,9 @@ function ChangePasswordScreenContent() {
       setNextPassword('');
       setConfirmPassword('');
       setMessage('Password updated successfully. Use the new password the next time you sign in.');
+      logAsyncSuccess(screenScope, 'handleChangePassword', { email });
     } catch (authError) {
+      logAsyncFailure(screenScope, 'handleChangePassword', authError, { email });
       const nextError =
         authError instanceof FirebaseError
           ? getFirebasePasswordChangeErrorMessage(authError.code)
@@ -155,17 +168,24 @@ function ChangePasswordScreenContent() {
 
   const handleSendResetEmail = async () => {
     if (!email || !canSendResetEmail) {
+      logWarning(screenScope, 'handleSendResetEmail skipped', {
+        hasEmail: Boolean(email),
+        canSendResetEmail,
+      });
       return;
     }
 
     setResetSubmitting(true);
     setError('');
     setMessage('');
+    logAsyncStart(screenScope, 'handleSendResetEmail', { email });
 
     try {
       await sendPasswordResetEmail(auth, email);
       setMessage(`Password reset email sent to ${email}. Check your inbox and spam folder.`);
+      logAsyncSuccess(screenScope, 'handleSendResetEmail', { email });
     } catch (authError) {
+      logAsyncFailure(screenScope, 'handleSendResetEmail', authError, { email });
       const nextError =
         authError instanceof FirebaseError
           ? getFirebasePasswordResetErrorMessage(authError.code)

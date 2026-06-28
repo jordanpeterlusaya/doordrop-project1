@@ -5,42 +5,77 @@ import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 
 import { CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
-
-const serviceCards = [
-  {
-    title: 'Send parcel',
-    subtitle: 'Create parcel deliveries in the mobile app and let the DoorDrop team handle live dispatch in the background.',
-    route: '/send-parcel' as const,
-    image: require('@/assets/images/home-send-parcel.png'),
-    icon: 'package-variant-closed' as const,
-  },
-  {
-    title: 'Cargo Delivery',
-    subtitle: 'Set up transport for goods in a simpler, easier-to-understand flow.',
-    route: '/book-cargo' as const,
-    image: require('@/assets/images/vehicle-light-truck.png'),
-    icon: 'truck-fast-outline' as const,
-  },
-];
+import { useLanguage } from '@/providers/language-provider';
 
 export default function HomeWebScreen() {
   const router = useRouter();
+  const { language } = useLanguage();
+  const copy =
+    language === 'sw'
+      ? {
+          kicker: 'DoorDrop Web',
+          title: 'Kituo cha kazi kwa app ya mteja',
+          subtitle:
+            'App ya simu hushughulikia kuweka oda, kufuatilia na historia huku DoorDrop ikiendesha usambazaji na upangaji wa madereva nyuma ya pazia.',
+          splashAction: 'Fungua ukurasa wa mwanzo',
+          serviceCards: [
+            {
+              title: 'Tuma kifurushi',
+              subtitle: 'Anzisha usafirishaji wa vifurushi kwenye app ya simu huku DoorDrop ikisimamia ugawaji wa moja kwa moja.',
+              route: '/send-parcel' as const,
+              image: require('@/assets/images/home-send-parcel.png'),
+              icon: 'package-variant-closed' as const,
+            },
+            {
+              title: 'Omba msafirishaji wa mizigo',
+              subtitle: 'Panga usafiri wa mizigo kwa mtiririko rahisi zaidi kueleweka.',
+              route: '/book-cargo' as const,
+              image: require('@/assets/images/vehicle-light-truck.png'),
+              icon: 'truck-fast-outline' as const,
+            },
+          ],
+          notice:
+            'Kila oda iliyothibitishwa huhifadhiwa mara moja na kushirikiwa kwenye skrini za kuweka oda, historia na ufuatiliaji za app ya mteja.',
+        }
+      : {
+          kicker: 'DoorDrop Web',
+          title: 'Operations hub for the customer app',
+          subtitle:
+            'The native app handles booking, tracking, and history while DoorDrop keeps dispatch and driver assignment running behind the scenes.',
+          splashAction: 'Open splash page',
+          serviceCards: [
+            {
+              title: 'Send parcel',
+              subtitle: 'Create parcel deliveries in the mobile app and let the DoorDrop team handle live dispatch in the background.',
+              route: '/send-parcel' as const,
+              image: require('@/assets/images/home-send-parcel.png'),
+              icon: 'package-variant-closed' as const,
+            },
+            {
+              title: 'Request cargo carrier',
+              subtitle: 'Set up transport for goods in a simpler, easier-to-understand flow.',
+              route: '/book-cargo' as const,
+              image: require('@/assets/images/vehicle-light-truck.png'),
+              icon: 'truck-fast-outline' as const,
+            },
+          ],
+          notice:
+            'Every confirmed order is stored once and shared across booking, history, and tracking screens for the customer app.',
+        };
 
   return (
     <CargoScreen contentContainerStyle={styles.content}>
       <View style={styles.hero}>
-        <Text style={styles.kicker}>DoorDrop Web</Text>
-        <Text style={styles.title}>Operations hub for the customer app</Text>
-        <Text style={styles.subtitle}>
-          The native app handles booking, tracking, and history while DoorDrop keeps dispatch and driver assignment running behind the scenes.
-        </Text>
+        <Text style={styles.kicker}>{copy.kicker}</Text>
+        <Text style={styles.title}>{copy.title}</Text>
+        <Text style={styles.subtitle}>{copy.subtitle}</Text>
         <View style={styles.heroActions}>
-          <PrimaryButton label="Open splash page" variant="secondary" onPress={() => router.push('/splash')} />
+          <PrimaryButton label={copy.splashAction} variant="secondary" onPress={() => router.push('/splash')} />
         </View>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serviceRow}>
-        {serviceCards.map((card) => (
+        {copy.serviceCards.map((card) => (
           <TouchableOpacity key={card.title} style={styles.card} activeOpacity={0.9} onPress={() => router.push(card.route)}>
             <View style={styles.imageWrap}>
               <Image source={card.image} style={styles.image} resizeMode="cover" />
@@ -58,9 +93,7 @@ export default function HomeWebScreen() {
 
       <View style={styles.notice}>
         <MaterialCommunityIcons name="sync" size={20} color={cargoTheme.colors.primaryDark} />
-        <Text style={styles.noticeText}>
-          Every confirmed order is stored once and shared across booking, history, and tracking screens for the customer app.
-        </Text>
+        <Text style={styles.noticeText}>{copy.notice}</Text>
       </View>
     </CargoScreen>
   );

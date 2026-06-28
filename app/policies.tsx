@@ -1,12 +1,16 @@
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Linking, StyleSheet, Text, View } from 'react-native';
 
 import { CargoHeader, CargoScreen, MenuRow } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
 export default function PoliciesScreen() {
   const router = useRouter();
+  const termsUrl = 'https://doordrop-terms.vercel.app/';
+  const privacyUrl = 'https://doordrop-terms.vercel.app/privacy.html';
 
   return (
     <CargoScreen contentContainerStyle={styles.content}>
@@ -27,13 +31,13 @@ export default function PoliciesScreen() {
         icon="file-document-outline"
         title="Terms and conditions"
         subtitle="Read the customer terms for bookings, cancellations and deliveries"
-        onPress={() => router.push('/terms')}
+        onPress={() => void Linking.openURL(termsUrl)}
       />
       <MenuRow
         icon="shield-lock-outline"
         title="Privacy policy"
         subtitle="See how DoorDrop stores and uses personal information"
-        onPress={() => router.push('/privacy-policy')}
+        onPress={() => void Linking.openURL(privacyUrl)}
       />
     </CargoScreen>
   );

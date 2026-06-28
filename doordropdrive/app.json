@@ -4,7 +4,7 @@
     "slug": "doordrive",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "../assets/images/icon2.png",
+    "icon": "./assets/images/icon2.png",
     "scheme": "doordrive",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
@@ -13,8 +13,13 @@
     },
     "android": {
       "package": "com.doordrive.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "VIBRATE"
+      ],
       "adaptiveIcon": {
-        "foregroundImage": "../assets/images/icon2.png",
+        "foregroundImage": "./assets/images/icon2.png",
         "backgroundColor": "#16A34A"
       }
     },
@@ -22,7 +27,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "../assets/images/icon2.png",
+          "image": "./assets/images/icon2.png",
           "imageWidth": 220,
           "resizeMode": "contain",
           "backgroundColor": "#16A34A"
@@ -34,11 +39,11 @@
       "android",
       "web"
     ],
+    "owner": "jordanpeter",
     "extra": {
       "eas": {
         "projectId": "53e9314f-0ec8-4256-ae9c-9160f2c3aa2f"
       }
-    },
-    "owner": "jordanpeter"
+    }
   }
 }

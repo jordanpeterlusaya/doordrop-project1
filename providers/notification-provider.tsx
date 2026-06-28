@@ -1,7 +1,17 @@
-import { Alert } from 'react-native';
+import * as Notifications from 'expo-notifications';
+import { useRouter } from 'expo-router';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, InteractionManager, Platform } from 'react-native';
 
 import {
+  getDoorDropPushNotificationAvailability,
+  logPushNotificationSetup,
+  readNotificationNavigationData,
+  registerDoorDropPushNotifications,
+} from '@/lib/push-notifications';
+import {
+  deleteAllUserNotifications,
+  deleteUserNotification,
   markAllUserNotificationsRead,
   markUserNotificationRead,
   subscribeToUserNotifications,
@@ -12,12 +22,23 @@ import { useAuthSession } from '@/providers/auth-provider';
 type NotificationContextValue = {
   notifications: UserNotification[];
   loading: boolean;
+  pushPermissionStatus: PushPermissionStatus;
   unreadCount: number;
   markAllRead: () => Promise<void>;
   markRead: (notificationId: string) => Promise<void>;
+  refreshPushPermissionStatus: () => Promise<PushPermissionStatus>;
+  requestNotificationPermission: () => Promise<PushPermissionStatus>;
+  removeAllNotifications: () => Promise<void>;
+  removeNotification: (notificationId: string) => Promise<void>;
 };
 
+type PushPermissionStatus = 'unavailable' | 'undetermined' | 'granted' | 'denied';
+
 const NotificationContext = createContext<NotificationContextValue | undefined>(undefined);
+
+function getInitialPushPermissionStatus(): PushPermissionStatus {
+  return getDoorDropPushNotificationAvailability().available ? 'undetermined' : 'unavailable';
+}
 
 function shouldAlertForNotification(
   notification: UserNotification,
@@ -34,11 +55,84 @@ function shouldAlertForNotification(
 }
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const { profile, user } = useAuthSession();
   const [notifications, setNotifications] = useState<UserNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pushPermissionStatus, setPushPermissionStatus] = useState<PushPermissionStatus>(getInitialPushPermissionStatus);
   const knownNotificationIdsRef = useRef<Set<string>>(new Set());
   const hydratedRef = useRef(false);
+
+  useEffect(() => {
+    logPushNotificationSetup();
+  }, []);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setPushPermissionStatus(getInitialPushPermissionStatus());
+      return;
+    }
+
+    let active = true;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const interactionTask = InteractionManager.runAfterInteractions(() => {
+      timeoutId = setTimeout(() => {
+        void (async () => {
+          const token = await registerDoorDropPushNotifications(user.uid);
+          if (!active) {
+            return;
+          }
+
+          if (token) {
+            setPushPermissionStatus('granted');
+            return;
+          }
+
+          if (!getDoorDropPushNotificationAvailability().available) {
+            setPushPermissionStatus('unavailable');
+            return;
+          }
+
+          const permissions = await Notifications.getPermissionsAsync();
+          if (active) {
+            setPushPermissionStatus(permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined');
+          }
+        })();
+      }, 1500);
+    });
+
+    return () => {
+      active = false;
+      interactionTask.cancel();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      return undefined;
+    }
+
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = readNotificationNavigationData(response);
+
+      if (data.orderId) {
+        router.push({
+          pathname: '/track-order',
+          params: { orderId: data.orderId },
+        });
+        return;
+      }
+
+      router.push('/notifications');
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [router]);
 
   useEffect(() => {
     if (!user) {
@@ -102,12 +196,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return unsubscribe;
   }, [profile?.notificationPreferences, user]);
 
-  const unreadCount = notifications.filter((item) => !item.readAt).length;
+  const unreadCount = useMemo(() => notifications.filter((item) => !item.readAt).length, [notifications]);
 
   const value = useMemo(
     () => ({
       notifications,
       loading,
+      pushPermissionStatus,
       unreadCount,
       markAllRead: async () => {
         if (!user) {
@@ -119,8 +214,53 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       markRead: async (notificationId: string) => {
         await markUserNotificationRead(notificationId);
       },
+      refreshPushPermissionStatus: async () => {
+        if (!getDoorDropPushNotificationAvailability().available) {
+          setPushPermissionStatus('unavailable');
+          return 'unavailable' as PushPermissionStatus;
+        }
+
+        const permissions = await Notifications.getPermissionsAsync();
+        const nextStatus =
+          permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined';
+        setPushPermissionStatus(nextStatus);
+        return nextStatus;
+      },
+      requestNotificationPermission: async () => {
+        if (!user?.uid) {
+          setPushPermissionStatus(getInitialPushPermissionStatus());
+          return getInitialPushPermissionStatus();
+        }
+
+        if (!getDoorDropPushNotificationAvailability().available) {
+          setPushPermissionStatus('unavailable');
+          return 'unavailable';
+        }
+
+        const token = await registerDoorDropPushNotifications(user.uid);
+        if (token) {
+          setPushPermissionStatus('granted');
+          return 'granted';
+        }
+
+        const permissions = await Notifications.getPermissionsAsync();
+        const nextStatus =
+          permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined';
+        setPushPermissionStatus(nextStatus);
+        return nextStatus;
+      },
+      removeAllNotifications: async () => {
+        if (!user) {
+          return;
+        }
+
+        await deleteAllUserNotifications(user.uid);
+      },
+      removeNotification: async (notificationId: string) => {
+        await deleteUserNotification(notificationId);
+      },
     }),
-    [loading, notifications, unreadCount, user]
+    [loading, notifications, pushPermissionStatus, unreadCount, user]
   );
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;

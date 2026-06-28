@@ -1,0 +1,20 @@
+{
+  "name": "doordrop-backend-functions",
+  "version": "1.0.0",
+  "private": true,
+  "main": "firebase.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log --only api",
+    "admin:set-claim": "node scripts/set-admin-claim.js"
+  },
+  "dependencies": {
+    "@mapbox/polyline": "^1.2.1",
+    "firebase-admin": "^13.10.0",
+    "firebase-functions": "^7.2.5"
+  }
+}

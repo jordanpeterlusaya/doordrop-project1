@@ -1,393 +1,1328 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DoorDrop Admin</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        :root {
-            --font-heading: 'Sora', system-ui, -apple-system, sans-serif;
-            --font-body: 'Manrope', system-ui, -apple-system, sans-serif;
-            --slate-50: #f8fafc;
-            --slate-100: #f1f5f9;
-            --slate-200: #e2e8f0;
-            --slate-300: #cbd5e1;
-            --slate-400: #94a3b8;
-            --slate-500: #64748b;
-            --slate-600: #475569;
-            --slate-700: #334155;
-            --slate-800: #1e293b;
-            --slate-900: #0f172a;
-            --slate-950: #020617;
-            --emerald-50: #ecfdf5;
-            --emerald-100: #d1fae5;
-            --emerald-400: #34d399;
-            --emerald-500: #10b981;
-            --emerald-600: #059669;
-            --emerald-700: #047857;
-            --blue-50: #eff6ff;
-            --blue-100: #dbeafe;
-            --blue-500: #3b82f6;
-            --blue-600: #2563eb;
-            --blue-700: #1d4ed8;
-            --amber-500: #f59e0b;
-            --amber-600: #d97706;
-            --red-50: #fef2f2;
-            --red-100: #fee2e2;
-            --red-500: #ef4444;
-            --red-600: #dc2626;
-            --radius-xs: 6px;
-            --radius-sm: 8px;
-            --radius-md: 12px;
-            --radius-lg: 16px;
-            --radius-xl: 20px;
-            --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
-            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-            --shadow-md: 0 4px 6px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04);
-            --shadow-lg: 0 10px 25px rgba(0,0,0,0.07), 0 4px 10px rgba(0,0,0,0.04);
-            --shadow-xl: 0 20px 50px rgba(0,0,0,0.1), 0 8px 20px rgba(0,0,0,0.05);
-            --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03), 0 0 0 1px rgba(0,0,0,0.03);
-            --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-            --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-            --transition-smooth: 300ms cubic-bezier(0.4, 0, 0.2, 1);
-            --transition-bounce: 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html { font-size: 16px; -webkit-font-smoothing: antialiased; }
-        body { font-family: var(--font-body); background: var(--slate-50); color: var(--slate-800); line-height: 1.6; min-height: 100vh; overflow-x: hidden; letter-spacing: -0.01em; }
-        img { max-width: 100%; display: block; }
-        button { cursor: pointer; font-family: var(--font-body); border: none; background: none; font-size: inherit; transition: all var(--transition-base); }
-        input { font-family: var(--font-body); font-size: inherit; }
-        a { text-decoration: none; color: inherit; }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>doordrop Admin Command Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --surface-muted: #eef3f7;
+      --ink: #0f172a;
+      --ink-soft: #334155;
+      --muted: #64748b;
+      --line: #dce5ee;
+      --line-soft: #e9eff5;
+      --green: #0f9f6e;
+      --green-dark: #08734f;
+      --green-soft: #e7f7ef;
+      --blue: #2563eb;
+      --blue-soft: #e8f0ff;
+      --amber: #d97706;
+      --amber-soft: #fff4d8;
+      --red: #dc2626;
+      --red-soft: #fff0f0;
+      --purple: #6d28d9;
+      --purple-soft: #f1ebff;
+      --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-sm: 0 8px 22px rgba(15, 23, 42, 0.07);
+      --shadow-lg: 0 22px 58px rgba(15, 23, 42, 0.16);
+      --radius: 8px;
+      --sidebar: 264px;
+      --drawer: 400px;
+      --topbar: 72px;
+    }
 
-        .site-shell { min-height: 100vh; display: flex; flex-direction: column; }
-        .auth-screen { display: flex; min-height: 100vh; background: var(--slate-50); position: relative; overflow: hidden; }
-        .auth-hero { flex: 1 1 55%; background: linear-gradient(160deg, #0f172a 0%, #1a2740 30%, #0f1f2e 60%, #0a1628 100%); display: flex; flex-direction: column; justify-content: center; padding: 60px 64px; position: relative; overflow: hidden; color: #fff; gap: 40px; }
-        .auth-hero::before { content: ''; position: absolute; top: -30%; right: -20%; width: 700px; height: 700px; background: radial-gradient(circle, rgba(16,185,129,0.08) 0%, transparent 70%); border-radius: 50%; pointer-events: none; }
-        .auth-hero::after { content: ''; position: absolute; bottom: -25%; left: -15%; width: 600px; height: 600px; background: radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%); border-radius: 50%; pointer-events: none; }
-        .auth-brand-row { display: flex; align-items: center; gap: 16px; position: relative; z-index: 1; }
-        .auth-brand-mark { width: 52px; height: 52px; border-radius: var(--radius-md); background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-weight: 800; font-size: 22px; color: #fff; box-shadow: 0 8px 24px rgba(16,185,129,0.35); flex-shrink: 0; }
-        .auth-brand-mark img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-md); display: none; }
-        .auth-brand-mark img[src] { display: block; }
-        .auth-brand-mark:has(img[src]) { background: transparent; box-shadow: none; overflow: hidden; }
-        .brand-kicker { font-family: var(--font-heading); font-weight: 700; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: #fff; opacity: 0.9; line-height: 1.2; }
-        .brand-title { font-family: var(--font-body); font-weight: 500; font-size: 13px; color: rgba(255,255,255,0.6); letter-spacing: 0.02em; }
-        .auth-copy-block { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
-        .auth-copy-block .eyebrow { font-family: var(--font-body); font-weight: 600; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--emerald-400); margin-bottom: 4px; }
-        .auth-copy-block h1 { font-family: var(--font-heading); font-weight: 700; font-size: 2.5rem; line-height: 1.2; letter-spacing: -0.03em; color: #fff; }
-        .auth-copy { font-size: 15px; line-height: 1.7; color: rgba(255,255,255,0.65); max-width: 460px; }
-        .auth-card { flex: 0 1 45%; display: flex; flex-direction: column; justify-content: center; padding: 60px 56px; background: #fff; gap: 24px; min-width: 440px; max-width: 560px; box-shadow: var(--shadow-xl); position: relative; z-index: 2; }
-        .auth-mode-row { display: flex; gap: 6px; background: var(--slate-100); border-radius: var(--radius-md); padding: 4px; align-self: flex-start; }
-        .mode-button { padding: 9px 20px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13px; letter-spacing: 0.01em; color: var(--slate-500); transition: all var(--transition-bounce); white-space: nowrap; }
-        .mode-button.active { background: #fff; color: var(--slate-900); box-shadow: var(--shadow-sm); }
-        .mode-button:hover:not(.active) { color: var(--slate-700); }
-        .auth-heading { display: flex; flex-direction: column; gap: 6px; }
-        .eyebrow { font-family: var(--font-body); font-weight: 700; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--emerald-600); }
-        .auth-heading h2 { font-family: var(--font-heading); font-weight: 700; font-size: 1.6rem; letter-spacing: -0.02em; color: var(--slate-900); line-height: 1.2; }
-        .helper-copy { font-size: 13px; color: var(--slate-500); line-height: 1.5; }
-        .auth-trust-row { display: flex; gap: 8px; flex-wrap: wrap; }
-        .mini-badge { font-size: 10px; font-weight: 600; letter-spacing: 0.04em; padding: 5px 10px; border-radius: 20px; background: var(--emerald-50); color: var(--emerald-700); white-space: nowrap; }
-        .auth-form { display: flex; flex-direction: column; gap: 16px; }
-        .field { display: flex; flex-direction: column; gap: 5px; }
-        .field span { font-size: 12px; font-weight: 600; color: var(--slate-700); }
-        .field input { padding: 12px 15px; border: 1.5px solid var(--slate-200); border-radius: var(--radius-sm); font-size: 14px; background: var(--slate-50); color: var(--slate-900); outline: none; }
-        .field input:focus { border-color: var(--emerald-500); background: #fff; box-shadow: 0 0 0 3px rgba(16,185,129,0.08); }
-        .field.hidden { display: none; }
-        .button { padding: 12px 24px; border-radius: var(--radius-sm); font-weight: 600; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: all var(--transition-bounce); }
-        .button.primary { background: var(--emerald-600); color: #fff; box-shadow: 0 4px 14px rgba(5,150,105,0.3); }
-        .button.primary:hover { background: var(--emerald-700); }
-        .button.secondary { background: #fff; color: var(--slate-700); border: 1.5px solid var(--slate-200); }
-        .app-screen { min-height: 100vh; display: flex; flex-direction: column; background: var(--slate-100); }
-        .app-screen.hidden, .auth-screen.hidden { display: none; }
-        .topbar { background: #fff; border-bottom: 1px solid var(--slate-200); padding: 0 28px; height: 64px; display: flex; align-items: center; gap: 24px; position: sticky; top: 0; z-index: 100; box-shadow: var(--shadow-xs); flex-shrink: 0; }
-        .brand-block { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-        .brand-mark { width: 38px; height: 38px; border-radius: var(--radius-xs); background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-weight: 800; font-size: 16px; color: #fff; }
-        .brand-block .brand-kicker { color: var(--slate-900); font-size: 13px; font-weight: 700; }
-        .brand-block .brand-title { color: var(--slate-500); font-size: 10px; font-weight: 500; }
-        .page-nav { display: flex; gap: 4px; background: var(--slate-100); border-radius: var(--radius-md); padding: 4px; }
-        .nav-button { padding: 8px 18px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13px; color: var(--slate-500); }
-        .nav-button.active { background: #fff; color: var(--slate-900); box-shadow: var(--shadow-sm); }
-        .topbar-tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-        .search-field { display: flex; align-items: center; }
-        .search-field input { padding: 8px 14px; border: 1.5px solid var(--slate-200); border-radius: 20px; font-size: 13px; background: var(--slate-50); width: 200px; }
-        .search-field input:focus { border-color: var(--emerald-500); background: #fff; box-shadow: 0 0 0 3px rgba(16,185,129,0.06); width: 240px; }
-        .status-pill { font-size: 11px; font-weight: 600; padding: 5px 12px; border-radius: 20px; white-space: nowrap; }
-        .status-pill.tone-neutral { background: var(--slate-100); color: var(--slate-600); }
-        .status-pill.tone-success { background: var(--emerald-50); color: var(--emerald-700); }
-        .status-pill.tone-warning { background: #fffbeb; color: #b45309; }
-        .status-pill.tone-danger { background: var(--red-50); color: var(--red-600); }
-        .status-pill.tone-info { background: var(--blue-50); color: var(--blue-700); }
-        .feedback-banner { padding: 12px 28px; font-size: 13px; font-weight: 600; text-align: center; border-bottom: 1px solid transparent; animation: slideDown 0.3s ease; }
-        .feedback-banner.hidden { display: none; }
-        .feedback-banner.success { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
-        .feedback-banner.error { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
-        .feedback-banner.info { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-        .workspace { flex: 1; padding: 24px 28px; overflow-y: auto; }
-        .page.hidden { display: none; }
-        .dashboard-grid { display: grid; gap: 18px; }
-        .operations-grid { grid-template-columns: repeat(4, 1fr); }
-        .financial-grid { grid-template-columns: repeat(3, 1fr); }
-        .executive-grid { grid-template-columns: repeat(3, 1fr); }
-        .panel { background: #fff; border-radius: var(--radius-lg); padding: 20px 22px; box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 14px; }
-        .panel-head { display: flex; flex-direction: column; gap: 4px; }
-        .panel-head h2 { font-family: var(--font-heading); font-weight: 700; font-size: 1.05rem; line-height: 1.2; letter-spacing: -0.02em; color: var(--slate-900); }
-        .panel-stretch { grid-column: span 1; }
-        .panel-top { grid-column: span 2; }
-        .map-panel { grid-column: span 2; grid-row: span 2; }
-        .metric-panel { grid-column: span 2; }
-        .dashboard-hero { grid-column: 1 / -1; display: flex; gap: 24px; padding: 28px; border-radius: var(--radius-xl); }
-        .hero-operations { background: linear-gradient(135deg, #f0fdf6 0%, #f8fafc 40%, #fff 100%); border: 1px solid #d1fae5; }
-        .hero-financial { background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 40%, #fff 100%); border: 1px solid #dbeafe; }
-        .hero-executive { background: linear-gradient(135deg, #fefce8 0%, #f8fafc 40%, #fff 100%); border: 1px solid #fef08a; }
-        .dashboard-hero-copy { flex: 1; display: flex; flex-direction: column; gap: 8px; }
-        .dashboard-hero-copy h2 { font-family: var(--font-heading); font-weight: 700; font-size: 1.5rem; }
-        .hero-copy { font-size: 13px; color: var(--slate-500); }
-        .hero-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-        .hero-pill { font-size: 11px; font-weight: 600; padding: 5px 12px; border-radius: 20px; background: #fff; color: var(--slate-700); border: 1px solid var(--slate-200); }
-        .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-        .metric-card { background: var(--slate-50); border-radius: var(--radius-md); padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--slate-100); }
-        .metric-label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate-500); }
-        .metric-value { font-family: var(--font-heading); font-weight: 700; font-size: 1.5rem; color: var(--slate-900); }
-        .metric-sub { font-size: 11px; color: var(--slate-400); }
-        .status-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-        .status-board-card { background: var(--slate-50); border-radius: var(--radius-md); padding: 14px 16px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--slate-100); font-size: 13px; font-weight: 600; color: var(--slate-700); }
-        .status-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-flex; }
-        .status-dot.tone-neutral { background: var(--slate-400); }
-        .status-dot.tone-success { background: var(--emerald-500); }
-        .status-dot.tone-warning { background: var(--amber-500); }
-        .status-dot.tone-danger { background: var(--red-500); }
-        .status-dot.tone-info { background: var(--blue-500); }
-        .status-count { margin-left: auto; font-family: var(--font-heading); font-weight: 700; font-size: 1rem; color: var(--slate-900); }
-        .scroll-area { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-        .list-stack { gap: 6px; }
-        .compact-list { display: flex; flex-direction: column; gap: 6px; }
-        .list-item { background: var(--slate-50); border-radius: var(--radius-sm); padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid transparent; cursor: pointer; font-size: 13px; }
-        .list-item:hover { background: #fff; border-color: var(--slate-200); }
-        .list-item.selected { background: #f0fdf6; border-color: #a7f3d0; }
-        .list-item-id { font-weight: 700; color: var(--slate-900); font-family: var(--font-heading); }
-        .list-item-meta { font-size: 11px; color: var(--slate-500); }
-        .list-item-value { font-weight: 700; color: var(--emerald-700); }
-        .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
-        .chip { font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 20px; background: var(--slate-100); color: var(--slate-600); cursor: pointer; border: 1px solid transparent; }
-        .chip.active { background: #f0fdf6; color: var(--emerald-700); border-color: #a7f3d0; }
-        .chip:disabled, .button:disabled { cursor: not-allowed; opacity: 0.55; }
-        .detail-card { background: var(--slate-50); border-radius: var(--radius-md); border: 1px solid var(--slate-100); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
-        .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-        .detail-grid > div { background: #fff; border-radius: var(--radius-sm); border: 1px solid var(--slate-100); padding: 10px 12px; }
-        .detail-grid strong { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate-500); margin-bottom: 4px; }
-        .detail-grid p { font-size: 13px; color: var(--slate-800); line-height: 1.45; }
-        .summary-stack { display: flex; flex-direction: column; gap: 10px; }
-        .empty-state { padding: 12px; font-size: 12px; color: var(--slate-400); }
-        .map-canvas { border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--slate-200); background: var(--slate-50); }
-        .leaflet-container { font-family: var(--font-body); }
-        @media (max-width: 1400px) { .operations-grid { grid-template-columns: repeat(3, 1fr); } .map-panel { grid-column: span 2; } }
-        @media (max-width: 1100px) { .auth-screen { flex-direction: column; } .operations-grid { grid-template-columns: repeat(2, 1fr); } .topbar { flex-wrap: wrap; height: auto; padding: 14px 20px; } .topbar-tools { width: 100%; justify-content: flex-start; margin-left: 0; flex-wrap: wrap; } .financial-grid, .executive-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 700px) { .operations-grid, .financial-grid, .executive-grid, .detail-grid, .status-board { grid-template-columns: 1fr; } .map-panel, .metric-panel, .panel-top { grid-column: span 1; } .auth-card { min-width: 0; } }
-    </style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      overflow: hidden;
+      font-family: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    h1,
+    h2,
+    h3,
+    strong {
+      margin: 0;
+      font-family: 'Sora', system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .admin-auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(15, 23, 42, 0.42);
+      backdrop-filter: blur(14px);
+    }
+
+    .admin-auth-card {
+      width: min(520px, 100%);
+      padding: 28px;
+      display: grid;
+      gap: 18px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .admin-auth-card h2 {
+      font-size: 1.5rem;
+      color: var(--ink);
+    }
+
+    .admin-auth-tabs,
+    .admin-auth-actions,
+    .admin-inline-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .admin-auth-actions {
+      display: grid;
+    }
+
+    .app-shell {
+      height: 100vh;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: var(--sidebar) minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .sidebar {
+      min-width: 0;
+      height: 100vh;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      overflow: auto;
+      background: #101b29;
+      color: #dbe8f4;
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      z-index: 30;
+    }
+
+    .brand {
+      padding: 6px 4px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .brand-mark {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: var(--radius);
+      background: var(--green);
+      color: #fff;
+      font-weight: 900;
+    }
+
+    .brand small {
+      display: block;
+      margin-top: 2px;
+      color: #91a6bb;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .nav-section {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-title {
+      padding: 0 10px;
+      color: #7f95aa;
+      font-size: 0.72rem;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .nav-link {
+      width: 100%;
+      min-height: 46px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      border-radius: var(--radius);
+      color: #b7c7d7;
+      background: transparent;
+      font-weight: 850;
+      text-align: left;
+      transition: background 150ms ease, color 150ms ease;
+    }
+
+    .nav-link:hover,
+    .nav-link.active {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .nav-link.active {
+      box-shadow: inset 3px 0 0 var(--green);
+    }
+
+    .nav-icon {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.08);
+      color: #e9f7ef;
+      font-size: 0.78rem;
+      font-weight: 900;
+    }
+
+    .sidebar-card {
+      margin-top: auto;
+      padding: 14px;
+      display: grid;
+      gap: 9px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .sidebar-lookup {
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .sidebar-lookup label {
+      color: #f7fbff;
+      font-size: 0.72rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .sidebar-lookup-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    .sidebar-lookup input {
+      width: 100%;
+      min-width: 0;
+      height: 40px;
+      padding: 0 11px;
+      border-radius: var(--radius);
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      outline: 0;
+      font-weight: 800;
+    }
+
+    .sidebar-lookup input::placeholder {
+      color: #7f95aa;
+    }
+
+    .sidebar-lookup button {
+      min-width: 52px;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      color: #fff;
+      background: var(--green);
+      font-weight: 1000;
+    }
+
+    .sidebar-lookup p {
+      color: #a9bbcd;
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .sidebar-card p,
+    .sidebar-card a {
+      color: #a9bbcd;
+      line-height: 1.5;
+      font-size: 0.86rem;
+    }
+
+    .sidebar-card a {
+      font-weight: 800;
+    }
+
+    .main-shell {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: var(--topbar) minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .topbar {
+      min-width: 0;
+      height: var(--topbar);
+      padding: 0 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line-soft);
+      box-shadow: var(--shadow-xs);
+      z-index: 20;
+    }
+
+    .page-title {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .page-title h1 {
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 1.12rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .page-title p {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 0.86rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .topbar-actions {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .search {
+      width: min(340px, 32vw);
+      min-width: 220px;
+      height: 42px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-xs);
+      color: var(--muted);
+    }
+
+    .search input {
+      min-width: 0;
+      flex: 1;
+      border: 0;
+      outline: 0;
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .pill {
+      min-height: 30px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: var(--radius);
+      font-size: 0.76rem;
+      font-weight: 900;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .pill.success { color: var(--green-dark); background: var(--green-soft); }
+    .pill.warning { color: #8a5b00; background: var(--amber-soft); }
+    .pill.info { color: #1d4ed8; background: var(--blue-soft); }
+    .pill.danger { color: #be123c; background: var(--red-soft); }
+    .pill.neutral { color: var(--ink-soft); background: var(--surface-muted); }
+    .pill.purple { color: var(--purple); background: var(--purple-soft); }
+
+    .btn {
+      min-height: 40px;
+      padding: 0 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: var(--radius);
+      font-weight: 900;
+      line-height: 1;
+      white-space: nowrap;
+      transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn.primary {
+      color: #fff;
+      background: var(--green);
+      box-shadow: 0 10px 22px rgba(15, 159, 110, 0.2);
+    }
+
+    .btn.dark {
+      color: #fff;
+      background: var(--ink);
+    }
+
+    .btn.soft {
+      color: var(--ink-soft);
+      background: var(--surface);
+      border: 1px solid var(--line);
+    }
+
+    .admin-auth-tabs .btn.active {
+      color: #fff;
+      background: var(--green);
+      border-color: var(--green);
+    }
+
+    .mobile-menu {
+      display: none;
+      width: fit-content;
+      margin-bottom: 6px;
+    }
+
+    .content {
+      min-width: 0;
+      min-height: 0;
+      padding: 22px;
+      overflow: auto;
+    }
+
+    @media (min-width: 1281px) {
+      .content.has-drawer {
+        padding-right: calc(var(--drawer) + 42px);
+      }
+    }
+
+    .section {
+      display: none;
+      min-width: 0;
+    }
+
+    .section.active {
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      min-width: 0;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .hero h2 {
+      margin: 6px 0 8px;
+      color: var(--ink);
+      font-size: clamp(1.25rem, 1.7vw, 1.8rem);
+      line-height: 1.14;
+    }
+
+    .hero p {
+      max-width: 76ch;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 0.93rem;
+    }
+
+    .hero-meta,
+    .admin-inline-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .hero-meta {
+      margin-top: 14px;
+    }
+
+    .hero-card {
+      width: 300px;
+      padding: 16px;
+      display: grid;
+      gap: 11px;
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      border: 1px solid var(--line-soft);
+    }
+
+    .hero-card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--ink-soft);
+      font-weight: 850;
+    }
+
+    .grid,
+    .list-stack,
+    .detail-list {
+      min-width: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid.kpi {
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    }
+
+    .grid.two {
+      grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card,
+    .kpi-card,
+    .service-card,
+    .staff-card {
+      min-width: 0;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .card-head,
+    .list-head {
+      min-width: 0;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .card h3,
+    .service-card h3,
+    .staff-card h3 {
+      margin-top: 4px;
+      color: var(--ink);
+      font-size: 1rem;
+      line-height: 1.25;
+    }
+
+    .eyebrow {
+      color: var(--green-dark);
+      font-size: 0.7rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .muted,
+    .mini {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .muted {
+      font-size: 0.88rem;
+    }
+
+    .mini {
+      font-size: 0.78rem;
+    }
+
+    .kpi-card {
+      min-height: 124px;
+      padding: 18px;
+      display: grid;
+      align-content: space-between;
+      gap: 12px;
+    }
+
+    .kpi-label {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .kpi-value {
+      color: var(--ink);
+      font-size: clamp(1.35rem, 2vw, 1.9rem);
+      font-weight: 900;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+
+    .kpi-note {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+
+    .service-grid,
+    .staff-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 14px;
+    }
+
+    .service-card,
+    .staff-card {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .service-icon,
+    .avatar {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: var(--radius);
+      background: var(--green-soft);
+      color: var(--green-dark);
+      font-weight: 1000;
+    }
+
+    .service-card p {
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.88rem;
+    }
+
+    .service-footer {
+      padding-top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-top: 1px solid var(--line-soft);
+      color: var(--ink-soft);
+      font-size: 0.84rem;
+      font-weight: 900;
+    }
+
+    .table-wrap {
+      max-width: 100%;
+      overflow: auto;
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+    }
+
+    table {
+      width: 100%;
+      min-width: 860px;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    th {
+      color: var(--muted);
+      background: var(--surface-soft);
+      font-size: 0.72rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    td {
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+    }
+
+    tbody tr {
+      cursor: pointer;
+    }
+
+    tbody tr:hover {
+      background: #fbfdff;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .order-id {
+      color: var(--ink);
+      font-weight: 1000;
+    }
+
+    .person {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .person strong {
+      color: var(--ink);
+      font-family: 'Manrope', system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .map-placeholder {
+      min-height: 330px;
+      position: relative;
+      overflow: hidden;
+      border-radius: var(--radius);
+      background:
+        linear-gradient(90deg, rgba(37, 99, 235, 0.08) 1px, transparent 1px),
+        linear-gradient(rgba(15, 159, 110, 0.08) 1px, transparent 1px),
+        #eef6f8;
+      background-size: 54px 54px, 54px 54px, cover;
+      border: 1px solid var(--line);
+    }
+
+    .map-route {
+      position: absolute;
+      left: 12%;
+      top: 48%;
+      width: 74%;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--blue);
+      transform: rotate(-8deg);
+    }
+
+    .map-pin {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: #fff;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .map-pin span {
+      font-weight: 1000;
+    }
+
+    .pin-a { left: 12%; top: 52%; background: var(--green); }
+    .pin-b { right: 14%; top: 31%; background: var(--blue); }
+    .pin-c { left: 48%; top: 24%; background: var(--amber); }
+
+    .map-panel-caption {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      width: min(370px, calc(100% - 32px));
+      padding: 14px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .map-meta-grid {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .map-meta-chip {
+      width: fit-content;
+      max-width: 100%;
+      padding: 7px 9px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: var(--radius);
+      color: var(--ink-soft);
+      background: var(--surface-soft);
+      border: 1px solid var(--line-soft);
+      font-size: 0.78rem;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .list-card {
+      width: 100%;
+      min-width: 0;
+      padding: 13px;
+      display: grid;
+      gap: 9px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line-soft);
+      background: var(--surface-soft);
+      color: inherit;
+      text-align: left;
+    }
+
+    button.list-card:hover {
+      background: #fff;
+      border-color: var(--line);
+    }
+
+    .list-head strong,
+    .list-head span,
+    .list-card p {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .progress {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--surface-muted);
+    }
+
+    .progress span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--green);
+    }
+
+    .order-drawer {
+      position: fixed;
+      top: calc(var(--topbar) + 18px);
+      right: 18px;
+      bottom: 18px;
+      width: var(--drawer);
+      z-index: 25;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .drawer-head {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--surface-soft);
+    }
+
+    .drawer-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .drawer-close {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: var(--radius);
+      background: var(--surface-muted);
+      color: var(--ink-soft);
+      font-weight: 1000;
+    }
+
+    .drawer-body {
+      min-height: 0;
+      padding: 16px 18px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      overflow: auto;
+    }
+
+    .drawer-section {
+      display: grid;
+      gap: 10px;
+    }
+
+    .drawer-section-title {
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .detail-row {
+      padding: 12px;
+      display: grid;
+      gap: 4px;
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      border: 1px solid var(--line-soft);
+    }
+
+    .detail-row label {
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 1000;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .detail-row p {
+      color: var(--ink);
+      font-weight: 800;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .drawer-actions {
+      padding: 14px 18px 18px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      border-top: 1px solid var(--line-soft);
+      background: var(--surface);
+    }
+
+    .drawer-actions .primary {
+      grid-column: 1 / -1;
+    }
+
+    .quick-grid {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .quick-card {
+      min-width: 0;
+      padding: 12px;
+      display: grid;
+      gap: 5px;
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      border: 1px solid var(--line-soft);
+    }
+
+    .quick-card span {
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 900;
+    }
+
+    .quick-card strong {
+      color: var(--ink);
+      font-size: 1rem;
+      overflow-wrap: anywhere;
+    }
+
+    .timeline {
+      position: relative;
+      display: grid;
+      gap: 14px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .dot {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--green);
+      font-size: 0.78rem;
+      font-weight: 1000;
+    }
+
+    .dot.pending {
+      background: #94a3b8;
+    }
+
+    .timeline-body {
+      min-width: 0;
+    }
+
+    .timeline-body strong {
+      display: block;
+      color: var(--ink);
+      font-size: 0.9rem;
+    }
+
+    .timeline-body p {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 0.83rem;
+      line-height: 1.45;
+    }
+
+    .avatar-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .avatar {
+      color: #fff;
+      background: var(--blue);
+    }
+
+    .form-grid {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 13px;
+    }
+
+    .field {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+    }
+
+    .field label {
+      color: var(--ink-soft);
+      font-size: 0.82rem;
+      font-weight: 900;
+      line-height: 1.35;
+    }
+
+    .field input,
+    .field select,
+    .field textarea {
+      width: 100%;
+      min-height: 42px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--ink);
+      outline: 0;
+    }
+
+    .field textarea {
+      min-height: 92px;
+      padding-top: 11px;
+      resize: vertical;
+    }
+
+    .field small,
+    .admin-helper-text {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .span-2 {
+      grid-column: span 2;
+    }
+
+    .empty-state {
+      padding: 14px;
+      border-radius: var(--radius);
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      background: var(--surface-soft);
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 1280px) {
+      .grid.two,
+      .grid.three {
+        grid-template-columns: 1fr;
+      }
+
+      .order-drawer {
+        top: auto;
+        left: 18px;
+        right: 18px;
+        bottom: 18px;
+        width: auto;
+        max-height: 78vh;
+      }
+    }
+
+    @media (max-width: 980px) {
+      body {
+        overflow: auto;
+      }
+
+      .app-shell {
+        height: auto;
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+        overflow: visible;
+      }
+
+      .sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: min(300px, 86vw);
+        transform: translateX(-105%);
+        transition: transform 180ms ease;
+        box-shadow: var(--shadow-lg);
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .mobile-menu {
+        display: inline-flex;
+      }
+
+      .main-shell {
+        min-height: 100vh;
+      }
+
+      .topbar {
+        height: auto;
+        min-height: var(--topbar);
+        grid-template-columns: 1fr;
+        align-items: start;
+        padding: 14px;
+      }
+
+      .topbar-actions {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .search {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .page-title h1,
+      .page-title p {
+        white-space: normal;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-card {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .content {
+        padding: 14px;
+      }
+
+      .grid.kpi,
+      .service-grid,
+      .staff-grid,
+      .quick-grid,
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .span-2 {
+        grid-column: auto;
+      }
+
+      .drawer-actions {
+        grid-template-columns: 1fr;
+      }
+
+      .order-drawer {
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        max-height: 84vh;
+      }
+    }
+  </style>
 </head>
 <body>
-    <div class="site-shell">
-        <!-- Auth Screen -->
-        <section id="authScreen" class="auth-screen">
-            <div class="auth-hero">
-                <div class="auth-brand-row">
-                    <div class="auth-brand-mark">DD</div>
-                    <div>
-                        <p class="brand-kicker">DoorDrop</p>
-                        <p class="brand-title">Admin Dashboards</p>
-                    </div>
-                </div>
-                <div class="auth-copy-block">
-                    <p class="eyebrow">Control Center</p>
-                    <h1>Bring back the full DoorDrop admin command center.</h1>
-                    <p class="auth-copy">Monitor dispatch, revenue, customers, and fleet movement from one workspace.</p>
-                </div>
-            </div>
-            <div class="auth-card">
-                <div class="auth-mode-row">
-                    <button id="loginModeButton" class="mode-button active">Login</button>
-                    <button id="registerModeButton" class="mode-button">Register</button>
-                </div>
-                <div class="auth-heading">
-                    <p class="eyebrow">Access</p>
-                    <h2 id="authTitle">Sign in to DoorDrop admin</h2>
-                    <p id="authSubtitle" class="helper-copy">Enter your Firebase email and password.</p>
-                </div>
-                <section id="authFeedback" class="feedback-banner hidden"></section>
-                <div class="auth-trust-row">
-                    <span class="mini-badge">Firebase auth</span>
-                    <span class="mini-badge">Live Firestore</span>
-                </div>
-                <form id="authForm" class="auth-form">
-                    <label id="nameField" class="field hidden">
-                        <span>Full name</span>
-                        <input id="nameInput" type="text" placeholder="Admin name" autocomplete="name" />
-                    </label>
-                    <label class="field">
-                        <span>Email address</span>
-                        <input id="emailInput" type="email" placeholder="admin@doordrop.com" autocomplete="email" required />
-                    </label>
-                    <label class="field">
-                        <span>Password</span>
-                        <input id="passwordInput" type="password" placeholder="Enter your password" autocomplete="current-password" required />
-                    </label>
-                    <label id="confirmField" class="field hidden">
-                        <span>Confirm password</span>
-                        <input id="confirmPasswordInput" type="password" placeholder="Repeat password" autocomplete="new-password" />
-                    </label>
-                    <button id="authSubmitButton" class="button primary" type="submit">Sign in</button>
-                </form>
-                <p id="authNote" class="helper-copy">Switch to register if you need a new account.</p>
-            </div>
-        </section>
-
-        <!-- App Screen -->
-        <section id="appScreen" class="app-screen hidden">
-            <header class="topbar">
-                <div class="brand-block">
-                    <div class="brand-mark">DD</div>
-                    <div>
-                        <p class="brand-kicker">DoorDrop</p>
-                        <p class="brand-title">Admin Dashboards</p>
-                    </div>
-                </div>
-                <nav class="page-nav">
-                    <button class="nav-button active" data-page="operations">Orders</button>
-                    <button class="nav-button" data-page="history">History</button>
-                    <button class="nav-button" data-page="data">Data</button>
-                </nav>
-                <div class="topbar-tools">
-                    <label class="search-field">
-                        <input id="searchInput" type="text" placeholder="Search..." />
-                    </label>
-                    <div id="syncBadge" class="status-pill tone-neutral">Syncing...</div>
-                    <div id="userBadge" class="status-pill tone-success hidden"></div>
-                    <button id="signOutButton" class="button secondary">Sign out</button>
-                </div>
-            </header>
-            <section id="feedbackBanner" class="feedback-banner hidden"></section>
-            <main class="workspace">
-                <!-- Orders Page -->
-                <section id="operationsPage" class="page">
-                    <div class="dashboard-grid operations-grid">
-                        <section class="panel dashboard-hero hero-operations">
-                            <div class="dashboard-hero-copy">
-                                <p class="eyebrow">Orders Dashboard</p>
-                                <h2>Live dispatch command center</h2>
-                                <p id="overviewSummary" class="hero-copy"></p>
-                                <div id="overviewPills" class="hero-pills"></div>
-                            </div>
-                        </section>
-                        <section class="panel metric-panel panel-top">
-                            <div class="panel-head"><p class="eyebrow">Pulse</p><h2>Dispatch KPIs</h2></div>
-                            <div id="overviewMetrics" class="metric-grid compact"></div>
-                        </section>
-                        <section class="panel panel-stretch map-panel">
-                            <div class="panel-head"><p class="eyebrow">Live map</p><h2>Operations floor</h2></div>
-                            <div id="operationsMap" class="map-canvas" style="height:350px;"></div>
-                            <div id="operationsMapLegend"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Status board</p><h2>Order breakdown</h2></div>
-                            <div id="statusBoard" class="status-board"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Queue</p><h2>Assignment</h2></div>
-                            <div id="assignmentFilters" class="chip-row"></div>
-                            <div id="assignmentOrders" class="scroll-area list-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Selected order</p><h2>Details & progress</h2></div>
-                            <div id="selectedOrderDetails" class="scroll-area detail-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Drivers</p><h2>Assignable riders</h2></div>
-                            <div id="assignmentDrivers" class="scroll-area list-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Priority</p><h2>Needs attention</h2></div>
-                            <div id="priorityOrders" class="scroll-area compact-list"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Ready riders</p><h2>Available fleet</h2></div>
-                            <div id="readyDrivers" class="scroll-area compact-list"></div>
-                        </section>
-                    </div>
-                </section>
-
-                <!-- History Page -->
-                <section id="historyPage" class="page hidden">
-                    <div class="dashboard-grid financial-grid">
-                        <section class="panel dashboard-hero hero-financial">
-                            <div class="dashboard-hero-copy">
-                                <p class="eyebrow">History Dashboard</p>
-                                <h2>Completed & cancelled orders</h2>
-                                <p id="historySummary" class="hero-copy"></p>
-                                <div id="historyPills" class="hero-pills"></div>
-                            </div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Metrics</p><h2>Outcomes</h2></div>
-                            <div id="historyMetrics" class="metric-grid compact"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Recent history</p><h2>Delivered & cancelled</h2></div>
-                            <div id="historyList" class="scroll-area list-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Insights</p><h2>Key highlights</h2></div>
-                            <div id="historyInsights" class="summary-stack"></div>
-                        </section>
-                    </div>
-                </section>
-
-                <!-- Data Page -->
-                <section id="dataPage" class="page hidden">
-                    <div class="dashboard-grid executive-grid">
-                        <section class="panel dashboard-hero hero-executive">
-                            <div class="dashboard-hero-copy">
-                                <p class="eyebrow">Data Dashboard</p>
-                                <h2>Business intelligence</h2>
-                                <p id="dataSummary" class="hero-copy"></p>
-                                <div id="dataPills" class="hero-pills"></div>
-                            </div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">KPIs</p><h2>Company-wide</h2></div>
-                            <div id="dataMetrics" class="metric-grid compact"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Revenue</p><h2>Money at a glance</h2></div>
-                            <div id="overviewRevenue" class="summary-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Activity</p><h2>Business movement</h2></div>
-                            <div id="overviewActivity" class="summary-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Services</p><h2>Performance</h2></div>
-                            <div id="dataServices" class="scroll-area summary-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Customers</p><h2>Recent activity</h2></div>
-                            <div id="dataCustomers" class="scroll-area list-stack"></div>
-                        </section>
-                        <section class="panel panel-stretch">
-                            <div class="panel-head"><p class="eyebrow">Fleet</p><h2>Driver readiness</h2></div>
-                            <div id="dataFleet" class="scroll-area list-stack"></div>
-                        </section>
-                    </div>
-                </section>
-            </main>
-        </section>
+  <div class="admin-auth-overlay" id="authScreen">
+    <div class="admin-auth-card">
+      <span class="eyebrow">Admin access</span>
+      <h2>doordrop command center</h2>
+      <p class="muted">Sign in with the doordrop admin Firebase account.</p>
+      <div class="admin-auth-tabs">
+        <button class="btn soft active" id="loginModeButton" type="button" data-keep-enabled="true">Sign in</button>
+      </div>
+      <form id="authForm" class="form-grid">
+        <div class="field span-2">
+          <label for="emailInput">Email address</label>
+          <input id="emailInput" name="email" type="email" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="passwordInput">Password</label>
+          <input id="passwordInput" name="password" type="password" autocomplete="current-password" required />
+        </div>
+        <div class="span-2 admin-auth-actions">
+          <button class="btn primary" id="authSubmitButton" type="submit" data-keep-enabled="true">Sign in</button>
+          <p class="mini">Access is limited to the approved doordrop admin email.</p>
+        </div>
+      </form>
     </div>
+  </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script type="module" src="app.js"></script>
+  <div class="app-shell hidden" id="appScreen">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">DD</div>
+        <div>
+          <strong>doordrop</strong>
+          <small>Admin workspace</small>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <p class="nav-title">Operations</p>
+        <button class="nav-link active" data-section="dashboard"><span class="nav-icon">DB</span>Dashboard</button>
+        <button class="nav-link" data-section="orders"><span class="nav-icon">OR</span>Orders</button>
+        <button class="nav-link" data-section="dispatch"><span class="nav-icon">LD</span>Live Dispatch</button>
+        <button class="nav-link" data-section="services"><span class="nav-icon">SV</span>Services</button>
+      </div>
+
+      <div class="nav-section">
+        <p class="nav-title">Business</p>
+        <button class="nav-link" data-section="customers"><span class="nav-icon">CU</span>Customers</button>
+        <button class="nav-link" data-section="drivers"><span class="nav-icon">DV</span>Driver Verification</button>
+        <button class="nav-link" data-section="payments"><span class="nav-icon">SB</span>Subscriptions</button>
+        <button class="nav-link" data-section="finance"><span class="nav-icon">FN</span>Finance</button>
+        <button class="nav-link" data-section="history"><span class="nav-icon">HS</span>History</button>
+        <button class="nav-link" data-section="data"><span class="nav-icon">DT</span>Data</button>
+        <button class="nav-link" data-section="reports"><span class="nav-icon">RP</span>Reports</button>
+        <button class="nav-link" data-section="settings"><span class="nav-icon">ST</span>Settings</button>
+      </div>
+
+      <form class="sidebar-lookup" data-form="order-lookup" autocomplete="off">
+        <label for="sidebarOrderLookup">Order lookup</label>
+        <div class="sidebar-lookup-row">
+          <input id="sidebarOrderLookup" name="orderLookupId" type="text" placeholder="DD-ABC123 or ID" />
+          <button type="submit">Find</button>
+        </div>
+        <p>Sender, recipient, route, driver, status, payment, and timing details.</p>
+      </form>
+
+      <div class="sidebar-card">
+        <span class="pill success">System online</span>
+        <strong>Clean page mode</strong>
+        <p>Choose a sidebar item to open one focused admin page.</p>
+        <a href="./terms/index.html">Terms</a>
+        <a href="./privacy.html">Privacy</a>
+      </div>
+    </aside>
+
+    <section class="main-shell">
+      <header class="topbar">
+        <div class="page-title">
+          <button class="btn soft mobile-menu" id="menuButton" type="button">Menu</button>
+          <h1 id="pageTitle">Dashboard Overview</h1>
+          <p id="pageSubtitle">Monitor doordrop operations, drivers, customers, revenue, and service performance.</p>
+        </div>
+        <div class="topbar-actions">
+          <label class="search">Search <input type="search" placeholder="Order, customer, driver..." /></label>
+          <span class="pill success">Syncing...</span>
+          <span class="pill neutral">Access locked</span>
+          <button class="btn soft" id="signOutButton" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content" id="content"></main>
+
+      <aside class="order-drawer" id="orderDrawer" style="display: none"></aside>
+    </section>
+  </div>
+
+  <script src="./firebase-config.local.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

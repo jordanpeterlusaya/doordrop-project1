@@ -9,10 +9,13 @@ import { cargoTheme } from '@/constants/cargo-theme';
 import {
   formatDeliveryDateTime,
   getDeliveryOrderStatusLabel,
+  hasDeliveryOrderRating,
   subscribeToUserOrders,
   type DeliveryOrder,
 } from '@/lib/delivery-data';
 import { useAuthSession } from '@/providers/auth-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
 
 const filters = ['All', 'Parcel', 'Cargo'] as const;
 
@@ -160,6 +163,18 @@ function HistoryScreenContent() {
               <Text style={styles.orderMeta}>
                 {order.orderNumber} • {formatDeliveryDateTime(order.createdAt)}
               </Text>
+              {order.status === 'delivered' ? (
+                <View style={styles.orderRatingRow}>
+                  <MaterialCommunityIcons
+                    name={hasDeliveryOrderRating(order) ? 'star' : 'star-outline'}
+                    size={14}
+                    color="#F59E0B"
+                  />
+                  <Text style={styles.orderRatingText}>
+                    {hasDeliveryOrderRating(order) ? `${order.customerRating}/5 customer rating saved` : 'Tap to rate this completed delivery'}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           </View>
           <View style={styles.orderTrailing}>
@@ -300,6 +315,18 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#94A3B8',
+  },
+  orderRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  orderRatingText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: cargoTheme.colors.primaryDark,
+    fontWeight: '700',
   },
   orderTrailing: {
     alignItems: 'flex-end',

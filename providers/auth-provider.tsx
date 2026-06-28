@@ -1,7 +1,7 @@
 import { FirebaseError } from 'firebase/app';
 import type { User } from 'firebase/auth';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Platform } from 'react-native';
+import { InteractionManager, Platform } from 'react-native';
 import {
   createUserWithEmailAndPassword,
   getRedirectResult,
@@ -15,6 +15,7 @@ import {
 } from 'firebase/auth';
 
 import { getFirebaseAuthErrorMessage } from '@/lib/auth-errors';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
 import { getUserProfile, recordUserAppOpen, type UserProfile, upsertUserProfile } from '@/lib/user-profile';
 
@@ -43,6 +44,7 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 const NATIVE_GOOGLE_AUTH_MESSAGE =
   'Google sign-in is not available in this APK yet. Use email and password while native Google setup is completed.';
+const authScope = 'AuthProvider';
 const fallbackAuthContextValue: AuthContextValue = {
   authError: '',
   authMethod: 'guest',
@@ -117,12 +119,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const hydrateProfile = useCallback(async (nextUser: User) => {
+    logAsyncStart(authScope, 'hydrateProfile', { uid: nextUser.uid });
     setProfileLoading(true);
 
     try {
       const nextProfile = await getUserProfile(nextUser.uid);
       setProfile(nextProfile ?? buildFallbackProfile(nextUser));
-    } catch {
+      logAsyncSuccess(authScope, 'hydrateProfile', {
+        uid: nextUser.uid,
+        profileFound: Boolean(nextProfile),
+      });
+    } catch (error) {
+      logAsyncFailure(authScope, 'hydrateProfile', error, { uid: nextUser.uid });
       setProfile((currentProfile) =>
         currentProfile?.uid === nextUser.uid ? currentProfile : buildFallbackProfile(nextUser)
       );
@@ -132,6 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const trackAppOpen = useCallback(async (nextUser: User) => {
+    logAsyncStart(authScope, 'trackAppOpen', { uid: nextUser.uid });
     try {
       await recordUserAppOpen({
         uid: nextUser.uid,
@@ -140,12 +149,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         phoneNumber: nextUser.phoneNumber || '',
         phoneVerified: false,
       });
-    } catch {
+      logAsyncSuccess(authScope, 'trackAppOpen', { uid: nextUser.uid });
+    } catch (error) {
+      logAsyncFailure(authScope, 'trackAppOpen', error, { uid: nextUser.uid });
       return;
     }
   }, []);
 
   const syncGoogleProfile = useCallback(async (nextUser: User) => {
+    logAsyncStart(authScope, 'syncGoogleProfile', { uid: nextUser.uid });
     await upsertUserProfile({
       uid: nextUser.uid,
       fullName: nextUser.displayName?.trim() || 'DoorDrop User',
@@ -153,6 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       phoneNumber: nextUser.phoneNumber || '',
       phoneVerified: false,
     });
+    logAsyncSuccess(authScope, 'syncGoogleProfile', { uid: nextUser.uid });
   }, []);
 
   const syncEmailProfile = useCallback(
@@ -162,6 +175,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: string;
       phoneNumber: string;
     }) => {
+      logAsyncStart(authScope, 'syncEmailProfile', { uid: input.uid });
       await upsertUserProfile({
         uid: input.uid,
         fullName: input.fullName.trim() || 'DoorDrop User',
@@ -169,12 +183,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         phoneNumber: input.phoneNumber.trim(),
         phoneVerified: false,
       });
+      logAsyncSuccess(authScope, 'syncEmailProfile', { uid: input.uid });
     },
     []
   );
 
   useEffect(() => {
     let active = true;
+    let appOpenTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    let appOpenInteractionTask: ReturnType<typeof InteractionManager.runAfterInteractions> | undefined;
+
+    const scheduleTrackAppOpen = (nextUser: User) => {
+      appOpenInteractionTask?.cancel();
+      if (appOpenTimeoutId) {
+        clearTimeout(appOpenTimeoutId);
+      }
+
+      appOpenInteractionTask = InteractionManager.runAfterInteractions(() => {
+        appOpenTimeoutId = setTimeout(() => {
+          if (!active || auth.currentUser?.uid !== nextUser.uid) {
+            return;
+          }
+
+          void trackAppOpen(nextUser);
+        }, 1800);
+      });
+    };
 
     const unsubscribe = onAuthStateChanged(
       auth,
@@ -182,6 +216,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!active) {
           return;
         }
+
+        logInfo(authScope, 'auth-state-changed', {
+          uid: nextUser?.uid ?? null,
+          authenticated: Boolean(nextUser),
+        });
 
         setUser(nextUser);
         setInitializing(false);
@@ -199,13 +238,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         );
 
         void hydrateProfile(nextUser);
-        void trackAppOpen(nextUser);
+        scheduleTrackAppOpen(nextUser);
       },
       (error) => {
         if (!active) {
           return;
         }
 
+        logAsyncFailure(authScope, 'restoreSession', error);
         setUser(null);
         setProfile(null);
         setProfileLoading(false);
@@ -217,6 +257,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       active = false;
+      appOpenInteractionTask?.cancel();
+      if (appOpenTimeoutId) {
+        clearTimeout(appOpenTimeoutId);
+      }
       unsubscribe();
     };
   }, [hydrateProfile, trackAppOpen]);
@@ -228,20 +272,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     let active = true;
 
+    logAsyncStart(authScope, 'getRedirectResult');
     void getRedirectResult(auth)
       .then(async (result) => {
         if (!active || !result?.user) {
+          logAsyncSuccess(authScope, 'getRedirectResult', { completed: false });
           return;
         }
 
         await syncGoogleProfile(result.user).catch(() => null);
         clearAuthError();
+        logAsyncSuccess(authScope, 'getRedirectResult', {
+          completed: true,
+          uid: result.user.uid,
+        });
       })
       .catch((error: unknown) => {
         if (!active) {
           return;
         }
 
+        logAsyncFailure(authScope, 'getRedirectResult', error);
         setAuthError(getAuthMessage(error, 'Google sign-in did not finish. Please try again.'));
       })
       .finally(() => {
@@ -257,26 +308,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProfile = useCallback(async () => {
     if (!auth.currentUser) {
+      logWarning(authScope, 'refreshProfile skipped without current user');
       setProfile(null);
       return;
     }
 
+    logAsyncStart(authScope, 'refreshProfile', { uid: auth.currentUser.uid });
     await hydrateProfile(auth.currentUser);
+    logAsyncSuccess(authScope, 'refreshProfile', { uid: auth.currentUser.uid });
   }, [hydrateProfile]);
 
   const signInWithGoogle = useCallback(async () => {
     if (authenticating) {
+      logWarning(authScope, 'signInWithGoogle ignored while authenticating');
       return;
     }
 
     clearAuthError();
 
     if (Platform.OS !== 'web') {
+      logWarning(authScope, 'signInWithGoogle unavailable on native build');
       setAuthError(NATIVE_GOOGLE_AUTH_MESSAGE);
       return;
     }
 
     setAuthenticating(true);
+    logAsyncStart(authScope, 'signInWithGoogle');
 
     try {
       const provider = createGoogleProvider();
@@ -285,6 +342,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const result = await signInWithPopup(auth, provider);
         await syncGoogleProfile(result.user).catch(() => null);
         clearAuthError();
+        logAsyncSuccess(authScope, 'signInWithGoogle', { uid: result.user.uid, mode: 'popup' });
       } catch (error) {
         if (
           error instanceof FirebaseError &&
@@ -292,6 +350,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             error.code === 'auth/popup-closed-by-user' ||
             error.code === 'auth/cancelled-popup-request')
         ) {
+          logInfo(authScope, 'signInWithGoogle falling back to redirect');
           await signInWithRedirect(auth, provider);
           return;
         }
@@ -299,6 +358,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw error;
       }
     } catch (error) {
+      logAsyncFailure(authScope, 'signInWithGoogle', error);
       setAuthError(getAuthMessage(error, 'Google sign-in failed. Please try again.'));
     } finally {
       setAuthenticating(false);
@@ -308,15 +368,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithEmail = useCallback(
     async (input: { email: string; password: string }) => {
       if (authenticating) {
+        logWarning(authScope, 'signInWithEmail ignored while authenticating');
         return;
       }
 
       setAuthenticating(true);
       clearAuthError();
+      logAsyncStart(authScope, 'signInWithEmail', { email: input.email.trim().toLowerCase() });
 
       try {
         await signInWithEmailAndPassword(auth, input.email.trim().toLowerCase(), input.password);
+        logAsyncSuccess(authScope, 'signInWithEmail', { email: input.email.trim().toLowerCase() });
       } catch (error) {
+        logAsyncFailure(authScope, 'signInWithEmail', error, {
+          email: input.email.trim().toLowerCase(),
+        });
         setAuthError(getAuthMessage(error, 'Sign-in failed. Please try again.'));
       } finally {
         setAuthenticating(false);
@@ -333,11 +399,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       phoneNumber: string;
     }) => {
       if (authenticating) {
+        logWarning(authScope, 'registerWithEmail ignored while authenticating');
         return;
       }
 
       setAuthenticating(true);
       clearAuthError();
+      logAsyncStart(authScope, 'registerWithEmail', { email: input.email.trim().toLowerCase() });
 
       try {
         const fullName = input.fullName.trim();
@@ -360,7 +428,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         setProfile(nextProfile);
         await syncEmailProfile(nextProfile).catch(() => null);
+        logAsyncSuccess(authScope, 'registerWithEmail', {
+          email,
+          uid: result.user.uid,
+        });
       } catch (error) {
+        logAsyncFailure(authScope, 'registerWithEmail', error, {
+          email: input.email.trim().toLowerCase(),
+        });
         setAuthError(getAuthMessage(error, 'Registration failed. Please try again.'));
       } finally {
         setAuthenticating(false);
@@ -372,7 +447,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     clearAuthError();
     setAuthenticating(false);
-    await firebaseSignOut(auth);
+    logAsyncStart(authScope, 'signOut', { uid: auth.currentUser?.uid ?? null });
+
+    try {
+      await firebaseSignOut(auth);
+      logAsyncSuccess(authScope, 'signOut');
+    } catch (error) {
+      logAsyncFailure(authScope, 'signOut', error);
+      throw error;
+    }
   }, [clearAuthError]);
 
   const value = useMemo(

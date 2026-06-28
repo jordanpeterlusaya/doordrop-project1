@@ -1,12 +1,34 @@
-import type { RoutePoint } from '@/lib/route-utils';
+import {
+  buildFrontendPricingEstimate,
+  normalizeDoorDropVehicleType,
+  type CargoSize,
+  type DoorDropPricingScope,
+  type DoorDropVehicleType,
+} from '@/lib/cargo-pricing';
+import {
+  recordDoorDropApiError,
+  recordDoorDropApiRequest,
+  recordDoorDropApiResponse,
+  syncDoorDropApiRuntimeConfig,
+} from '@/lib/api-debug';
+import { ensureDoorDropApiBaseUrl, getDoorDropApiRuntimeConfig } from '@/lib/api-config';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
+import { decodePolyline, filterValidCoordinates, getDistanceBetweenPoints, type RoutePoint } from '@/lib/route-utils';
+import { Platform } from 'react-native';
 
-const NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
+const screenScope = 'DoorDropLocationSearch';
+
+export type RouteEstimateVehicleType = DoorDropVehicleType;
+export type RouteEstimateCargoSize = CargoSize;
+export type RouteEstimatePricingScope = DoorDropPricingScope;
 
 export type LocationSuggestion = {
   id: string;
+  placeId: string;
   name: string;
   address: string;
   featureType: string;
+  fullText: string;
   coordinates?: RoutePoint;
 };
 
@@ -14,236 +36,1110 @@ export type RetrievedLocation = {
   label: string;
   address: string;
   point: RoutePoint;
+  suggestion?: LocationSuggestion;
 };
 
-type NominatimItem = {
-  place_id?: number;
-  osm_id?: number;
-  lat?: string;
-  lon?: string;
-  display_name?: string;
-  name?: string;
-  type?: string;
-  addresstype?: string;
-  address?: {
-    suburb?: string;
-    neighbourhood?: string;
-    quarter?: string;
-    city_district?: string;
-    city?: string;
-    town?: string;
-    village?: string;
-    municipality?: string;
-    county?: string;
-    state?: string;
-    country?: string;
-    road?: string;
-    house_number?: string;
+export type RouteEstimate = {
+  distanceMeters: number;
+  distanceKm: number;
+  durationSeconds: number;
+  polyline: string;
+  coordinates: RoutePoint[];
+  price?: number | null;
+  pricingEstimate?: PricingEstimate | null;
+};
+
+export type PricingEstimate = {
+  vehicleType: RouteEstimateVehicleType;
+  distanceKm: number;
+  estimatedPrice: number;
+  currency: string;
+  cargoSize?: RouteEstimateCargoSize | null;
+  cargoMultiplier?: number;
+  source?: 'backend' | 'frontend-fallback';
+  warning?: string | null;
+  pricing: {
+    baseFare: number;
+    pricePerKm: number;
+    timeBufferPerKm?: number;
+    sizeExtraRatePerKm?: number;
+    minimumFare: number;
+    rawPrice: number;
+    adjustedRawPrice?: number;
   };
 };
 
-function buildSearchUrl(params: Record<string, string | null | undefined>) {
-  const url = new URL(NOMINATIM_SEARCH_URL);
+type AutocompleteResponse = {
+  suggestions?: {
+    id?: string;
+    placeId?: string;
+    name?: string;
+    address?: string;
+    fullText?: string;
+    featureType?: string;
+    latitude?: number | string;
+    longitude?: number | string;
+    coordinates?: Partial<RoutePoint> | null;
+    placePrediction?: {
+      placeId?: string;
+      text?: {
+        text?: string;
+      } | null;
+      structuredFormat?: {
+        mainText?: {
+          text?: string;
+        } | null;
+        secondaryText?: {
+          text?: string;
+        } | null;
+      } | null;
+      types?: string[] | null;
+    } | null;
+  }[];
+};
 
-  Object.entries(params).forEach(([key, value]) => {
-    if (!value) {
-      return;
-    }
+type ResolvedPlaceResponse = {
+  id?: string;
+  placeId?: string;
+  name?: string;
+  title?: string;
+  address?: string;
+  fullText?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+  lat?: number | string;
+  lng?: number | string;
+  point?: (Partial<RoutePoint> & { lat?: number | string; lng?: number | string }) | null;
+  coordinates?: (Partial<RoutePoint> & { lat?: number | string; lng?: number | string }) | null;
+  location?: (Partial<RoutePoint> & { lat?: number | string; lng?: number | string }) | null;
+};
 
-    url.searchParams.set(key, value);
-  });
+type RawPricingEstimate = Partial<PricingEstimate> & {
+  pricing?: Partial<PricingEstimate['pricing']> | null;
+};
 
-  return url.toString();
+type RouteEstimateResponse = {
+  distanceMeters?: number;
+  distanceKm?: number;
+  distance_km?: number | string;
+  distance?: number | string;
+  km?: number | string;
+  durationSeconds?: number;
+  duration_seconds?: number | string;
+  polyline?: string;
+  coordinates?: RoutePoint[];
+  price?: number | null;
+  pricingEstimate?: RawPricingEstimate | null;
+};
+type PricingEstimateResponse = RawPricingEstimate;
+
+type FetchRouteEstimateOptions = {
+  vehicleType?: RouteEstimateVehicleType;
+  cargoSize?: RouteEstimateCargoSize;
+  pricingScope?: RouteEstimatePricingScope;
+};
+
+type DoorDropRequestDebug = {
+  kind: 'backend-health' | 'places-autocomplete' | 'place-details' | 'place-resolve' | 'routes-estimate' | 'pricing-estimate';
+  requestBody?: unknown;
+};
+
+type FetchErrorDetails = {
+  name: string;
+  message: string;
+  rawError: unknown;
+  userMessage: string;
+};
+
+const REQUEST_TIMEOUT_MS = 15000;
+
+type LooseRoutePoint = {
+  latitude?: number | string;
+  longitude?: number | string;
+  lat?: number | string;
+  lng?: number | string;
+};
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim();
+  }
+
+  return fallback;
 }
 
-function parsePoint(item: Pick<NominatimItem, 'lat' | 'lon'>) {
-  const latitude = Number(item.lat);
-  const longitude = Number(item.lon);
+function summarizeForLog(value: unknown) {
+  if (value === undefined || value === null) {
+    return value ?? null;
+  }
 
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return undefined;
+  if (typeof value === 'string') {
+    return value.length > 1200 ? `${value.slice(0, 1200)}...` : value;
+  }
+
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized.length > 1200 ? `${serialized.slice(0, 1200)}...` : value;
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeRawErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message.trim();
+  }
+
+  if (typeof error === 'string') {
+    return error.trim();
+  }
+
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const value = String((error as { message?: unknown }).message ?? '').trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error ?? '');
+  }
+}
+
+function isPrivateOrLocalHostname(hostname: string) {
+  const normalizedHostname = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+  if (
+    normalizedHostname === 'localhost' ||
+    normalizedHostname === '0.0.0.0' ||
+    normalizedHostname === '10.0.2.2' ||
+    normalizedHostname.endsWith('.local')
+  ) {
+    return true;
+  }
+
+  const ipv4Match = normalizedHostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!ipv4Match) {
+    return false;
+  }
+
+  const firstOctet = Number(ipv4Match[1]);
+  const secondOctet = Number(ipv4Match[2]);
+
+  return (
+    firstOctet === 10 ||
+    firstOctet === 127 ||
+    (firstOctet === 172 && secondOctet >= 16 && secondOctet <= 31) ||
+    (firstOctet === 192 && secondOctet === 168) ||
+    (firstOctet === 169 && secondOctet === 254)
+  );
+}
+
+function getFetchErrorDetails(input: string, error: unknown): FetchErrorDetails {
+  const rawMessage = normalizeRawErrorMessage(error);
+  const name =
+    error instanceof Error
+      ? error.name
+      : typeof error === 'object' && error !== null && 'name' in error
+        ? String((error as { name?: unknown }).name ?? '').trim()
+        : '';
+  const hostname = (() => {
+    try {
+      return new URL(input).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  const combined = `${name} ${rawMessage}`.trim();
+  const lowercase = combined.toLowerCase();
+
+  let userMessage = rawMessage || 'Unable to reach the DoorDrop backend.';
+
+  if (lowercase.includes('cleartext')) {
+    userMessage =
+      'Android blocked the HTTP request: CLEARTEXT communication not permitted. Rebuild the APK with cleartext traffic enabled.';
+  } else if (name === 'AbortError' || lowercase.includes('timeout') || lowercase.includes('timed out')) {
+    userMessage =
+      `DoorDrop backend request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)} seconds.`;
+  } else if (isPrivateOrLocalHostname(hostname)) {
+    userMessage =
+      'This APK is pointing to a private/local backend address. Deploy the DoorDrop backend to a public HTTPS URL, set EXPO_PUBLIC_API_BASE_URL to that URL, then rebuild the APK.';
+  } else if (lowercase.includes('network request failed')) {
+    userMessage =
+      'Android native fetch failed before any HTTP response was received. Confirm EXPO_PUBLIC_API_BASE_URL is a reachable public HTTPS backend URL and rebuild the APK after changing it.';
+  } else if (lowercase.includes('typeerror')) {
+    userMessage = rawMessage || 'TypeError while contacting the DoorDrop backend.';
+  } else if (!userMessage) {
+    userMessage =
+      'Unable to reach the DoorDrop backend. Check Android network security settings and confirm the backend server is reachable from the phone.';
+  }
+
+  return {
+    name,
+    message: rawMessage,
+    rawError: error,
+    userMessage,
+  };
+}
+
+function normalizeNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractPoint(
+  value: LooseRoutePoint | null | undefined
+) {
+  const latitude = normalizeNumber(value?.latitude ?? value?.lat);
+  const longitude = normalizeNumber(value?.longitude ?? value?.lng);
+
+  if (latitude === null || longitude === null) {
+    return null;
   }
 
   return {
     latitude,
     longitude,
+  } satisfies RoutePoint;
+}
+
+function createFrontendEstimate(
+  distanceMeters: number,
+  vehicleType: RouteEstimateVehicleType,
+  cargoSize?: RouteEstimateCargoSize,
+  pricingScope?: RouteEstimatePricingScope
+): PricingEstimate {
+  const canonicalVehicleType = normalizeDoorDropVehicleType(vehicleType);
+  const estimate = buildFrontendPricingEstimate({
+    distanceMeters,
+    vehicleType: canonicalVehicleType,
+    cargoSize,
+    pricingScope,
+  });
+
+  return {
+    ...estimate,
+    cargoSize: estimate.cargoSize ?? null,
+  } satisfies PricingEstimate;
+}
+
+function getPayloadDistanceMeters(payload: RouteEstimateResponse) {
+  const explicitMeters = normalizeNumber(payload.distanceMeters);
+  if (explicitMeters !== null && explicitMeters > 0) {
+    return explicitMeters;
+  }
+
+  const kilometers =
+    normalizeNumber(payload.distanceKm) ??
+    normalizeNumber(payload.distance_km) ??
+    normalizeNumber(payload.km) ??
+    normalizeNumber(payload.distance);
+
+  return kilometers !== null && kilometers > 0 ? Math.round(kilometers * 1000) : null;
+}
+
+function estimateDurationSecondsFromDistance(distanceMeters: number) {
+  const averageMetersPerSecond = 9.7;
+  return Math.max(600, Math.round(distanceMeters / averageMetersPerSecond));
+}
+
+function createFallbackRouteEstimate(
+  origin: RoutePoint,
+  destination: RoutePoint,
+  vehicleType: RouteEstimateVehicleType,
+  cargoSize?: RouteEstimateCargoSize,
+  pricingScope?: RouteEstimatePricingScope,
+  warning = 'DoorDrop route endpoint failed. Showing an estimated fare from map distance.'
+): RouteEstimate {
+  const directDistanceMeters = getDistanceBetweenPoints(origin, destination);
+  const distanceMeters = Math.max(1000, Math.round(directDistanceMeters * 1.25));
+  const averageMetersPerSecond = 9.7;
+  const durationSeconds = Math.max(600, Math.round(distanceMeters / averageMetersPerSecond));
+  const pricingEstimate = {
+    ...createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope),
+    warning,
+  };
+
+  return {
+    distanceMeters,
+    distanceKm: Number((distanceMeters / 1000).toFixed(2)),
+    durationSeconds,
+    polyline: '',
+    coordinates: [origin, destination],
+    price: pricingEstimate.estimatedPrice,
+    pricingEstimate,
   };
 }
 
-function buildPrimaryLabel(item: NominatimItem) {
-  return (
-    item.name ||
-    item.address?.suburb ||
-    item.address?.neighbourhood ||
-    item.address?.quarter ||
-    item.address?.city_district ||
-    item.address?.city ||
-    item.address?.town ||
-    item.address?.village ||
-    item.address?.municipality ||
-    item.address?.road ||
-    'Unnamed place'
-  );
-}
-
-function buildSecondaryLabel(item: NominatimItem) {
-  if (item.display_name) {
-    return item.display_name;
-  }
-
-  const roadLabel = [item.address?.house_number, item.address?.road].filter(Boolean).join(' ').trim();
-
-  return [
-    roadLabel,
-    item.address?.suburb || item.address?.neighbourhood || item.address?.quarter || item.address?.city_district,
-    item.address?.city || item.address?.town || item.address?.village || item.address?.municipality || item.address?.county,
-    item.address?.state,
-    item.address?.country,
-  ]
-    .filter(Boolean)
-    .join(', ');
-}
-
-function mapItemToSuggestion(item: NominatimItem) {
-  const stableId = String(item.osm_id ?? item.place_id ?? `${item.lat}-${item.lon}`);
-
-  return {
-    id: stableId,
-    name: buildPrimaryLabel(item),
-    address: buildSecondaryLabel(item),
-    featureType: item.addresstype || item.type || 'place',
-    coordinates: parsePoint(item),
-  } satisfies LocationSuggestion;
-}
-
-function normalizeText(value: string) {
-  return value.trim().toLowerCase();
-}
-
-function dedupeSuggestions(items: LocationSuggestion[]) {
-  const seen = new Set<string>();
-
-  return items.filter((item) => {
-    const key = `${normalizeText(item.name)}:${normalizeText(item.address)}`;
-    if (seen.has(key)) {
-      return false;
-    }
-
-    seen.add(key);
-    return true;
+function recordFrontendParseIssue(url: string, error: unknown, body?: unknown, status?: number | null) {
+  recordDoorDropApiError({
+    url,
+    kind: 'frontend_parse_error',
+    status: status ?? null,
+    body,
+    error,
   });
 }
 
-async function requestSearch(params: Record<string, string | null | undefined>) {
-  const response = await fetch(
-    buildSearchUrl({
-      format: 'jsonv2',
-      addressdetails: '1',
-      limit: '8',
-      'accept-language': 'en',
-      ...params,
-    }),
-    {
-      headers: {
-        Accept: 'application/json',
-      },
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Nominatim search request failed with ${response.status}`);
+function normalizePricingEstimate(
+  payload: RawPricingEstimate | null | undefined,
+  fallback: PricingEstimate | null
+): PricingEstimate | null {
+  if (!payload) {
+    return null;
   }
 
-  return (await response.json()) as NominatimItem[];
+  const estimatedPrice = normalizeNumber(payload.estimatedPrice);
+  if (estimatedPrice === null) {
+    return null;
+  }
+
+  const fallbackPricing = fallback?.pricing;
+  const payloadPricing: Partial<PricingEstimate['pricing']> = payload.pricing ?? {};
+  const pricing = {
+    baseFare: normalizeNumber(payloadPricing.baseFare) ?? fallbackPricing?.baseFare ?? 0,
+    pricePerKm: normalizeNumber(payloadPricing.pricePerKm) ?? fallbackPricing?.pricePerKm ?? 0,
+    timeBufferPerKm:
+      normalizeNumber(payloadPricing.timeBufferPerKm) ?? fallbackPricing?.timeBufferPerKm ?? 0,
+    sizeExtraRatePerKm:
+      normalizeNumber(payloadPricing.sizeExtraRatePerKm) ?? fallbackPricing?.sizeExtraRatePerKm ?? 0,
+    minimumFare: normalizeNumber(payloadPricing.minimumFare) ?? fallbackPricing?.minimumFare ?? 0,
+    rawPrice: normalizeNumber(payloadPricing.rawPrice) ?? fallbackPricing?.rawPrice ?? Math.max(0, Math.round(estimatedPrice)),
+    adjustedRawPrice:
+      normalizeNumber(payloadPricing.adjustedRawPrice) ??
+      fallbackPricing?.adjustedRawPrice ??
+      normalizeNumber(payloadPricing.rawPrice) ??
+      Math.max(0, Math.round(estimatedPrice)),
+  };
+
+  const vehicleType = normalizeDoorDropVehicleType(String(payload.vehicleType || fallback?.vehicleType || 'toyo').trim() || 'toyo');
+
+  return {
+    vehicleType,
+    distanceKm: Number(
+      (
+        normalizeNumber(payload.distanceKm) ??
+        fallback?.distanceKm ??
+        0
+      ).toFixed(2)
+    ),
+    estimatedPrice: Math.max(0, Math.round(estimatedPrice)),
+    currency: typeof payload.currency === 'string' && payload.currency.trim() ? payload.currency.trim() : fallback?.currency ?? 'TZS',
+    cargoSize: (payload.cargoSize ?? fallback?.cargoSize ?? null) as RouteEstimateCargoSize | null,
+    cargoMultiplier: normalizeNumber(payload.cargoMultiplier) ?? fallback?.cargoMultiplier ?? 1,
+    source: 'backend',
+    warning: null,
+    pricing,
+  } satisfies PricingEstimate;
+}
+
+function normalizeResolvedLocation(
+  payload: ResolvedPlaceResponse,
+  suggestion: Pick<LocationSuggestion, 'id' | 'placeId' | 'name' | 'address' | 'featureType' | 'fullText'>
+): RetrievedLocation {
+  const point =
+    extractPoint(payload) ??
+    extractPoint(payload.point) ??
+    extractPoint(payload.coordinates) ??
+    extractPoint(payload.location);
+
+  if (!point) {
+    throw new Error('DoorDrop place lookup returned no coordinates for this destination.');
+  }
+
+  const placeId = String(payload.placeId ?? payload.id ?? suggestion.placeId).trim() || suggestion.placeId;
+  const id = String(payload.id ?? placeId).trim() || placeId;
+  const name =
+    String(payload.name ?? payload.title ?? suggestion.name ?? 'Selected place').trim() || 'Selected place';
+  const address = String(payload.address ?? payload.fullText ?? suggestion.address ?? '').trim();
+  const fullText = [name, address].filter(Boolean).join(', ') || suggestion.fullText;
+
+  return {
+    label: name,
+    address,
+    point,
+    suggestion: {
+      id,
+      placeId,
+      name,
+      address,
+      featureType: suggestion.featureType || 'place',
+      fullText,
+      coordinates: point,
+    },
+  } satisfies RetrievedLocation;
+}
+
+function buildRequestUrl(pathname: string, params?: Record<string, string | number | undefined | null>) {
+  syncDoorDropApiRuntimeConfig(getDoorDropApiRuntimeConfig());
+  const url = new URL(`${ensureDoorDropApiBaseUrl()}${pathname}`);
+
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+
+    url.searchParams.set(key, String(value));
+  });
+
+  return url.toString();
+}
+
+async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDropRequestDebug) {
+  const requestMethod = (init?.method ?? 'GET').toUpperCase();
+
+  if (debug) {
+    recordDoorDropApiRequest({
+      kind: debug.kind,
+      method: requestMethod,
+      url: input,
+      body: debug.requestBody,
+    });
+  }
+
+  logInfo(screenScope, 'backendRequest', {
+    kind: debug?.kind ?? 'unknown',
+    method: requestMethod,
+    url: input,
+    body: summarizeForLog(debug?.requestBody ?? null),
+  });
+
+  let response: Response;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutId =
+    controller && typeof setTimeout === 'function'
+      ? setTimeout(() => {
+          controller.abort();
+        }, REQUEST_TIMEOUT_MS)
+      : null;
+
+  try {
+    response = await fetch(input, {
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+      signal: controller?.signal,
+      ...init,
+    });
+  } catch (error) {
+    const details = getFetchErrorDetails(input, error);
+    const debugContext = {
+      kind: debug?.kind ?? 'unknown',
+      method: requestMethod,
+      url: input,
+      platform: Platform.OS,
+      apiBaseUrl: getDoorDropApiRuntimeConfig().resolvedApiBaseUrl,
+      usesHttp: /^http:\/\//i.test(input),
+      hostname: (() => {
+        try {
+          return new URL(input).hostname;
+        } catch {
+          return '';
+        }
+      })(),
+      message: details.userMessage,
+      rawMessage: details.message,
+      errorName: details.name,
+    };
+
+    recordDoorDropApiError({
+      url: input,
+      kind: 'network_error',
+      error: {
+        name: details.name,
+        message: details.message,
+        userMessage: details.userMessage,
+        rawError: details.rawError,
+      },
+      body: {
+        requestBody: debug?.requestBody ?? null,
+        requestMethod,
+      },
+    });
+
+    logWarning(screenScope, 'backendRequest network failure', {
+      ...debugContext,
+    });
+    console.error('[DoorDrop][AndroidNetworkFailure]', debugContext);
+
+    throw new Error(details.userMessage);
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  const rawBody = await response.text();
+  const trimmedRawBody = rawBody.trim();
+  let payload: (T & { error?: string; message?: string }) | null = null;
+
+  logInfo(screenScope, 'backendResponseStatus', {
+    kind: debug?.kind ?? 'unknown',
+    method: requestMethod,
+    url: input,
+    status: response.status,
+    ok: response.ok,
+  });
+
+  logInfo(screenScope, 'backendResponseRawText', {
+    kind: debug?.kind ?? 'unknown',
+    url: input,
+    status: response.status,
+    rawText: summarizeForLog(trimmedRawBody || '<empty>'),
+  });
+
+  if (!trimmedRawBody) {
+    recordDoorDropApiResponse({
+      url: input,
+      status: response.status,
+      statusLabel: `${response.status} EMPTY_RESPONSE`,
+      rawText: '',
+      parsedBody: null,
+    });
+
+    if (response.ok) {
+      const error = new Error('DoorDrop backend returned an empty response body.');
+      recordDoorDropApiError({
+        url: input,
+        kind: 'empty_response',
+        status: response.status,
+        body: {
+          requestMethod,
+          requestBody: debug?.requestBody ?? null,
+        },
+        error,
+      });
+      throw error;
+    }
+  } else {
+    try {
+      payload = JSON.parse(trimmedRawBody) as T & { error?: string; message?: string };
+      logInfo(screenScope, 'backendResponseParsedJson', {
+        kind: debug?.kind ?? 'unknown',
+        url: input,
+        status: response.status,
+        parsedBody: summarizeForLog(payload),
+      });
+      recordDoorDropApiResponse({
+        url: input,
+        status: response.status,
+        statusLabel: response.ok ? `${response.status} OK` : `${response.status} HTTP_ERROR`,
+        rawText: trimmedRawBody,
+        parsedBody: payload,
+      });
+    } catch (error) {
+      recordDoorDropApiResponse({
+        url: input,
+        status: response.status,
+        statusLabel: `${response.status} INVALID_JSON`,
+        rawText: trimmedRawBody,
+        parsedBody: null,
+      });
+
+      recordDoorDropApiError({
+        url: input,
+        kind: 'json_parse_error',
+        status: response.status,
+        body: {
+          requestMethod,
+          requestBody: debug?.requestBody ?? null,
+          rawResponseText: trimmedRawBody,
+        },
+        error: error instanceof Error ? error : new Error('Response body was not valid JSON.'),
+      });
+
+      throw new Error('DoorDrop backend returned invalid JSON.');
+    }
+  }
+
+  if (!response.ok) {
+    const errorMessage = payload?.error || payload?.message || `DoorDrop API request failed with ${response.status}`;
+
+    recordDoorDropApiError({
+      url: input,
+      kind: 'http_error',
+      status: response.status,
+      body: payload ?? trimmedRawBody,
+      error: errorMessage,
+    });
+
+    throw new Error(errorMessage);
+  }
+
+  return (payload ?? {}) as T;
 }
 
 export function createSearchSessionToken() {
   return `dd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function fetchLocationSuggestions(query: string, _sessionToken: string, origin?: RoutePoint, limit = 8) {
+export async function fetchLocationSuggestions(query: string, sessionToken: string, origin?: RoutePoint, limit = 6) {
   const trimmedQuery = query.trim();
-  if (trimmedQuery.length < 2) {
+  if (trimmedQuery.length < 3) {
     return [];
   }
 
-  const results = await requestSearch({
-    q: trimmedQuery,
-    countrycodes: 'tz',
-    limit: String(limit),
-    dedupe: '1',
-    lat: origin ? String(origin.latitude) : null,
-    lon: origin ? String(origin.longitude) : null,
+  logAsyncStart(screenScope, 'placesAutocomplete', {
+    query: trimmedQuery,
+    sessionToken,
+    hasOrigin: Boolean(origin),
   });
 
-  return dedupeSuggestions(results.map(mapItemToSuggestion)).slice(0, limit);
+  try {
+    const requestUrl = buildRequestUrl('/places/autocomplete', {
+      input: trimmedQuery,
+      sessionToken,
+      latitude: origin?.latitude,
+      longitude: origin?.longitude,
+      limit,
+    });
+    const payload = await requestJson<AutocompleteResponse>(
+      requestUrl,
+      undefined,
+      {
+        kind: 'places-autocomplete',
+      }
+    );
+
+    if (payload.suggestions !== undefined && !Array.isArray(payload.suggestions)) {
+      const error = new Error('DoorDrop autocomplete response did not contain a suggestions array.');
+      recordFrontendParseIssue(requestUrl, error, payload, 200);
+      throw error;
+    }
+
+    const suggestions = (payload.suggestions ?? [])
+      .map((suggestion) => ({
+        id: suggestion.id ?? suggestion.placeId,
+        placeId: suggestion.placeId ?? suggestion.id,
+        name: suggestion.name ?? suggestion.placePrediction?.structuredFormat?.mainText?.text ?? 'Selected place',
+        address:
+          suggestion.address ??
+          suggestion.placePrediction?.structuredFormat?.secondaryText?.text ??
+          suggestion.fullText ??
+          '',
+        fullText:
+          suggestion.fullText ??
+          suggestion.placePrediction?.text?.text ??
+          [suggestion.name, suggestion.address].filter(Boolean).join(', '),
+        featureType:
+          suggestion.featureType ??
+          suggestion.placePrediction?.types?.[0] ??
+          'place',
+        latitude: suggestion.latitude,
+        longitude: suggestion.longitude,
+        coordinates: suggestion.coordinates,
+      }))
+      .map((suggestion) => {
+        const placeId = String(suggestion.placeId ?? '').trim();
+        if (!placeId) {
+          return null;
+        }
+
+        const coordinates = extractPoint(
+          suggestion.coordinates ?? {
+            latitude: suggestion.latitude,
+            longitude: suggestion.longitude,
+          }
+        );
+
+        return {
+          id: String(suggestion.id ?? placeId).trim() || placeId,
+          placeId,
+          name: String(suggestion.name ?? 'Selected place').trim() || 'Selected place',
+          address: String(suggestion.address ?? '').trim(),
+          fullText:
+            String(suggestion.fullText ?? '').trim() ||
+            [suggestion.name, suggestion.address].filter(Boolean).join(', '),
+          featureType: String(suggestion.featureType ?? 'place').trim() || 'place',
+          coordinates: coordinates ?? undefined,
+        } satisfies LocationSuggestion;
+      })
+      .filter(Boolean) as LocationSuggestion[];
+
+    logAsyncSuccess(screenScope, 'placesAutocomplete', {
+      query: trimmedQuery,
+      count: suggestions.length,
+      backendUrl: requestUrl,
+    });
+
+    return suggestions;
+  } catch (error) {
+    logAsyncFailure(screenScope, 'placesAutocomplete', error, { query: trimmedQuery });
+    throw error;
+  }
 }
 
 export async function retrieveLocationSuggestion(
-  suggestion: Pick<LocationSuggestion, 'name' | 'address'>,
-  _sessionToken: string,
-  origin?: RoutePoint
+  suggestion: Pick<LocationSuggestion, 'id' | 'placeId' | 'name' | 'address' | 'featureType' | 'fullText' | 'coordinates'>,
+  sessionToken: string,
+  _origin?: RoutePoint
 ) {
-  const results = await requestSearch({
-    q: `${suggestion.name}, ${suggestion.address}`,
-    countrycodes: 'tz',
-    limit: '1',
-    dedupe: '1',
-    lat: origin ? String(origin.latitude) : null,
-    lon: origin ? String(origin.longitude) : null,
-  });
+  const resolvedPlaceId = String(suggestion.placeId || suggestion.id || '').trim();
 
-  const item = results[0];
-  const point = item ? parsePoint(item) : undefined;
-  if (!item || !point) {
-    throw new Error('The selected destination could not be resolved.');
+  if (suggestion.coordinates) {
+    const inlineResult = {
+      label: suggestion.name || 'Selected place',
+      address: suggestion.address || '',
+      point: suggestion.coordinates,
+      suggestion: {
+        id: suggestion.id,
+        placeId: resolvedPlaceId,
+        name: suggestion.name,
+        address: suggestion.address,
+        featureType: suggestion.featureType ?? 'place',
+        fullText: suggestion.fullText,
+        coordinates: suggestion.coordinates,
+      },
+    } satisfies RetrievedLocation;
+
+    logAsyncSuccess(screenScope, 'placeResolve', {
+      placeId: suggestion.placeId,
+      endpoint: 'inline',
+    });
+
+    return inlineResult;
   }
 
-  return {
-    label: buildPrimaryLabel(item),
-    address: buildSecondaryLabel(item),
-    point,
-  } satisfies RetrievedLocation;
+  logAsyncStart(screenScope, 'placeResolve', {
+    placeId: resolvedPlaceId,
+    label: suggestion.name,
+  });
+
+  try {
+    const endpoints = ['/places/details', '/places/resolve'] as const;
+    let lastError: unknown = null;
+
+    for (const endpoint of endpoints) {
+      try {
+        const requestUrl = buildRequestUrl(endpoint, {
+          placeId: resolvedPlaceId,
+          sessionToken,
+        });
+        const payload = await requestJson<ResolvedPlaceResponse>(
+          requestUrl,
+          undefined,
+          {
+            kind: endpoint === '/places/details' ? 'place-details' : 'place-resolve',
+          }
+        );
+        let retrieved: RetrievedLocation;
+
+        try {
+          retrieved = normalizeResolvedLocation(payload, {
+            ...suggestion,
+            placeId: resolvedPlaceId,
+          });
+        } catch (error) {
+          recordFrontendParseIssue(requestUrl, error, payload, 200);
+          throw error;
+        }
+
+        logAsyncSuccess(screenScope, 'placeResolve', {
+          placeId: resolvedPlaceId,
+          endpoint,
+          label: retrieved.label,
+        });
+
+        return retrieved;
+      } catch (error) {
+        lastError = error;
+
+        if (endpoint !== endpoints[endpoints.length - 1]) {
+          logWarning(screenScope, 'placeResolve primary endpoint failed, trying fallback', {
+            endpoint,
+            fallbackEndpoint: '/places/resolve',
+            placeId: resolvedPlaceId,
+            message: getErrorMessage(error, 'Place resolve failed.'),
+          });
+        }
+      }
+    }
+
+    throw lastError ?? new Error('DoorDrop could not resolve this place to coordinates.');
+  } catch (error) {
+    logAsyncFailure(screenScope, 'placeResolve', error, { placeId: resolvedPlaceId });
+    throw error instanceof Error
+      ? error
+      : new Error('DoorDrop could not resolve this place to coordinates.');
+  }
 }
 
 export async function resolveTypedLocation(query: string, origin?: RoutePoint) {
   const trimmedQuery = query.trim();
-  if (!trimmedQuery) {
-    throw new Error('Enter a location first.');
-  }
 
-  const attempts = [
-    {
-      q: trimmedQuery,
-      countrycodes: 'tz',
-      limit: '1',
-      dedupe: '1',
-      lat: origin ? String(origin.latitude) : null,
-      lon: origin ? String(origin.longitude) : null,
-    },
-    {
-      q: trimmedQuery,
-      limit: '1',
-      dedupe: '1',
-      lat: origin ? String(origin.latitude) : null,
-      lon: origin ? String(origin.longitude) : null,
-    },
-  ];
+  logAsyncStart(screenScope, 'resolveTypedLocation', {
+    query: trimmedQuery,
+  });
 
-  for (const params of attempts) {
-    const item = (await requestSearch(params))[0];
-    const point = item ? parsePoint(item) : undefined;
-    if (!item || !point) {
-      continue;
+  try {
+    const sessionToken = createSearchSessionToken();
+    const suggestions = await fetchLocationSuggestions(trimmedQuery, sessionToken, origin, 1);
+    const firstSuggestion = suggestions[0];
+
+    if (!firstSuggestion) {
+      throw new Error('We could not match that location yet. Add an area, street, junction, building, or landmark.');
     }
 
-    return {
-      label: buildPrimaryLabel(item),
-      address: buildSecondaryLabel(item),
-      point,
-      suggestion: mapItemToSuggestion(item),
-    };
-  }
+    const resolved = await retrieveLocationSuggestion(firstSuggestion, sessionToken, origin);
 
-  throw new Error('We could not match that location yet. Add an area, street, junction, building, or landmark.');
+    logAsyncSuccess(screenScope, 'resolveTypedLocation', {
+      query: trimmedQuery,
+      label: resolved.label,
+    });
+
+    return resolved;
+  } catch (error) {
+    logAsyncFailure(screenScope, 'resolveTypedLocation', error, { query: trimmedQuery });
+    throw error;
+  }
+}
+
+export async function fetchRouteEstimate(
+  origin: RoutePoint,
+  destination: RoutePoint,
+  options?: FetchRouteEstimateOptions
+) {
+  logAsyncStart(screenScope, 'routeEstimate', {
+    origin,
+    destination,
+    vehicleType: options?.vehicleType,
+    cargoSize: options?.cargoSize,
+    pricingScope: options?.pricingScope,
+  });
+
+  try {
+    const routeRequestBody = {
+      origin,
+      destination,
+      pickupPoint: origin,
+      dropoffPoint: destination,
+      vehicleType: options?.vehicleType,
+      cargoSize: options?.cargoSize,
+      pricingScope: options?.pricingScope,
+    };
+    const requestUrl = buildRequestUrl('/routes/estimate');
+    const payload = await requestJson<RouteEstimateResponse>(requestUrl, {
+      method: 'POST',
+      body: JSON.stringify(routeRequestBody),
+    }, {
+      kind: 'routes-estimate',
+      requestBody: routeRequestBody,
+    });
+
+    const distanceMeters = getPayloadDistanceMeters(payload);
+    const payloadDurationSeconds = normalizeNumber(payload.durationSeconds) ?? normalizeNumber(payload.duration_seconds);
+
+    if (distanceMeters === null || distanceMeters <= 0) {
+      const error = new Error('DoorDrop route estimate returned incomplete route data.');
+      recordFrontendParseIssue(requestUrl, error, payload, 200);
+      throw error;
+    }
+
+    const durationSeconds =
+      payloadDurationSeconds !== null && payloadDurationSeconds > 0
+        ? payloadDurationSeconds
+        : estimateDurationSecondsFromDistance(distanceMeters);
+
+    const routePricingFallback = options?.vehicleType
+      ? createFrontendEstimate(distanceMeters, options.vehicleType, options?.cargoSize, options?.pricingScope)
+      : null;
+
+    const coordinates =
+      filterValidCoordinates(payload.coordinates ?? []).length > 0
+        ? filterValidCoordinates(payload.coordinates ?? [])
+        : payload.polyline
+          ? decodePolyline(payload.polyline)
+          : [origin, destination];
+
+    let pricingEstimate = normalizePricingEstimate(payload.pricingEstimate, routePricingFallback);
+    const routePrice = normalizeNumber(payload.price);
+
+    if (!pricingEstimate && routePrice !== null && routePricingFallback) {
+      pricingEstimate = {
+        ...routePricingFallback,
+        estimatedPrice: Math.max(0, Math.round(routePrice)),
+        source: 'backend',
+        warning: null,
+      };
+    }
+
+    if (!pricingEstimate && routePricingFallback) {
+      pricingEstimate = {
+        ...(routePricingFallback as PricingEstimate),
+        warning: 'DoorDrop backend did not return price. Showing an estimated fare from distance.',
+      };
+
+      logWarning(screenScope, 'routeEstimate missing price, using frontend fallback', {
+        distanceMeters,
+        vehicleType: options?.vehicleType,
+        cargoSize: options?.cargoSize,
+        pricingScope: options?.pricingScope,
+      });
+    }
+
+    const estimate = {
+      distanceMeters,
+      distanceKm:
+        normalizeNumber(payload.distanceKm) ??
+        normalizeNumber(payload.distance_km) ??
+        normalizeNumber(payload.km) ??
+        Number((distanceMeters / 1000).toFixed(2)),
+      durationSeconds,
+      polyline: typeof payload.polyline === 'string' ? payload.polyline : '',
+      coordinates,
+      price: routePrice ?? pricingEstimate?.estimatedPrice ?? null,
+      pricingEstimate,
+    } satisfies RouteEstimate;
+
+    logAsyncSuccess(screenScope, 'routeEstimate', {
+      distanceMeters: estimate.distanceMeters,
+      distanceKm: estimate.distanceKm,
+      durationSeconds: estimate.durationSeconds,
+      coordinateCount: estimate.coordinates.length,
+      pricingSource: estimate.pricingEstimate?.source ?? null,
+    });
+
+    return estimate;
+  } catch (error) {
+    logAsyncFailure(screenScope, 'routeEstimate', error, { origin, destination });
+    if (options?.vehicleType) {
+      const fallback = createFallbackRouteEstimate(
+        origin,
+        destination,
+        options.vehicleType,
+        options.cargoSize,
+        options.pricingScope
+      );
+      logWarning(screenScope, 'routeEstimate request failed, using frontend fallback route', {
+        vehicleType: options.vehicleType,
+        cargoSize: options.cargoSize,
+        pricingScope: options.pricingScope,
+        distanceMeters: fallback.distanceMeters,
+        message: getErrorMessage(error, 'Route estimate failed.'),
+      });
+      return fallback;
+    }
+
+    throw error;
+  }
+}
+
+// Backward-compatible alias for older screens that still import the removed
+// Distance Matrix helper name. Internally this now uses the Routes API flow.
+export async function fetchDistanceMatrix(
+  origin: RoutePoint,
+  destination: RoutePoint
+) {
+  return fetchRouteEstimate(origin, destination);
+}
+
+export async function fetchRouteEstimates(
+  origin: RoutePoint,
+  destination: RoutePoint
+) {
+  return fetchRouteEstimate(origin, destination);
+}
+
+export async function fetchPricingEstimate(
+  distanceMeters: number,
+  vehicleType: RouteEstimateVehicleType,
+  cargoSize?: RouteEstimateCargoSize,
+  pricingScope?: RouteEstimatePricingScope
+) {
+  logAsyncStart(screenScope, 'pricingEstimate', {
+    vehicleType,
+    distanceMeters,
+    cargoSize,
+    pricingScope,
+  });
+
+  try {
+    const pricingRequestBody = {
+      vehicleType,
+      distanceMeters,
+      cargoSize,
+      pricingScope,
+    };
+    const requestUrl = buildRequestUrl('/pricing/estimate');
+    const payload = await requestJson<PricingEstimateResponse>(requestUrl, {
+      method: 'POST',
+      body: JSON.stringify(pricingRequestBody),
+    }, {
+      kind: 'pricing-estimate',
+      requestBody: pricingRequestBody,
+    });
+
+    const fallbackEstimate = createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
+    const estimate = normalizePricingEstimate(payload, fallbackEstimate);
+
+    if (!estimate) {
+      recordFrontendParseIssue(
+        requestUrl,
+        new Error('DoorDrop pricing response did not include an estimatedPrice.'),
+        payload,
+        200
+      );
+      logWarning(screenScope, 'pricingEstimate missing estimatedPrice, using frontend fallback', {
+        vehicleType,
+        distanceMeters,
+        cargoSize,
+        pricingScope,
+      });
+
+      const fallback = {
+        ...fallbackEstimate,
+        warning: 'DoorDrop backend did not return price. Showing an estimated fare from distance.',
+      };
+      return fallback;
+    }
+
+    logAsyncSuccess(screenScope, 'pricingEstimate', {
+      vehicleType,
+      estimatedPrice: estimate.estimatedPrice,
+      distanceKm: estimate.distanceKm,
+      cargoSize: estimate.cargoSize,
+      source: estimate.source ?? 'backend',
+    });
+    return estimate;
+  } catch (error) {
+    logAsyncFailure(screenScope, 'pricingEstimate', error, { vehicleType, distanceMeters, cargoSize, pricingScope });
+    const fallbackEstimate = createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
+
+    logWarning(screenScope, 'pricingEstimate request failed, using frontend fallback', {
+      vehicleType,
+      distanceMeters,
+      cargoSize,
+      pricingScope,
+      message: getErrorMessage(error, 'Pricing estimate failed.'),
+    });
+    const fallback = {
+      ...fallbackEstimate,
+      warning: 'DoorDrop pricing endpoint failed. Showing an estimated fare from distance.',
+    };
+    return fallback;
+  }
+}
+
+export async function fetchPricingEstimates(
+  distanceMeters: number,
+  vehicleTypes: RouteEstimateVehicleType[],
+  cargoSize?: RouteEstimateCargoSize,
+  pricingScope?: RouteEstimatePricingScope
+) {
+  const estimates = await Promise.all(
+    vehicleTypes.map(async (vehicleType) => {
+      const estimate = await fetchPricingEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
+      return [vehicleType, estimate] as const;
+    })
+  );
+
+  return Object.fromEntries(estimates) as Record<RouteEstimateVehicleType, PricingEstimate>;
 }

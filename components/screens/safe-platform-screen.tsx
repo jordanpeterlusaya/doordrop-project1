@@ -1,11 +1,14 @@
 import { useRouter } from 'expo-router';
 import type { ComponentType } from 'react';
-import React from 'react';
+import React, { useRef } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 
+import { ScreenErrorBoundary } from '@/components/ErrorBoundary';
 import { CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { recordCargoDiagnostic } from '@/lib/cargo-diagnostics';
+import { logError, logInfo } from '@/lib/debug-logger';
 
 type ScreenModule = {
   default: ComponentType;
@@ -21,14 +24,51 @@ export function SafePlatformScreen({ loadNative, loadWeb, screenName }: SafePlat
   const router = useRouter();
   const fallbackRoute = screenName === 'Home' ? '/explore' : '/home';
   const fallbackLabel = screenName === 'Home' ? 'Open explore' : 'Go to home';
+  const didLogLoadStart = useRef(false);
+  const didLogLoadSuccess = useRef(false);
+
+  const isCargoScreen = screenName === 'Book cargo';
+
+  if (isCargoScreen && !didLogLoadStart.current) {
+    didLogLoadStart.current = true;
+    recordCargoDiagnostic('safe-platform:book-cargo:load-start', { platform: Platform.OS });
+    logInfo('SafePlatformScreen', 'book-cargo load start', { platform: Platform.OS });
+  }
 
   try {
     const module = Platform.OS === 'web' && loadWeb ? loadWeb() : loadNative();
     const Screen = module.default;
 
-    return <Screen />;
+    if (isCargoScreen && !didLogLoadSuccess.current) {
+      didLogLoadSuccess.current = true;
+      recordCargoDiagnostic('safe-platform:book-cargo:load-success', {
+        hasDefaultExport: Boolean(Screen),
+        platform: Platform.OS,
+      });
+      logInfo('SafePlatformScreen', 'book-cargo load success', {
+        hasDefaultExport: Boolean(Screen),
+        platform: Platform.OS,
+      });
+    }
+
+    return (
+      <ScreenErrorBoundary screenName={screenName}>
+        <Screen />
+      </ScreenErrorBoundary>
+    );
   } catch (error) {
-    console.error(`Failed to load ${screenName} screen`, error);
+    if (isCargoScreen) {
+      recordCargoDiagnostic('safe-platform:book-cargo:load-failure', {
+        error: error instanceof Error ? error.message : String(error),
+        platform: Platform.OS,
+        screenName,
+      });
+    }
+
+    logError('SafePlatformScreen', `failed to load ${screenName} screen`, error, {
+      platform: Platform.OS,
+      screenName,
+    });
 
     return (
       <CargoScreen contentContainerStyle={styles.content}>

@@ -1,50 +1,77 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useRef } from 'react';
-import { ActivityIndicator, Image, StatusBar, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { StatusBar, StyleSheet, Text, View } from 'react-native';
 
-import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { logError } from '@/lib/debug-logger';
 
-const splashLogo = require('../assets/images/image1-app-icon-pro.png');
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const splashDurationMs = 1500;
 
 export default function SplashScreen() {
   const router = useRouter();
   const navigationCommittedRef = useRef(false);
+  const [progressPercent, setProgressPercent] = useState(12);
 
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
+    let currentProgress = 12;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const progressTimer = setInterval(() => {
+      currentProgress = Math.min(currentProgress + 8, 96);
+      setProgressPercent(currentProgress);
+    }, 120);
+
+    const navigateFromSplash = () => {
       if (navigationCommittedRef.current) {
         return;
       }
 
       navigationCommittedRef.current = true;
-      router.replace('/home');
-    }, 650);
+      setProgressPercent(100);
+      try {
+        router.replace('/home');
+      } catch (error) {
+        navigationCommittedRef.current = false;
+        logError('SplashScreen', 'failed to navigate from splash', error);
+        retryCount += 1;
 
-    return () => clearTimeout(timeoutId);
+        if (retryCount <= 6) {
+          retryTimer = setTimeout(navigateFromSplash, 300);
+        }
+      }
+    };
+
+    const navigationTimer = setTimeout(navigateFromSplash, splashDurationMs);
+
+    return () => {
+      clearInterval(progressTimer);
+      clearTimeout(navigationTimer);
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+    };
   }, [router]);
 
   return (
-    <LinearGradient colors={['#F5FFF7', '#ECFDF3', '#DFF6E5']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5FFF7" />
-
-      <View style={styles.logoWrap}>
-        <Image source={splashLogo} style={styles.logo} resizeMode="contain" />
-      </View>
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#22C55E" />
 
       <View style={styles.copyWrap}>
         <Text style={styles.title}>DoorDrop</Text>
         <Text style={styles.subtitle}>
-          Starting the customer app with a lighter flow so the APK can open safely before any account steps are needed.
+          Fast, reliable cargo and parcel delivery services at your fingertips. Track your shipments in real-time and enjoy seamless logistics solutions.
         </Text>
       </View>
 
-      <View style={styles.loaderRow}>
-        <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-        <Text style={styles.loaderText}>Opening dashboard...</Text>
+      <View style={styles.progressWrap}>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
+        </View>
+        <Text style={styles.loaderText}>Loading DoorDrop...</Text>
       </View>
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -54,55 +81,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 28,
-  },
-  logoWrap: {
-    width: 148,
-    height: 148,
-    borderRadius: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.82)',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 18 },
-    shadowRadius: 36,
-    elevation: 8,
-    marginBottom: 28,
-  },
-  logo: {
-    width: 112,
-    height: 112,
+    backgroundColor: '#16A34A',
   },
   copyWrap: {
     alignItems: 'center',
-    gap: 10,
+    gap: 16,
     marginBottom: 26,
   },
   title: {
-    color: cargoTheme.colors.primaryDark,
-    fontSize: 30,
+    color: '#FFFFFF',
+    fontSize: 56,
     fontFamily: typography.extrabold,
-    letterSpacing: -0.8,
+    lineHeight: 60,
   },
   subtitle: {
-    color: '#3F5F52',
-    fontSize: 14,
-    lineHeight: 21,
+    color: '#E8F5E9',
+    fontSize: 15,
+    lineHeight: 23,
     textAlign: 'center',
-    maxWidth: 320,
+    maxWidth: 340,
+    fontWeight: '500',
   },
-  loaderRow: {
-    flexDirection: 'row',
+  progressWrap: {
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    width: '100%',
+    maxWidth: 280,
+    gap: 12,
+  },
+  progressTrack: {
+    width: '100%',
+    height: 8,
+    overflow: 'hidden',
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.82)',
+    backgroundColor: 'rgba(255,255,255,0.32)',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
   },
   loaderText: {
-    color: cargoTheme.colors.primaryDark,
+    color: '#ECFDF5',
     fontSize: 13,
     fontFamily: typography.bold,
+    textAlign: 'center',
   },
 });

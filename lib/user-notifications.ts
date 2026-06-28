@@ -1,9 +1,12 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -16,7 +19,7 @@ import {
 import { compactFirestoreData } from '@/lib/firestore-payload';
 import { db } from '@/lib/firebase';
 
-export type UserNotificationType = 'order_created' | 'order_status' | 'promotion';
+export type UserNotificationType = 'order_created' | 'order_status' | 'promotion' | 'message';
 export type DeliveryCancellationActor = 'customer' | 'driver' | 'dispatch';
 export type DeliveryOrderStatus =
   | 'pending_assignment'
@@ -55,6 +58,7 @@ type OrderNotificationInput = {
 
 const userNotificationsCollection = collection(db, 'userNotifications');
 const usersCollection = collection(db, 'users');
+const USER_NOTIFICATION_SUBSCRIPTION_LIMIT = 80;
 
 function notificationRef(notificationId: string) {
   return doc(db, 'userNotifications', notificationId);
@@ -247,16 +251,41 @@ export function subscribeToUserNotifications(
   callback: (notifications: UserNotification[]) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  const notificationsQuery = query(userNotificationsCollection, where('userId', '==', userId));
-
-  return onSnapshot(
-    notificationsQuery,
-    (snapshot) => {
-      const items = snapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Omit<UserNotification, 'id'>) }));
-      callback(sortNotifications(items));
-    },
-    (error) => onError?.(error)
+  const emitSnapshot = (snapshot: { docs: Array<{ id: string; data: () => unknown }> }) => {
+    const items = snapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Omit<UserNotification, 'id'>) }));
+    callback(sortNotifications(items));
+  };
+  let fallbackUnsubscribe: Unsubscribe | null = null;
+  const fallbackQuery = query(
+    userNotificationsCollection,
+    where('userId', '==', userId),
+    limit(USER_NOTIFICATION_SUBSCRIPTION_LIMIT)
   );
+  const notificationsQuery = query(
+    userNotificationsCollection,
+    where('userId', '==', userId),
+    orderBy('createdAt', 'desc'),
+    limit(USER_NOTIFICATION_SUBSCRIPTION_LIMIT)
+  );
+
+  const primaryUnsubscribe = onSnapshot(
+    notificationsQuery,
+    emitSnapshot,
+    (error) => {
+      const errorCode = (error as { code?: string }).code;
+      if (errorCode === 'failed-precondition' && !fallbackUnsubscribe) {
+        fallbackUnsubscribe = onSnapshot(fallbackQuery, emitSnapshot, (fallbackError) => onError?.(fallbackError));
+        return;
+      }
+
+      onError?.(error);
+    }
+  );
+
+  return () => {
+    primaryUnsubscribe();
+    fallbackUnsubscribe?.();
+  };
 }
 
 export async function markUserNotificationRead(notificationId: string) {
@@ -285,4 +314,34 @@ export async function markAllUserNotificationsRead(userId: string) {
     });
   });
   await batch.commit();
+}
+
+export async function deleteUserNotification(notificationId: string) {
+  await deleteDoc(notificationRef(notificationId));
+}
+
+export async function deleteAllUserNotifications(userId: string) {
+  const notificationsSnapshot = await getDocs(query(userNotificationsCollection, where('userId', '==', userId)));
+
+  if (notificationsSnapshot.empty) {
+    return;
+  }
+
+  let batch = writeBatch(db);
+  let batchSize = 0;
+
+  for (const notification of notificationsSnapshot.docs) {
+    batch.delete(notification.ref);
+    batchSize += 1;
+
+    if (batchSize === 450) {
+      await batch.commit();
+      batch = writeBatch(db);
+      batchSize = 0;
+    }
+  }
+
+  if (batchSize > 0) {
+    await batch.commit();
+  }
 }

@@ -1,17 +1,24 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
 import { upsertUserProfile } from '@/lib/user-profile';
 import { useAuthSession } from '@/providers/auth-provider';
+import { useNotifications } from '@/providers/notification-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const screenScope = 'ProfileEditScreen';
 
 function ProfileEditScreenContent() {
   const router = useRouter();
   const { profile, refreshProfile, user } = useAuthSession();
+  const { pushPermissionStatus, requestNotificationPermission } = useNotifications();
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
@@ -19,6 +26,7 @@ function ProfileEditScreenContent() {
   const [defaultPayment, setDefaultPayment] = useState('Cash on delivery');
   const [orderAlerts, setOrderAlerts] = useState(true);
   const [promoAlerts, setPromoAlerts] = useState(false);
+  const [permissionSubmitting, setPermissionSubmitting] = useState(false);
 
   const emailIsValid = /\S+@\S+\.\S+/.test(email.trim());
   const phoneIsValid = phone.replace(/\D/g, '').length >= 9;
@@ -38,7 +46,43 @@ function ProfileEditScreenContent() {
     setFullName(profile?.fullName || user?.displayName || '');
     setPhone(profile?.phoneNumber || user?.phoneNumber || '');
     setEmail(user?.email || '');
-  }, [profile?.fullName, profile?.phoneNumber, user?.displayName, user?.email, user?.phoneNumber]);
+    setCity(profile?.city || 'Dar es Salaam');
+    setDefaultPayment(profile?.defaultPayment || 'Cash on delivery');
+    setOrderAlerts(profile?.notificationPreferences?.orderUpdates !== false);
+    setPromoAlerts(profile?.notificationPreferences?.promotions === true);
+  }, [
+    profile?.city,
+    profile?.defaultPayment,
+    profile?.fullName,
+    profile?.notificationPreferences?.orderUpdates,
+    profile?.notificationPreferences?.promotions,
+    profile?.phoneNumber,
+    user?.displayName,
+    user?.email,
+    user?.phoneNumber,
+  ]);
+
+  const handleRequestNotificationPermission = async () => {
+    if (permissionSubmitting || pushPermissionStatus === 'granted') {
+      return;
+    }
+
+    setPermissionSubmitting(true);
+    try {
+      const status = await requestNotificationPermission();
+      if (status === 'granted') {
+        Alert.alert('Notifications enabled', 'DoorDrop alerts are now allowed on this device.');
+      } else if (status === 'denied') {
+        Alert.alert('Notifications blocked', 'Enable notifications from device settings to receive DoorDrop alerts.');
+      } else if (status === 'unavailable') {
+        Alert.alert('Push alerts unavailable', 'This build is missing Android FCM configuration. In-app notifications will still appear in the notifications screen.');
+      } else {
+        Alert.alert('Notifications pending', 'Permission was not enabled yet. You can try again from this screen.');
+      }
+    } finally {
+      setPermissionSubmitting(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!user) {
@@ -47,17 +91,26 @@ function ProfileEditScreenContent() {
     }
 
     try {
+      logAsyncStart(screenScope, 'saveProfile', { uid: user.uid });
       await upsertUserProfile({
         uid: user.uid,
         fullName: fullName.trim(),
         email: email.trim().toLowerCase(),
         phoneNumber: phone.trim(),
         phoneVerified: true,
+        city: city.trim(),
+        defaultPayment: defaultPayment.trim(),
+        notificationPreferences: {
+          orderUpdates: orderAlerts,
+          promotions: promoAlerts,
+        },
       });
       await refreshProfile();
+      logAsyncSuccess(screenScope, 'saveProfile', { uid: user.uid });
       Alert.alert('Profile updated', 'Your account details and notification preferences have been saved.');
       router.back();
-    } catch {
+    } catch (error) {
+      logAsyncFailure(screenScope, 'saveProfile', error, { uid: user.uid });
       Alert.alert('Save failed', 'Please try again.');
     }
   };
@@ -113,6 +166,43 @@ function ProfileEditScreenContent() {
 
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Notifications</Text>
+
+        <View style={styles.permissionBox}>
+          <View style={styles.permissionIcon}>
+            <MaterialCommunityIcons
+              name={pushPermissionStatus === 'granted' ? 'bell-check-outline' : 'bell-alert-outline'}
+              size={20}
+              color={cargoTheme.colors.primaryDark}
+            />
+          </View>
+          <View style={styles.permissionCopy}>
+            <Text style={styles.permissionTitle}>
+              {pushPermissionStatus === 'granted'
+                ? 'Device permission allowed'
+                : pushPermissionStatus === 'unavailable'
+                  ? 'Push alerts unavailable'
+                  : 'Allow notification permission'}
+            </Text>
+            <Text style={styles.permissionText}>
+              {pushPermissionStatus === 'granted'
+                ? 'This device can receive DoorDrop order and driver alerts.'
+                : pushPermissionStatus === 'unavailable'
+                  ? 'This build is missing Android FCM configuration. In-app notifications still appear in the notifications screen.'
+                : 'Allow DoorDrop to send order updates, ETA changes and driver messages.'}
+            </Text>
+          </View>
+          {pushPermissionStatus !== 'granted' && pushPermissionStatus !== 'unavailable' ? (
+            <TouchableOpacity
+              activeOpacity={0.88}
+              disabled={permissionSubmitting}
+              style={[styles.permissionButton, permissionSubmitting && styles.permissionButtonDisabled]}
+              onPress={() => {
+                void handleRequestNotificationPermission();
+              }}>
+              <Text style={styles.permissionButtonText}>{permissionSubmitting ? 'Opening...' : 'Allow'}</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
 
         <View style={styles.toggleRow}>
           <View style={styles.toggleCopy}>
@@ -210,6 +300,52 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: cargoTheme.colors.text,
     fontSize: 17,
+    fontWeight: '800',
+  },
+  permissionBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    backgroundColor: '#F0FDF4',
+    padding: 14,
+  },
+  permissionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#DCFCE7',
+  },
+  permissionCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  permissionTitle: {
+    color: cargoTheme.colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  permissionText: {
+    color: cargoTheme.colors.subtext,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  permissionButton: {
+    borderRadius: 999,
+    backgroundColor: cargoTheme.colors.primaryDark,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  permissionButtonDisabled: {
+    opacity: 0.62,
+  },
+  permissionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
     fontWeight: '800',
   },
   fieldGroup: {

@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { BottomNav, CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
@@ -9,9 +9,12 @@ import {
   cancelDeliveryOrderByUser,
   formatDeliveryDateTime,
   getDeliveryOrderStatusLabel,
+  hasDeliveryOrderRating,
+  submitDeliveryOrderRating,
   subscribeToOrder,
   type DeliveryOrder,
 } from '@/lib/delivery-data';
+import { useAuthSession } from '@/providers/auth-provider';
 
 const cancellationReasons = [
   'I entered the wrong pickup or drop-off details',
@@ -20,6 +23,8 @@ const cancellationReasons = [
   'I want to change the vehicle or service type',
   'Pickup is taking too long',
 ] as const;
+
+const ratingOptions = [1, 2, 3, 4, 5] as const;
 
 function getParamValue(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
@@ -41,8 +46,13 @@ function getCancellationActorLabel(cancelledBy?: DeliveryOrder['cancelledBy']) {
   return 'DoorDrop';
 }
 
+function shouldHideOrderOnTrack(order: DeliveryOrder | null) {
+  return !!order && order.status === 'cancelled';
+}
+
 export default function TrackOrderWebScreen() {
   const router = useRouter();
+  const { user } = useAuthSession();
   const params = useLocalSearchParams<{ orderId?: string }>();
   const orderId = getParamValue(params.orderId);
   const [order, setOrder] = useState<DeliveryOrder | null>(null);
@@ -50,6 +60,11 @@ export default function TrackOrderWebScreen() {
   const [showCancelPanel, setShowCancelPanel] = useState(false);
   const [cancelReason, setCancelReason] = useState<(typeof cancellationReasons)[number] | ''>('');
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [showRatingPanel, setShowRatingPanel] = useState(false);
+  const [ratingValue, setRatingValue] = useState(0);
+  const [ratingReview, setRatingReview] = useState('');
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [ratingPromptDismissedOrderId, setRatingPromptDismissedOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!orderId) {
@@ -58,17 +73,47 @@ export default function TrackOrderWebScreen() {
     }
 
     const unsubscribe = subscribeToOrder(orderId, (nextOrder) => {
-      setOrder(nextOrder);
+      setOrder(shouldHideOrderOnTrack(nextOrder) ? null : nextOrder);
       setLoading(false);
     });
 
     return unsubscribe;
   }, [orderId]);
 
+  useEffect(() => {
+    if (!order) {
+      setShowRatingPanel(false);
+      setRatingValue(0);
+      setRatingReview('');
+      setRatingPromptDismissedOrderId(null);
+      return;
+    }
+
+    if (hasDeliveryOrderRating(order)) {
+      setRatingValue(order.customerRating ?? 0);
+      setRatingReview(order.customerReview?.trim() || '');
+      return;
+    }
+
+    if (order.status !== 'delivered') {
+      setShowRatingPanel(false);
+      setRatingValue(0);
+      setRatingReview('');
+      setRatingPromptDismissedOrderId(null);
+      return;
+    }
+
+    if (ratingPromptDismissedOrderId !== order.id && !showRatingPanel) {
+      setShowRatingPanel(true);
+    }
+  }, [order, ratingPromptDismissedOrderId, showRatingPanel]);
+
   const driverPhone = order?.driverPhone?.trim() || '';
   const hasDriverPhone = driverPhone.length > 0;
   const canCancelOrder = !!order && !['delivered', 'cancelled'].includes(order.status);
   const cancellationReason = order?.cancellationReason?.trim() || '';
+  const orderHasRating = hasDeliveryOrderRating(order);
+  const canRateOrder = !!order && order.status === 'delivered' && !!user?.uid && user.uid === order.userId;
 
   const handleCallDriver = async () => {
     if (!hasDriverPhone) {
@@ -131,6 +176,8 @@ export default function TrackOrderWebScreen() {
               await cancelDeliveryOrderByUser(order.id, trimmedReason);
               setShowCancelPanel(false);
               setCancelReason('');
+              setOrder(null);
+              router.replace('/track-order');
             } catch (error) {
               Alert.alert(
                 'Unable to cancel order',
@@ -143,6 +190,57 @@ export default function TrackOrderWebScreen() {
         },
       },
     ]);
+  };
+
+  const handleOpenRatingPanel = () => {
+    if (!order) {
+      return;
+    }
+
+    setRatingValue(order.customerRating ?? 0);
+    setRatingReview(order.customerReview?.trim() || '');
+    setRatingPromptDismissedOrderId(null);
+    setShowRatingPanel(true);
+  };
+
+  const handleCloseRatingPanel = () => {
+    if (ratingSubmitting) {
+      return;
+    }
+
+    if (order?.status === 'delivered' && !orderHasRating) {
+      setRatingPromptDismissedOrderId(order.id);
+    }
+
+    setShowRatingPanel(false);
+  };
+
+  const handleSubmitRating = async () => {
+    if (!order || !user?.uid || user.uid !== order.userId) {
+      Alert.alert('Rating unavailable', 'Please sign in with the account that placed this order to rate it.');
+      return;
+    }
+
+    if (ratingValue < 1 || ratingValue > 5) {
+      Alert.alert('Choose a star rating', 'Tap between 1 and 5 stars before submitting your review.');
+      return;
+    }
+
+    try {
+      setRatingSubmitting(true);
+      await submitDeliveryOrderRating({
+        orderId: order.id,
+        userId: user.uid,
+        rating: ratingValue,
+        review: ratingReview,
+      });
+      setRatingPromptDismissedOrderId(null);
+      setShowRatingPanel(false);
+    } catch (error) {
+      Alert.alert('Rating not saved', error instanceof Error ? error.message : 'Please try sending your rating again.');
+    } finally {
+      setRatingSubmitting(false);
+    }
   };
 
   return (
@@ -239,6 +337,47 @@ export default function TrackOrderWebScreen() {
             </View>
           ) : null}
 
+          {order.status === 'delivered' ? (
+            <View style={styles.card}>
+              <View style={styles.reviewHeader}>
+                <View style={styles.reviewHeaderCopy}>
+                  <Text style={styles.cardTitle}>Your delivery rating</Text>
+                  <Text style={styles.cardMeta}>
+                    {orderHasRating ? 'Your feedback is saved on this completed order.' : 'Rate this completed trip to help DoorDrop improve.'}
+                  </Text>
+                </View>
+                {canRateOrder ? (
+                  <TouchableOpacity activeOpacity={0.88} onPress={handleOpenRatingPanel} style={styles.reviewEditChip}>
+                    <MaterialCommunityIcons name={orderHasRating ? 'pencil-outline' : 'star-outline'} size={15} color={cargoTheme.colors.primaryDark} />
+                    <Text style={styles.reviewEditChipText}>{orderHasRating ? 'Edit' : 'Rate'}</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              <View style={styles.reviewStarsRow}>
+                {ratingOptions.map((star) => (
+                  <MaterialCommunityIcons
+                    key={star}
+                    name={star <= (order.customerRating ?? 0) ? 'star' : 'star-outline'}
+                    size={20}
+                    color="#F59E0B"
+                  />
+                ))}
+                <Text style={styles.reviewStarsText}>
+                  {orderHasRating ? `${order.customerRating}/5` : 'Not rated yet'}
+                </Text>
+              </View>
+
+              {order.customerReview?.trim() ? (
+                <Text style={styles.reviewBody}>{`"${order.customerReview.trim()}"`}</Text>
+              ) : (
+                <Text style={styles.cardMeta}>
+                  {orderHasRating ? 'No written comment was added for this trip.' : 'Add an optional note about the completed delivery.'}
+                </Text>
+              )}
+            </View>
+          ) : null}
+
           {canCancelOrder ? (
             <PrimaryButton
               label="Cancel order"
@@ -308,6 +447,57 @@ export default function TrackOrderWebScreen() {
                 icon="close-circle-outline"
                 style={styles.cancelPrimaryButton}
                 onPress={handleSubmitCancelOrder}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={showRatingPanel} onRequestClose={handleCloseRatingPanel}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={handleCloseRatingPanel} />
+          <View style={styles.ratingModalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.cardTitle}>Rate this delivery</Text>
+              <TouchableOpacity disabled={ratingSubmitting} onPress={handleCloseRatingPanel}>
+                <MaterialCommunityIcons name="close" size={22} color={cargoTheme.colors.subtext} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.cardMeta}>Share a star rating and optional note about this completed DoorDrop trip.</Text>
+            <View style={styles.ratingStarsPickerRow}>
+              {ratingOptions.map((star) => {
+                const active = star <= ratingValue;
+                return (
+                  <TouchableOpacity
+                    key={star}
+                    activeOpacity={0.88}
+                    disabled={ratingSubmitting}
+                    style={[styles.ratingStarButton, active && styles.ratingStarButtonActive]}
+                    onPress={() => setRatingValue(star)}>
+                    <MaterialCommunityIcons name={active ? 'star' : 'star-outline'} size={24} color="#F59E0B" />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <TextInput
+              value={ratingReview}
+              onChangeText={setRatingReview}
+              editable={!ratingSubmitting}
+              multiline
+              maxLength={240}
+              placeholder="Optional note about the delivery experience"
+              placeholderTextColor="#94A3B8"
+              style={styles.ratingInput}
+            />
+            <View style={styles.actionsRow}>
+              <PrimaryButton label="Maybe later" variant="secondary" style={styles.actionButton} onPress={handleCloseRatingPanel} />
+              <PrimaryButton
+                label={ratingSubmitting ? 'Saving...' : orderHasRating ? 'Update rating' : 'Submit rating'}
+                icon="star-outline"
+                style={styles.actionButton}
+                onPress={() => {
+                  void handleSubmitRating();
+                }}
               />
             </View>
           </View>
@@ -394,6 +584,50 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: cargoTheme.colors.subtext,
   },
+  reviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
+  },
+  reviewHeaderCopy: {
+    flex: 1,
+  },
+  reviewEditChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#ECFDF3',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  reviewEditChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: cargoTheme.colors.primaryDark,
+  },
+  reviewStarsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
+  reviewStarsText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: cargoTheme.colors.text,
+    marginLeft: 2,
+  },
+  reviewBody: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: cargoTheme.colors.text,
+    fontStyle: 'italic',
+  },
   phoneCard: {
     marginTop: 14,
     borderRadius: 18,
@@ -427,12 +661,14 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flex: 1,
+    minHeight: 60,
   },
   actionButtonDisabled: {
     opacity: 0.72,
   },
   cancelToggleButton: {
     alignSelf: 'stretch',
+    minHeight: 64,
     backgroundColor: '#DC2626',
     borderColor: '#DC2626',
   },
@@ -456,10 +692,50 @@ const styles = StyleSheet.create({
     borderColor: '#FED7AA',
     gap: 14,
   },
+  ratingModalCard: {
+    width: '100%',
+    maxWidth: 520,
+    borderRadius: 28,
+    padding: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 14,
+  },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  ratingStarsPickerRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  ratingStarButton: {
+    flex: 1,
+    minHeight: 54,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    backgroundColor: '#FFFBEB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ratingStarButtonActive: {
+    borderColor: '#F59E0B',
+    backgroundColor: '#FEF3C7',
+  },
+  ratingInput: {
+    minHeight: 110,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    color: cargoTheme.colors.text,
+    fontSize: 14,
+    textAlignVertical: 'top',
   },
   reasonList: {
     gap: 10,
@@ -509,6 +785,7 @@ const styles = StyleSheet.create({
   },
   cancelPrimaryButton: {
     flex: 1,
+    minHeight: 60,
     backgroundColor: '#DC2626',
     borderColor: '#DC2626',
   },

@@ -5,10 +5,14 @@ import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-nativ
 
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme, type CargoIcon } from '@/constants/cargo-theme';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
 import { getPersistedItem, setPersistedItem } from '@/lib/persistent-storage';
 import { type SavedPlace } from '@/lib/saved-places';
 
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
 const SAVED_PLACES_KEY = 'doordrop.savedPlaces';
+const screenScope = 'SavedPlacesScreen';
 
 const placeTypeOptions: { label: string; icon: CargoIcon }[] = [
   { label: 'Home', icon: 'home-map-marker' },
@@ -34,13 +38,18 @@ export default function SavedPlacesScreen() {
 
     const loadSavedPlaces = async () => {
       try {
+        logAsyncStart(screenScope, 'loadSavedPlaces');
         const storedValue = await getPersistedItem(SAVED_PLACES_KEY);
         const parsedValue = storedValue ? (JSON.parse(storedValue) as SavedPlace[]) : [];
 
         if (active) {
           setSavedPlaces(Array.isArray(parsedValue) ? parsedValue : []);
         }
-      } catch {
+        logAsyncSuccess(screenScope, 'loadSavedPlaces', {
+          count: Array.isArray(parsedValue) ? parsedValue.length : 0,
+        });
+      } catch (error) {
+        logAsyncFailure(screenScope, 'loadSavedPlaces', error);
         if (active) {
           setSavedPlaces([]);
         }
@@ -69,8 +78,10 @@ export default function SavedPlacesScreen() {
   const formIsValid = resolvedLabel.length >= 2 && address.trim().length >= 6;
 
   const persistPlaces = async (nextPlaces: SavedPlace[]) => {
+    logAsyncStart(screenScope, 'persistPlaces', { count: nextPlaces.length });
     setSavedPlaces(nextPlaces);
     await setPersistedItem(SAVED_PLACES_KEY, JSON.stringify(nextPlaces));
+    logAsyncSuccess(screenScope, 'persistPlaces', { count: nextPlaces.length });
   };
 
   const handleAddPlace = async () => {
@@ -91,7 +102,8 @@ export default function SavedPlacesScreen() {
       setAddress('');
       setCustomLabel('');
       setSelectedType(placeTypeOptions[0]);
-    } catch {
+    } catch (error) {
+      logAsyncFailure(screenScope, 'handleAddPlace', error, { label: nextPlace.label });
       Alert.alert('Unable to save place', 'Please try saving this place again.');
     }
   };

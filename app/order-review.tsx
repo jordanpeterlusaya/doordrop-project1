@@ -6,11 +6,18 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen, PrimaryButton, SummaryRow } from '@/components/cargo-ui';
+import { doordropAdminHandoffLocation } from '@/constants/admin-location';
 import { cargoTheme, cargoVehicles, type FlowType, type ParcelScope } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { recordAppActivity } from '@/lib/app-analytics';
 import { getFirebaseDataErrorMessage } from '@/lib/auth-errors';
+import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { createDeliveryOrder } from '@/lib/delivery-data';
 import { useAuthSession } from '@/providers/auth-provider';
+
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const screenScope = 'OrderReviewScreen';
 
 function parseCoordinate(value?: string | string[]) {
   const normalized = Array.isArray(value) ? value[0] : value;
@@ -19,6 +26,51 @@ function parseCoordinate(value?: string | string[]) {
   }
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseTextParam(value?: string | string[]) {
+  const normalized = Array.isArray(value) ? value[0] : value;
+  return normalized?.trim() || undefined;
+}
+
+function buildOrderReviewReturnTo(params: Record<string, string | string[] | undefined>) {
+  const query = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    const normalized = Array.isArray(value) ? value[0] : value;
+    if (normalized !== undefined) {
+      query.set(key, normalized);
+    }
+  });
+
+  const queryString = query.toString();
+  return queryString ? `/order-review?${queryString}` : '/order-review';
+}
+
+const cargoVehicleKeyAliases: Record<string, string> = {
+  bodaboda: 'bodaboda',
+  boda: 'bodaboda',
+  pikipiki: 'bodaboda',
+  motorcycle: 'bodaboda',
+  motorbike: 'bodaboda',
+  bike: 'bodaboda',
+  bajaj: 'toyo',
+  bajaji: 'toyo',
+  toyo: 'toyo',
+  kirikuu: 'kirikuu',
+  cargo: 'toyo',
+  pickup: 'toyo',
+  van: 'toyo',
+  truck: 'toyo',
+  toyo_xl: 'toyo',
+  'toyo-xl': 'toyo',
+};
+
+function resolveCargoVehicle(vehicleParam?: string | string[]) {
+  const rawVehicleKey = parseTextParam(vehicleParam)?.toLowerCase();
+  const normalizedVehicleKey = rawVehicleKey ? cargoVehicleKeyAliases[rawVehicleKey] ?? rawVehicleKey : undefined;
+  const defaultCargoVehicle = cargoVehicles.find((item) => item.key === 'toyo') ?? cargoVehicles[0];
+  return cargoVehicles.find((item) => item.key === normalizedVehicleKey) ?? defaultCargoVehicle;
 }
 
 function OrderReviewScreenContent() {
@@ -40,6 +92,14 @@ function OrderReviewScreenContent() {
     dropoff?: string;
     dropoffLat?: string;
     dropoffLng?: string;
+    driverDropoff?: string;
+    driverDropoffLat?: string;
+    driverDropoffLng?: string;
+    outsideDestination?: string;
+    outsideDestinationCity?: string;
+    outsideDestinationStand?: string;
+    outsideDestinationLat?: string;
+    outsideDestinationLng?: string;
     recipientName?: string;
     recipientPhone?: string;
     parcelWeightKg?: string;
@@ -47,15 +107,18 @@ function OrderReviewScreenContent() {
     scheduleTime?: string;
     distance?: string;
     duration?: string;
+    distanceMeters?: string;
+    durationSeconds?: string;
+    cargoSize?: string;
   }>();
   const [creatingOrder, setCreatingOrder] = useState(false);
   const [error, setError] = useState('');
+  const reviewReturnTo = useMemo(() => buildOrderReviewReturnTo(params), [params]);
 
   const flow: FlowType = params.flow === 'cargo' ? 'cargo' : 'parcel';
   const scope: ParcelScope = params.scope === 'outside' ? 'outside' : 'city';
-  const vehicle = cargoVehicles.find((item) => item.key === params.vehicle) ?? cargoVehicles[1];
-  const parseTzs = (value: string) => Number(value.replace(/[^\d]/g, '')) || 0;
-  const formatTzs = (amount: number) => `TZS ${amount.toLocaleString('en-US')}`;
+  const isOutsideParcel = flow === 'parcel' && scope === 'outside';
+  const vehicle = resolveCargoVehicle(params.vehicle);
 
   const timing =
     params.timing === 'later'
@@ -65,40 +128,76 @@ function OrderReviewScreenContent() {
   const serviceLabel =
     flow === 'cargo' ? vehicle.title : scope === 'city' ? 'In-city parcel delivery' : 'Outside-city parcel delivery';
   const estimatedFare =
-    flow === 'cargo' ? params.price ?? vehicle.price : params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 18,500');
+    flow === 'cargo' ? params.price ?? vehicle.price : params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 12,500');
   const eta = flow === 'cargo' ? params.duration ?? vehicle.eta : params.eta ?? (scope === 'city' ? '15-30 min' : '3-5 hrs');
   const estimatedTotal =
     flow === 'cargo'
-      ? formatTzs(parseTzs(params.price ?? vehicle.price) + 1000)
-      : params.price?.includes('-')
-        ? params.price
-        : formatTzs(parseTzs(params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 18,500')) + 1000);
+      ? estimatedFare
+      : estimatedFare;
   const pickupValue = params.pickup ?? (flow === 'cargo' ? 'Mlimani City loading bay' : 'Posta Mpya, Azikiwe Street');
   const dropoffValue =
     params.dropoff ??
     (flow === 'cargo' ? 'Kariakoo wholesale district' : scope === 'city' ? 'Masaki, Haile Selassie Road' : 'Morogoro town center');
   const parcelTypeLabel = params.parcelLabel ?? 'Parcel order';
-  const parcelWeightLabel = params.parcelWeightKg?.trim() ? `${params.parcelWeightKg.trim()} kg` : '';
+  const cargoSizeLabel = params.cargoSize?.trim() || '';
   const pricingRoute = params.pricingRoute;
   const pickupLatitude = useMemo(() => parseCoordinate(params.pickupLat), [params.pickupLat]);
   const pickupLongitude = useMemo(() => parseCoordinate(params.pickupLng), [params.pickupLng]);
   const dropoffLatitude = useMemo(() => parseCoordinate(params.dropoffLat), [params.dropoffLat]);
   const dropoffLongitude = useMemo(() => parseCoordinate(params.dropoffLng), [params.dropoffLng]);
+  const driverDropoffLatitude = useMemo(
+    () => parseCoordinate(params.driverDropoffLat) ?? (isOutsideParcel ? doordropAdminHandoffLocation.latitude : undefined),
+    [isOutsideParcel, params.driverDropoffLat]
+  );
+  const driverDropoffLongitude = useMemo(
+    () => parseCoordinate(params.driverDropoffLng) ?? (isOutsideParcel ? doordropAdminHandoffLocation.longitude : undefined),
+    [isOutsideParcel, params.driverDropoffLng]
+  );
+  const outsideDestinationLatitude = useMemo(() => parseCoordinate(params.outsideDestinationLat), [params.outsideDestinationLat]);
+  const outsideDestinationLongitude = useMemo(() => parseCoordinate(params.outsideDestinationLng), [params.outsideDestinationLng]);
+  const distanceMeters = useMemo(() => parseCoordinate(params.distanceMeters), [params.distanceMeters]);
+  const durationSeconds = useMemo(() => parseCoordinate(params.durationSeconds), [params.durationSeconds]);
   const customerName = profile?.fullName?.trim() || user?.displayName?.trim() || 'DoorDrop Customer';
   const customerPhone = profile?.phoneNumber?.trim() || '';
   const customerEmail = user?.email?.trim().toLowerCase() || '';
-  const recipientValue =
-    params.recipientName || params.recipientPhone
-      ? [params.recipientName, params.recipientPhone].filter(Boolean).join(' • ')
-      : 'Recipient details will be confirmed by dispatch';
 
   const handleCreateOrder = async () => {
     if (!user || creatingOrder) {
+      logWarning(screenScope, 'handleCreateOrder skipped', {
+        hasUser: Boolean(user),
+        creatingOrder,
+      });
       return;
     }
 
     setCreatingOrder(true);
     setError('');
+    void recordAppActivity({
+      userId: user.uid,
+      userName: customerName,
+      userRole: 'customer',
+      eventName: 'order_create_started',
+      featureKey: 'order_checkout',
+      featureLabel: 'Order checkout',
+      screen: 'order_review',
+      route: '/order-review',
+      metadata: {
+        flow,
+        serviceLabel,
+        vehicleType: flow === 'cargo' ? vehicle.key : 'bodaboda',
+        vehicleLabel: flow === 'cargo' ? vehicle.title : 'Bodaboda / Motorcycle',
+        parcelScope: flow === 'parcel' ? scope : undefined,
+        timingMode: params.timing === 'later' ? 'later' : 'now',
+        distanceMeters,
+        durationSeconds,
+        estimatedFare,
+      },
+    });
+    logAsyncStart(screenScope, 'createDeliveryOrder', {
+      flow,
+      serviceLabel,
+      userId: user.uid,
+    });
 
     try {
       const order = await createDeliveryOrder({
@@ -127,20 +226,64 @@ function OrderReviewScreenContent() {
         parcelScope: flow === 'parcel' ? scope : undefined,
         parcelTypeKey: flow === 'parcel' ? params.parcelType : undefined,
         parcelTypeLabel: flow === 'parcel' ? parcelTypeLabel : undefined,
-        cargoVehicleKey: flow === 'cargo' ? vehicle.key : undefined,
-        cargoVehicleLabel: flow === 'cargo' ? vehicle.title : undefined,
-        cargoCapacityLabel: flow === 'cargo' ? vehicle.capacity : undefined,
-        distanceLabel: flow === 'cargo' ? params.distance : undefined,
-        durationLabel: flow === 'cargo' ? params.duration : undefined,
+        cargoVehicleKey: flow === 'cargo' ? vehicle.key : 'bodaboda',
+        cargoVehicleLabel: flow === 'cargo' ? vehicle.title : 'Bodaboda / Motorcycle',
+        cargoCapacityLabel: flow === 'cargo' ? vehicle.capacity : 'Bodaboda parcel dispatch',
+        cargoSizeLabel: flow === 'cargo' ? cargoSizeLabel : undefined,
+        driverDropoffLabel: isOutsideParcel ? params.driverDropoff?.trim() || doordropAdminHandoffLocation.label : undefined,
+        driverDropoffLatitude: isOutsideParcel ? driverDropoffLatitude : undefined,
+        driverDropoffLongitude: isOutsideParcel ? driverDropoffLongitude : undefined,
+        outsideDestinationLabel: isOutsideParcel ? params.outsideDestination?.trim() || dropoffValue : undefined,
+        outsideDestinationCity: isOutsideParcel ? params.outsideDestinationCity?.trim() || undefined : undefined,
+        outsideDestinationStand: isOutsideParcel ? params.outsideDestinationStand?.trim() || undefined : undefined,
+        outsideDestinationLatitude: isOutsideParcel ? outsideDestinationLatitude : undefined,
+        outsideDestinationLongitude: isOutsideParcel ? outsideDestinationLongitude : undefined,
+        outsideParcelWeightKg: isOutsideParcel ? params.parcelWeightKg?.trim() || undefined : undefined,
+        distanceLabel: params.distance,
+        durationLabel: params.duration,
+        distanceMeters,
+        durationSeconds,
       });
 
+      logAsyncSuccess(screenScope, 'createDeliveryOrder', {
+        flow,
+        orderId: order.id,
+        userId: user.uid,
+      });
+      void recordAppActivity({
+        userId: user.uid,
+        userName: customerName,
+        userRole: 'customer',
+        eventName: 'order_created',
+        featureKey: 'order_checkout',
+        featureLabel: 'Order checkout',
+        screen: 'order_review',
+        route: '/order-review',
+        metadata: {
+          flow,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          serviceLabel,
+          vehicleType: flow === 'cargo' ? vehicle.key : 'bodaboda',
+          vehicleLabel: flow === 'cargo' ? vehicle.title : 'Bodaboda / Motorcycle',
+          parcelScope: flow === 'parcel' ? scope : undefined,
+          timingMode: params.timing === 'later' ? 'later' : 'now',
+          distanceMeters,
+          durationSeconds,
+          estimatedFare,
+        },
+      });
       router.replace({
-        pathname: '/order-created',
+        pathname: '/track-order',
         params: {
           orderId: order.id,
         },
       });
     } catch (saveError) {
+      logAsyncFailure(screenScope, 'createDeliveryOrder', saveError, {
+        flow,
+        userId: user.uid,
+      });
       const message =
         saveError instanceof FirebaseError
           ? getFirebaseDataErrorMessage(saveError.code, 'We could not save this order yet. Please try again.')
@@ -148,6 +291,22 @@ function OrderReviewScreenContent() {
             ? saveError.message
             : 'We could not save this order yet. Please try again.';
       setError(message);
+      void recordAppActivity({
+        userId: user.uid,
+        userName: customerName,
+        userRole: 'customer',
+        eventName: 'order_create_failed',
+        featureKey: 'order_checkout',
+        featureLabel: 'Order checkout',
+        screen: 'order_review',
+        route: '/order-review',
+        metadata: {
+          flow,
+          serviceLabel,
+          vehicleType: flow === 'cargo' ? vehicle.key : 'bodaboda',
+          parcelScope: flow === 'parcel' ? scope : undefined,
+        },
+      });
     } finally {
       setCreatingOrder(false);
     }
@@ -169,12 +328,12 @@ function OrderReviewScreenContent() {
             <View style={styles.authFooterActions}>
               <PrimaryButton
                 label="Login to complete"
-                onPress={() => router.push({ pathname: '/login', params: { returnTo: '/order-review' } })}
+                onPress={() => router.push({ pathname: '/login', params: { returnTo: reviewReturnTo } })}
               />
               <PrimaryButton
                 label="Register"
                 variant="secondary"
-                onPress={() => router.push({ pathname: '/register', params: { returnTo: '/order-review' } })}
+                onPress={() => router.push({ pathname: '/register', params: { returnTo: reviewReturnTo } })}
               />
             </View>
           )}
@@ -184,7 +343,7 @@ function OrderReviewScreenContent() {
       }>
       <CargoHeader
         title="Review order"
-        subtitle="Check pricing, route details and payment before you confirm the request."
+        subtitle="Confirm payment before sending this request to dispatch."
         onLeftPress={() => router.back()}
         rightIcon="menu"
         onRightPress={() => router.push('/menu')}
@@ -219,34 +378,9 @@ function OrderReviewScreenContent() {
       ) : null}
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Trip summary</Text>
-        <SummaryRow label="Pickup" value={pickupValue} />
-        <SummaryRow label="Drop-off" value={dropoffValue} />
-        {flow === 'parcel' && pricingRoute ? <SummaryRow label="Pricing lane" value={pricingRoute} /> : null}
-        {flow === 'cargo' && params.distance ? <SummaryRow label="Distance" value={params.distance} /> : null}
-        <SummaryRow label="Timing" value={timing} />
-        <SummaryRow label="Estimated ETA" value={eta} />
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Service details</Text>
-        <SummaryRow label="Service" value={serviceLabel} />
-        {flow === 'cargo' ? (
-          <SummaryRow label="Vehicle capacity" value={vehicle.capacity} />
-        ) : (
-          <>
-            <SummaryRow label="Parcel type" value={parcelTypeLabel} />
-            {scope === 'outside' && parcelWeightLabel ? <SummaryRow label="Weight" value={parcelWeightLabel} /> : null}
-          </>
-        )}
-        <SummaryRow label="Recipient" value={recipientValue} />
-      </View>
-
-      <View style={styles.card}>
         <Text style={styles.cardTitle}>Payment</Text>
         <SummaryRow label="Method" value="Cash on delivery" />
         <SummaryRow label="Service fare" value={estimatedFare} />
-        <SummaryRow label="Platform fee" value="TZS 1,000" />
         <SummaryRow label="Estimated total" value={estimatedTotal} emphasis />
       </View>
 

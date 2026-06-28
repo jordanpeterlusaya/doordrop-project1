@@ -3,6 +3,28 @@ export type RoutePoint = {
   longitude: number;
 };
 
+export function isValidCoordinate(point: Partial<RoutePoint> | null | undefined): point is RoutePoint {
+  if (!point || typeof point !== 'object') {
+    return false;
+  }
+
+  const latitude = Number(point.latitude);
+  const longitude = Number(point.longitude);
+
+  return (
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
+
+export function filterValidCoordinates(points: Array<Partial<RoutePoint> | null | undefined>) {
+  return points.filter(isValidCoordinate);
+}
+
 export type OsrmRouteCandidate = {
   geometry?: string;
   distance?: number;
@@ -53,7 +75,7 @@ export function decodePolyline(encoded: string, precision = 5): RoutePoint[] {
     });
   }
 
-  return coordinates;
+  return filterValidCoordinates(coordinates);
 }
 
 export function selectBestOsrmRoute(routes: OsrmRouteCandidate[] | undefined) {
@@ -88,12 +110,16 @@ export function selectBestOsrmRoute(routes: OsrmRouteCandidate[] | undefined) {
 }
 
 export function formatDistance(distanceMeters: number) {
-  const distanceKm = distanceMeters / 1000;
+  const n = Number(distanceMeters);
+  if (!Number.isFinite(n) || n < 0) return '0 km';
+  const distanceKm = n / 1000;
   return distanceKm >= 100 ? `${distanceKm.toFixed(0)} km` : `${distanceKm.toFixed(1)} km`;
 }
 
 export function formatDuration(durationSeconds: number) {
-  const totalMinutes = Math.max(1, Math.round(durationSeconds / 60));
+  const secs = Number(durationSeconds);
+  if (!Number.isFinite(secs) || secs <= 0) return '1 min';
+  const totalMinutes = Math.max(1, Math.round(secs / 60));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 

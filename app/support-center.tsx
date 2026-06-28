@@ -6,6 +6,8 @@ import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, TouchableOpacit
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
 const supportTopics = [
   { key: 'delivery', label: 'Active delivery issue', icon: 'truck-alert-outline' },
   { key: 'payment', label: 'Payment or invoice', icon: 'credit-card-outline' },

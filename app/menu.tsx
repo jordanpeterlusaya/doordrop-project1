@@ -9,6 +9,8 @@ import { cargoTheme, menuSections } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { useAuthSession } from '@/providers/auth-provider';
 
+export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
 function MenuScreenContent() {
   const router = useRouter();
   const { profile, signOut, user } = useAuthSession();
@@ -40,7 +42,7 @@ function MenuScreenContent() {
             <Text style={styles.profileName}>{profile?.fullName?.trim() || user?.displayName?.trim() || 'DoorDrop User'}</Text>
             <Text style={styles.profileMeta}>{user?.email?.trim() || 'Guest browsing available until final checkout'}</Text>
           </View>
-          <TouchableOpacity style={styles.profileAction}>
+          <TouchableOpacity style={styles.profileAction} onPress={() => router.push('/notifications')}>
             <MaterialCommunityIcons name="bell-outline" size={20} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
