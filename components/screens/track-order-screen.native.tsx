@@ -20,7 +20,11 @@ import {
 } from 'react-native';
 
 import { BottomNav, PrimaryButton } from '@/components/cargo-ui';
+import { FindingDriverVisual, DriverFoundVisual } from '@/components/finding-driver';
+import { MapStopPin, VehicleDriverMarker, getMapVehicleKey } from '@/components/map-markers';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
 import { recordAppActivity } from '@/lib/app-analytics';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import {
@@ -30,19 +34,34 @@ import {
     getDeliveryOrderStatusLabel,
     hasDeliveryOrderRating,
     submitDeliveryOrderRating,
+    subscribeToDrivers,
     subscribeToOrder,
     subscribeToUserOrders,
     type DeliveryOrder,
     type DeliveryOrderStatus,
+    type DriverRecord,
 } from '@/lib/delivery-data';
 import { fetchRouteEstimate, type RouteEstimate } from '@/lib/location-search';
 import { lightMapStyle } from '@/lib/light-map-style';
-import { runMapsDiagnostics } from '@/lib/maps-diagnostics';
 import { canRenderNativeGoogleMap } from '@/lib/maps-config';
 import { getNativeMaps } from '@/lib/native-maps';
 import { sendOrderMessage, subscribeToOrderMessages, type OrderMessage } from '@/lib/order-messages';
-import { filterValidCoordinates, isValidCoordinate } from '@/lib/route-utils';
+import { fetchRoadFollowingRoute } from '@/lib/road-route';
+import {
+    filterValidCoordinates,
+    formatDistance,
+    formatEtaByScope,
+    getDistanceBetweenPoints,
+    getNearestCoordinateIndex,
+    getPolylineDistanceMeters,
+    isValidCoordinate,
+    trimRouteFromPoint,
+    type RoutePoint,
+    type SelectedRoute,
+} from '@/lib/route-utils';
+import { buildRecipientSmsBody, isNotifiableRecipientPhone, openRecipientSms } from '@/lib/recipient-notify';
 import { useAuthSession } from '@/providers/auth-provider';
+import { useLanguage } from '@/providers/language-provider';
 
 const { height } = Dimensions.get('window');
 const screenScope = 'TrackOrderScreen';
@@ -56,15 +75,28 @@ const statusRank: Record<DeliveryOrderStatus, number> = {
   cancelled: 4,
 };
 
-const cancellationReasons = [
-  'I entered the wrong pickup or drop-off details',
-  'The price is higher than expected',
-  'I no longer need this delivery',
-  'I want to change the vehicle or service type',
-  'Pickup is taking too long',
-] as const;
-
 const ratingOptions = [1, 2, 3, 4, 5] as const;
+const LIVE_DRIVER_MARKER_ANIMATION_MS = 1100;
+const INTERCITY_DISTANCE_METERS = 40000;
+
+function quantizeRoutePoint(point: RoutePoint, step = 0.0009): RoutePoint {
+  return {
+    latitude: Math.round(point.latitude / step) * step,
+    longitude: Math.round(point.longitude / step) * step,
+  };
+}
+
+function isIntercityOrder(order?: DeliveryOrder | null) {
+  if (!order) {
+    return false;
+  }
+
+  if (order.parcelScope === 'outside' || order.outsideDestinationCity || order.outsideDestinationLabel) {
+    return true;
+  }
+
+  return (order.distanceMeters ?? 0) >= INTERCITY_DISTANCE_METERS;
+}
 
 function getParamValue(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
@@ -229,35 +261,67 @@ function getCancellationActorLabel(cancelledBy?: DeliveryOrder['cancelledBy']) {
 export default function TrackOrderScreen() {
   const router = useRouter();
   const { profile, user } = useAuthSession();
-  const params = useLocalSearchParams<{ orderId?: string }>();
+  const copy = useAppCopy();
+  const { language } = useLanguage();
+  const params = useLocalSearchParams<{ orderId?: string; placed?: string; notifyRecipient?: string }>();
   const orderId = getParamValue(params.orderId);
+  const placedParam = getParamValue(params.placed);
+  const notifyRecipientParam = getParamValue(params.notifyRecipient);
   const mapRef = useRef<any>(null);
   const nativeMaps = useMemo(() => getNativeMaps(), []);
   const NativeMapView = nativeMaps.MapView;
   const Marker = nativeMaps.Marker;
+  const MarkerAnimated = nativeMaps.MarkerAnimated;
   const Polyline = nativeMaps.Polyline;
+  const AnimatedRegion = nativeMaps.AnimatedRegion;
   const mapProvider = nativeMaps.provider;
   const mapCanRender =
     nativeMaps.canRender && canRenderNativeGoogleMap() && Boolean(NativeMapView && Marker && Polyline);
   const [order, setOrder] = useState<DeliveryOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCancelPanel, setShowCancelPanel] = useState(false);
-  const [cancelReason, setCancelReason] = useState<(typeof cancellationReasons)[number] | ''>('');
+  const [cancelReason, setCancelReason] = useState('');
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [cancelError, setCancelError] = useState('');
   const [messages, setMessages] = useState<OrderMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messageDraft, setMessageDraft] = useState('');
   const [messageSending, setMessageSending] = useState(false);
   const [showRatingPanel, setShowRatingPanel] = useState(false);
+  const [showPlacedSheet, setShowPlacedSheet] = useState(false);
+  const [smsOpening, setSmsOpening] = useState(false);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingReview, setRatingReview] = useState('');
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [ratingPromptDismissedOrderId, setRatingPromptDismissedOrderId] = useState<string | null>(null);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
-  const waitingPulse = useRef(new Animated.Value(0)).current;
+  const [showDriverFound, setShowDriverFound] = useState(false);
+  const [liveDrivers, setLiveDrivers] = useState<DriverRecord[]>([]);
+  const [liveDriverRoute, setLiveDriverRoute] = useState<SelectedRoute | null>(null);
+  const [, setDriverAnimationVersion] = useState(0);
+  const wasWaitingForDriverRef = useRef(false);
+  const driverAnimatedCoordinateRef = useRef<any>(null);
+  const driverCoordinateSnapshotRef = useRef<RoutePoint | null>(null);
   const loadingPulse = useRef(new Animated.Value(0)).current;
   const livePulse = useRef(new Animated.Value(0)).current;
   const liveSweep = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (placedParam === '1') {
+      setShowPlacedSheet(true);
+    }
+  }, [orderId, placedParam]);
+
+  useEffect(() => {
+    if (!order || ['delivered', 'cancelled'].includes(order.status)) {
+      setLiveDrivers([]);
+      return;
+    }
+
+    return subscribeToDrivers(setLiveDrivers, (error) => {
+      logWarning(screenScope, 'live drivers subscription failed', { message: error.message });
+    });
+  }, [order?.id, order?.status]);
 
   useEffect(() => {
     if (!orderId) {
@@ -281,8 +345,8 @@ export default function TrackOrderScreen() {
             totalOrders: orders.length,
           });
           if (trackableOrder) {
-            void autoAssignDriverToOrder(trackableOrder).catch((error) => {
-              logAsyncFailure(screenScope, 'autoAssignDriverToOrder.latest', error, {
+            void autoAssignDriverToOrder(trackableOrder).catch(() => {
+              logWarning(screenScope, 'autoAssignDriverToOrder.latest', {
                 orderId: trackableOrder.id,
               });
             });
@@ -319,8 +383,8 @@ export default function TrackOrderScreen() {
           return;
         }
         if (nextOrder) {
-          void autoAssignDriverToOrder(nextOrder).catch((error) => {
-            logAsyncFailure(screenScope, 'autoAssignDriverToOrder', error, { orderId });
+          void autoAssignDriverToOrder(nextOrder).catch(() => {
+            logWarning(screenScope, 'autoAssignDriverToOrder', { orderId });
           });
         }
         setOrder(nextOrder);
@@ -345,8 +409,8 @@ export default function TrackOrderScreen() {
     }
 
     const retryTimer = setInterval(() => {
-      void autoAssignDriverToOrder(order).catch((error) => {
-        logAsyncFailure(screenScope, 'autoAssignDriverToOrder.retry', error, { orderId: order.id });
+      void autoAssignDriverToOrder(order).catch(() => {
+        logWarning(screenScope, 'autoAssignDriverToOrder.retry', { orderId: order.id });
       });
     }, 20000);
 
@@ -462,6 +526,63 @@ export default function TrackOrderScreen() {
   const hasLiveMap = mapCanRender;
   const isWaitingForDriver = !!order && order.status === 'pending_assignment' && !order.driverId;
   const isOrderAlive = !!order && !['delivered', 'cancelled'].includes(order.status);
+  const orderVehicleKey = getMapVehicleKey({
+    flow: order?.flow,
+    cargoVehicleKey: order?.cargoVehicleKey,
+    driverVehicleType: order?.driverVehicleType,
+    serviceLabel: order?.serviceLabel,
+  });
+  const nearbyDriverMarkers = useMemo(() => {
+    if (
+      !validPickupPoint ||
+      !order ||
+      ['delivered', 'cancelled'].includes(order.status) ||
+      order.driverId
+    ) {
+      return [];
+    }
+
+    return liveDrivers
+      .filter((driver) => {
+        if (!driver.isAvailable || driver.id === order.driverId) {
+          return false;
+        }
+
+        const driverVehicleKey = getMapVehicleKey({
+          cargoVehicleKey: driver.vehicleType,
+          driverVehicleType: driver.vehicleType,
+          serviceLabel: driver.vehicleLabel,
+        });
+
+        return driverVehicleKey === orderVehicleKey;
+      })
+      .map((driver) => {
+        const coordinate = {
+          latitude: driver.currentLatitude ?? Number.NaN,
+          longitude: driver.currentLongitude ?? Number.NaN,
+        };
+
+        if (!isValidCoordinate(coordinate)) {
+          return null;
+        }
+
+        const distanceMeters = getDistanceBetweenPoints(validPickupPoint, coordinate);
+        if (distanceMeters > 12000) {
+          return null;
+        }
+
+        return {
+          id: driver.id,
+          coordinate,
+          title: driver.fullName || 'DoorDrop driver',
+          description: `${driver.vehicleLabel || orderVehicleKey} • ${formatDistance(distanceMeters)} away`,
+          distanceMeters,
+        };
+      })
+      .filter((driver): driver is NonNullable<typeof driver> => Boolean(driver))
+      .sort((left, right) => left.distanceMeters - right.distanceMeters)
+      .slice(0, 6);
+  }, [liveDrivers, order, orderVehicleKey, validPickupPoint]);
   const driverLocationMillis = getTimestampMillis(order?.driverLocationUpdatedAt);
   const driverLocationAgeMs = driverLocationMillis ? Math.max(0, Date.now() - driverLocationMillis) : null;
   const hasDriverGpsPoint = !!order?.driverId && !!validDriverPoint;
@@ -472,6 +593,105 @@ export default function TrackOrderScreen() {
     typeof order?.driverSpeedKph === 'number' && Number.isFinite(order.driverSpeedKph)
       ? `${driverGpsAgeLabel} - ${Math.max(0, Math.round(order.driverSpeedKph))} km/h`
       : driverGpsAgeLabel;
+  const liveRouteDestination = useMemo(() => {
+    if (!order) {
+      return null;
+    }
+
+    if (order.status === 'driver_assigned' && validPickupPoint) {
+      return { point: validPickupPoint, key: `pickup:${order.id}`, kind: 'pickup' as const };
+    }
+
+    if (order.status === 'in_transit' && validDropoffPoint) {
+      return { point: validDropoffPoint, key: `dropoff:${order.id}`, kind: 'dropoff' as const };
+    }
+
+    return null;
+  }, [order?.id, order?.status, validDropoffPoint, validPickupPoint]);
+  const quantizedDriverPoint = useMemo(() => {
+    if (!validDriverPoint) {
+      return null;
+    }
+
+    return quantizeRoutePoint(validDriverPoint);
+  }, [
+    validDriverPoint
+      ? Math.round(validDriverPoint.latitude / 0.0009)
+      : null,
+    validDriverPoint
+      ? Math.round(validDriverPoint.longitude / 0.0009)
+      : null,
+  ]);
+  const driverApproachLinePoints = useMemo(() => {
+    if (!validDriverPoint || !liveRouteDestination) {
+      return [];
+    }
+
+    if (liveDriverRoute && liveDriverRoute.coordinates.length > 2) {
+      return trimRouteFromPoint(liveDriverRoute.coordinates, validDriverPoint);
+    }
+
+    return [];
+  }, [liveDriverRoute, liveRouteDestination, validDriverPoint]);
+  const snappedDriverPoint = useMemo(() => {
+    if (!validDriverPoint) {
+      return null;
+    }
+
+    if (driverApproachLinePoints.length < 2) {
+      return validDriverPoint;
+    }
+
+    const nearest = getNearestCoordinateIndex(driverApproachLinePoints, validDriverPoint);
+    return nearest.distance <= 80 ? driverApproachLinePoints[nearest.index] : validDriverPoint;
+  }, [driverApproachLinePoints, validDriverPoint]);
+  const arrivalEtaSeconds = useMemo(() => {
+    if (order?.status === 'driver_at_pickup' && routeEstimate?.durationSeconds) {
+      return routeEstimate.durationSeconds;
+    }
+
+    if (liveDriverRoute) {
+      const remainingPoints =
+        driverApproachLinePoints.length >= 2 ? driverApproachLinePoints : liveDriverRoute.coordinates;
+      const remainingDistance = getPolylineDistanceMeters(remainingPoints);
+      const originalDistance = liveDriverRoute.distanceMeters || getPolylineDistanceMeters(liveDriverRoute.coordinates);
+
+      if (originalDistance > 0 && liveDriverRoute.durationSeconds > 0) {
+        return Math.max(45, Math.round(liveDriverRoute.durationSeconds * (remainingDistance / originalDistance)));
+      }
+
+      if (liveDriverRoute.durationSeconds > 0) {
+        return liveDriverRoute.durationSeconds;
+      }
+    }
+
+    if (validDriverPoint && liveRouteDestination) {
+      const remainingMeters = getDistanceBetweenPoints(validDriverPoint, liveRouteDestination.point);
+      const speedMps =
+        typeof order?.driverSpeedKph === 'number' && order.driverSpeedKph > 8
+          ? order.driverSpeedKph / 3.6
+          : isIntercityOrder(order)
+            ? 16
+            : 8.5;
+      return Math.max(45, Math.round(remainingMeters / speedMps));
+    }
+
+    return null;
+  }, [
+    driverApproachLinePoints,
+    liveDriverRoute,
+    liveRouteDestination,
+    order,
+    routeEstimate?.durationSeconds,
+    validDriverPoint,
+  ]);
+  const arrivalEtaLabel = arrivalEtaSeconds
+    ? formatEtaByScope(arrivalEtaSeconds, isIntercityOrder(order) ? 'intercity' : 'city')
+    : '';
+  const arrivalEtaHint =
+    order?.status === 'driver_at_pickup' || liveRouteDestination?.kind === 'dropoff'
+      ? copy.track.etaDropoff
+      : copy.track.etaPickup;
   const mapLiveStatusLabel =
     order?.status === 'delivered'
       ? 'Delivery completed'
@@ -498,21 +718,6 @@ export default function TrackOrderScreen() {
             : order?.driverId
               ? 'The driver app has not sent a location point yet.'
               : 'Pickup and drop-off route is ready.';
-  const driverApproachLinePoints = useMemo(() => {
-    if (!validDriverPoint || !order?.status) {
-      return [];
-    }
-
-    if (['driver_assigned', 'driver_at_pickup'].includes(order.status)) {
-      return filterValidCoordinates([validDriverPoint, validPickupPoint]);
-    }
-
-    if (order.status === 'in_transit') {
-      return filterValidCoordinates([validDriverPoint, validDropoffPoint]);
-    }
-
-    return [];
-  }, [order?.status, validDriverPoint, validDropoffPoint, validPickupPoint]);
   const mapFocusPoints = useMemo(() => {
     if (validDriverPoint && order?.status && ['driver_assigned', 'driver_at_pickup'].includes(order.status)) {
       return filterValidCoordinates([validDriverPoint, validPickupPoint]);
@@ -522,8 +727,12 @@ export default function TrackOrderScreen() {
       return filterValidCoordinates([validPickupPoint, validDropoffPoint, validDriverPoint]);
     }
 
+    if (routeLinePoints.length > 2) {
+      return routeLinePoints;
+    }
+
     return filterValidCoordinates([validPickupPoint, validDropoffPoint]);
-  }, [order?.status, validDriverPoint, validDropoffPoint, validPickupPoint]);
+  }, [order?.status, routeLinePoints, validDriverPoint, validDropoffPoint, validPickupPoint]);
   const mapEdgePadding = useMemo(() => {
     if (validDriverPoint && order?.status && ['driver_assigned', 'driver_at_pickup'].includes(order.status)) {
       return { top: 116, right: 44, bottom: 72, left: 44 };
@@ -537,30 +746,41 @@ export default function TrackOrderScreen() {
   }, [order?.status, validDriverPoint]);
   const progressSteps = order
     ? [
-        { title: 'Order received', note: 'Dispatch received the booking from your app.', active: true },
+        { title: copy.track.stepReceived, active: true },
         {
-          title: 'Driver assigned',
-          note: 'A driver is chosen by DoorDrop dispatch and linked to your order.',
+          title: copy.track.stepDriver,
           active: statusRank[order.status] >= statusRank.driver_assigned,
         },
         {
-          title: 'Driver at pickup',
-          note: 'Pickup checks happen before the trip starts.',
-          active: statusRank[order.status] >= statusRank.driver_at_pickup,
-        },
-        {
-          title: 'In transit',
-          note: 'The order is on the road to the destination.',
+          title: copy.track.stepTransit,
           active: statusRank[order.status] >= statusRank.in_transit,
         },
         {
-          title: 'Delivered',
-          note: 'Trip is completed and marked delivered by the driver.',
+          title: copy.track.stepDelivered,
           active: statusRank[order.status] >= statusRank.delivered,
         },
       ]
     : [];
-  const activeProgressIndex = progressSteps.reduce((latestIndex, step, index) => (step.active ? index : latestIndex), -1);
+  const statusHeadline =
+    order?.status === 'pending_assignment'
+      ? copy.track.findingDriver
+      : order?.status === 'driver_assigned'
+        ? copy.track.headingPickup
+        : order?.status === 'driver_at_pickup'
+          ? copy.track.atPickup
+          : order?.status === 'in_transit'
+            ? copy.track.onTheWay
+            : order?.status === 'delivered'
+              ? copy.track.statusDelivered
+              : copy.track.cancelled;
+  const statusDetail =
+    order?.status === 'pending_assignment'
+      ? copy.track.lookingText
+      : arrivalEtaLabel
+        ? copy.track.arrivesIn.replace('{eta}', arrivalEtaLabel)
+        : order
+          ? getDriverSearchStatusText(order)
+          : '';
   const liveStatusLabel = isWaitingForDriver
     ? 'Searching live'
     : hasFreshDriverGpsPoint
@@ -595,37 +815,21 @@ export default function TrackOrderScreen() {
       : 'Live';
 
   useEffect(() => {
-    void runMapsDiagnostics(screenScope);
-  }, []);
-
-  useEffect(() => {
-    if (!isWaitingForDriver) {
-      waitingPulse.stopAnimation();
-      waitingPulse.setValue(0);
+    if (isWaitingForDriver) {
+      wasWaitingForDriverRef.current = true;
+      setShowDriverFound(false);
       return;
     }
 
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(waitingPulse, {
-          toValue: 1,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-        Animated.timing(waitingPulse, {
-          toValue: 0,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    animation.start();
-
-    return () => {
-      animation.stop();
-    };
-  }, [isWaitingForDriver, waitingPulse]);
+    if (wasWaitingForDriverRef.current && order?.driverId && order.status !== 'cancelled') {
+      wasWaitingForDriverRef.current = false;
+      setShowDriverFound(true);
+      const timeoutId = setTimeout(() => {
+        setShowDriverFound(false);
+      }, 3800);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isWaitingForDriver, order?.driverId, order?.status]);
 
   useEffect(() => {
     if (!loading) {
@@ -727,13 +931,87 @@ export default function TrackOrderScreen() {
         }
 
         setRouteEstimate(null);
-        logAsyncFailure(screenScope, 'fetchTrackingRouteEstimate', error, { orderId: order.id });
+        logWarning(screenScope, 'fetchTrackingRouteEstimate:failure', { orderId: order.id });
       });
 
     return () => {
       isMounted = false;
     };
   }, [order?.id, validDropoffPoint, validPickupPoint]);
+
+  useEffect(() => {
+    if (!liveRouteDestination || !isOrderAlive) {
+      setLiveDriverRoute(null);
+      return;
+    }
+
+    if (!quantizedDriverPoint) {
+      return;
+    }
+
+    let isMounted = true;
+    fetchRoadFollowingRoute(quantizedDriverPoint, liveRouteDestination.point)
+      .then((route) => {
+        if (!isMounted || !route) {
+          return;
+        }
+
+        setLiveDriverRoute(route);
+      })
+      .catch(() => {
+        logWarning(screenScope, 'live driver road route missed', {
+          orderId: order?.id,
+          kind: liveRouteDestination.kind,
+        });
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOrderAlive, liveRouteDestination, order?.id, quantizedDriverPoint]);
+
+  useEffect(() => {
+    driverAnimatedCoordinateRef.current = null;
+    driverCoordinateSnapshotRef.current = null;
+  }, [order?.id]);
+
+  useEffect(() => {
+    if (!AnimatedRegion || !snappedDriverPoint) {
+      driverAnimatedCoordinateRef.current = null;
+      driverCoordinateSnapshotRef.current = null;
+      return;
+    }
+
+    if (!driverAnimatedCoordinateRef.current) {
+      driverAnimatedCoordinateRef.current = new AnimatedRegion({
+        latitude: snappedDriverPoint.latitude,
+        longitude: snappedDriverPoint.longitude,
+        latitudeDelta: 0,
+        longitudeDelta: 0,
+      });
+      driverCoordinateSnapshotRef.current = snappedDriverPoint;
+      setDriverAnimationVersion((value) => value + 1);
+      return;
+    }
+
+    const previous = driverCoordinateSnapshotRef.current;
+    if (previous && getDistanceBetweenPoints(previous, snappedDriverPoint) < 3) {
+      return;
+    }
+
+    driverAnimatedCoordinateRef.current
+      .timing({
+        latitude: snappedDriverPoint.latitude,
+        longitude: snappedDriverPoint.longitude,
+        latitudeDelta: 0,
+        longitudeDelta: 0,
+        duration: LIVE_DRIVER_MARKER_ANIMATION_MS,
+        toValue: 0,
+        useNativeDriver: false,
+      })
+      .start();
+    driverCoordinateSnapshotRef.current = snappedDriverPoint;
+  }, [AnimatedRegion, snappedDriverPoint]);
 
   useEffect(() => {
     if (!hasLiveMap || mapFocusPoints.length === 0) {
@@ -843,103 +1121,145 @@ export default function TrackOrderScreen() {
     }
   };
 
-  const handleSubmitCancelOrder = () => {
+  const handleSmsRecipient = async () => {
+    if (!order || !isNotifiableRecipientPhone(order.recipientPhone)) {
+      return;
+    }
+
+    try {
+      await openRecipientSms(
+        order.recipientPhone,
+        buildRecipientSmsBody({
+          isSw: language === 'sw',
+          senderName: order.customerName || profile?.fullName || 'DoorDrop',
+          orderNumber: order.orderNumber,
+          pickup: order.pickupLabel,
+          dropoff: order.dropoffLabel,
+        })
+      );
+    } catch {
+      Alert.alert(copy.help.callFailed, copy.track.smsRecipient);
+    }
+  };
+
+  const dismissPlacedSheet = () => {
+    setShowPlacedSheet(false);
+    router.setParams({ placed: '', notifyRecipient: '' });
+  };
+
+  const handlePlacedNotifySms = async () => {
+    if (!order || !isNotifiableRecipientPhone(order.recipientPhone)) {
+      dismissPlacedSheet();
+      return;
+    }
+
+    setSmsOpening(true);
+    try {
+      await openRecipientSms(
+        order.recipientPhone,
+        buildRecipientSmsBody({
+          isSw: language === 'sw',
+          senderName: order.customerName || profile?.fullName || 'DoorDrop',
+          orderNumber: order.orderNumber,
+          pickup: order.pickupLabel,
+          dropoff: order.dropoffLabel,
+        })
+      );
+    } catch {
+      Alert.alert(copy.help.callFailed, copy.track.smsRecipient);
+    } finally {
+      setSmsOpening(false);
+      dismissPlacedSheet();
+    }
+  };
+
+  const handleSubmitCancelOrder = (reason: string) => {
     if (!order || !canCancelOrder || cancelSubmitting) {
       return;
     }
 
-    const trimmedReason = cancelReason.trim();
+    const trimmedReason = reason.trim();
     if (trimmedReason.length < 4) {
-      Alert.alert('Reason required', 'Please choose a cancellation reason before submitting.');
+      setCancelError(copy.track.cancelReasonRequired);
       return;
     }
 
-    Alert.alert('Cancel this order?', `Reason: ${trimmedReason}`, [
-      { text: 'Keep order', style: 'cancel' },
-      {
-        text: 'Cancel order',
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            try {
-              logAsyncStart(screenScope, 'cancelDeliveryOrderByUser', {
-                orderId: order.id,
-                reason: trimmedReason,
-              });
-              setCancelSubmitting(true);
-              void recordAppActivity({
-                userId: user?.uid,
-                userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
-                userRole: 'customer',
-                eventName: 'order_cancel_started',
-                featureKey: 'order_cancellation',
-                featureLabel: 'Order cancellation',
-                screen: 'track_order',
-                route: '/track-order',
-                metadata: {
-                  orderId: order.id,
-                  orderNumber: order.orderNumber,
-                  status: order.status,
-                  serviceLabel: order.serviceLabel,
-                  reason: trimmedReason,
-                },
-              });
-              await cancelDeliveryOrderByUser(order.id, trimmedReason);
-              setShowCancelPanel(false);
-              setCancelReason('');
-              setOrder(null);
-              router.replace('/track-order');
-              logAsyncSuccess(screenScope, 'cancelDeliveryOrderByUser', { orderId: order.id });
-              void recordAppActivity({
-                userId: user?.uid,
-                userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
-                userRole: 'customer',
-                eventName: 'order_cancelled',
-                featureKey: 'order_cancellation',
-                featureLabel: 'Order cancellation',
-                screen: 'track_order',
-                route: '/track-order',
-                metadata: {
-                  orderId: order.id,
-                  orderNumber: order.orderNumber,
-                  status: order.status,
-                  serviceLabel: order.serviceLabel,
-                  reason: trimmedReason,
-                },
-              });
-            } catch (error) {
-              logAsyncFailure(screenScope, 'cancelDeliveryOrderByUser', error, {
-                orderId: order.id,
-                reason: trimmedReason,
-              });
-              void recordAppActivity({
-                userId: user?.uid,
-                userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
-                userRole: 'customer',
-                eventName: 'order_cancel_failed',
-                featureKey: 'order_cancellation',
-                featureLabel: 'Order cancellation',
-                screen: 'track_order',
-                route: '/track-order',
-                metadata: {
-                  orderId: order.id,
-                  orderNumber: order.orderNumber,
-                  status: order.status,
-                  serviceLabel: order.serviceLabel,
-                  reason: trimmedReason,
-                },
-              });
-              Alert.alert(
-                'Unable to cancel order',
-                error instanceof Error ? error.message : 'Please try cancelling this order again.'
-              );
-            } finally {
-              setCancelSubmitting(false);
-            }
-          })();
-        },
-      },
-    ]);
+    void (async () => {
+      try {
+        logAsyncStart(screenScope, 'cancelDeliveryOrderByUser', {
+          orderId: order.id,
+          reason: trimmedReason,
+        });
+        setCancelSubmitting(true);
+        setCancelError('');
+        setCancelReason(trimmedReason);
+        void recordAppActivity({
+          userId: user?.uid,
+          userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
+          userRole: 'customer',
+          eventName: 'order_cancel_started',
+          featureKey: 'order_cancellation',
+          featureLabel: 'Order cancellation',
+          screen: 'track_order',
+          route: '/track-order',
+          metadata: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            serviceLabel: order.serviceLabel,
+            reason: trimmedReason,
+          },
+        });
+        await cancelDeliveryOrderByUser(order.id, trimmedReason);
+        setShowCancelPanel(false);
+        setCancelReason('');
+        setOrder(null);
+        router.replace('/home');
+        logAsyncSuccess(screenScope, 'cancelDeliveryOrderByUser', { orderId: order.id });
+        void recordAppActivity({
+          userId: user?.uid,
+          userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
+          userRole: 'customer',
+          eventName: 'order_cancelled',
+          featureKey: 'order_cancellation',
+          featureLabel: 'Order cancellation',
+          screen: 'track_order',
+          route: '/track-order',
+          metadata: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            serviceLabel: order.serviceLabel,
+            reason: trimmedReason,
+          },
+        });
+      } catch (error) {
+        logAsyncFailure(screenScope, 'cancelDeliveryOrderByUser', error, {
+          orderId: order.id,
+          reason: trimmedReason,
+        });
+        void recordAppActivity({
+          userId: user?.uid,
+          userName: profile?.fullName || user?.displayName || user?.email || 'DoorDrop User',
+          userRole: 'customer',
+          eventName: 'order_cancel_failed',
+          featureKey: 'order_cancellation',
+          featureLabel: 'Order cancellation',
+          screen: 'track_order',
+          route: '/track-order',
+          metadata: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            serviceLabel: order.serviceLabel,
+            reason: trimmedReason,
+          },
+        });
+        setCancelError(error instanceof Error ? error.message : copy.track.cancelReasonRequired);
+      } finally {
+        setCancelSubmitting(false);
+      }
+    })();
   };
 
   const handleSendMessage = async () => {
@@ -1105,57 +1425,100 @@ export default function TrackOrderScreen() {
               longitudeDelta: 0.05,
             }}>
             {routeLinePoints.length >= 2 ? (
-              <Polyline coordinates={routeLinePoints} strokeColor="rgba(15, 118, 110, 0.52)" strokeWidth={5} />
+              <Polyline
+                coordinates={routeLinePoints}
+                strokeColor={driverApproachLinePoints.length >= 2 ? '#86EFAC' : cargoTheme.colors.primary}
+                strokeWidth={driverApproachLinePoints.length >= 2 ? 4 : 5}
+                lineJoin="round"
+                lineCap="round"
+              />
             ) : null}
             {driverApproachLinePoints.length >= 2 ? (
               <Polyline
                 coordinates={driverApproachLinePoints}
-                strokeColor={hasFreshDriverGpsPoint ? '#059669' : '#475569'}
-                strokeWidth={5}
-                lineDashPattern={[10, 7]}
+                strokeColor={cargoTheme.colors.primary}
+                strokeWidth={6}
+                lineJoin="round"
+                lineCap="round"
               />
             ) : null}
             {validPickupPoint ? (
-              <Marker coordinate={validPickupPoint} title="Pickup" description={order?.pickupLabel || 'Pickup point'} anchor={{ x: 0.5, y: 0.5 }}>
-                <View style={[styles.routeMarker, styles.pickupMapMarker]}>
-                  <MaterialCommunityIcons name="package-variant-closed" size={17} color="#FFFFFF" />
-                </View>
+              <Marker
+                coordinate={validPickupPoint}
+                title="Pickup"
+                description={order?.pickupLabel || 'Pickup point'}
+                anchor={{ x: 0.5, y: 1 }}
+                tracksViewChanges={false}
+                zIndex={8}>
+                <MapStopPin kind="pickup" label={copy.cargo.pickup} />
               </Marker>
             ) : null}
             {validDropoffPoint ? (
-              <Marker coordinate={validDropoffPoint} title="Drop-off" description={order?.dropoffLabel || 'Drop-off point'} anchor={{ x: 0.5, y: 0.5 }}>
-                <View style={[styles.routeMarker, styles.dropoffMapMarker]}>
-                  <MaterialCommunityIcons name="flag-checkered" size={16} color="#FFFFFF" />
-                </View>
+              <Marker
+                coordinate={validDropoffPoint}
+                title="Drop-off"
+                description={order?.dropoffLabel || 'Drop-off point'}
+                anchor={{ x: 0.5, y: 1 }}
+                tracksViewChanges={false}
+                zIndex={9}>
+                <MapStopPin kind="dropoff" label={copy.cargo.dropoff} />
               </Marker>
             ) : null}
-            {validDriverPoint ? (
+            {nearbyDriverMarkers.map((driver) => (
               <Marker
-                coordinate={validDriverPoint}
-                title={order?.driverName || 'Driver'}
-                description={mapLiveStatusDetail}
-                anchor={{ x: 0.5, y: 0.5 }}>
-                <View style={styles.driverMapMarker}>
-                  {hasFreshDriverGpsPoint && isOrderAlive ? (
-                    <Animated.View style={[styles.driverMarkerPulse, { opacity: livePulse }]} />
-                  ) : null}
-                  <View style={[styles.driverMarkerCore, !hasFreshDriverGpsPoint && styles.driverMarkerCoreMuted]}>
-                    <MaterialCommunityIcons
-                      name={order?.flow === 'cargo' ? 'truck-delivery-outline' : 'motorbike'}
-                      size={20}
-                      color="#FFFFFF"
-                    />
-                  </View>
-                </View>
+                key={driver.id}
+                coordinate={driver.coordinate}
+                title={driver.title}
+                description={driver.description}
+                anchor={{ x: 0.5, y: 1 }}
+                tracksViewChanges
+                zIndex={6}>
+                <VehicleDriverMarker vehicleKey={orderVehicleKey} />
               </Marker>
+            ))}
+            {snappedDriverPoint ? (
+              MarkerAnimated && driverAnimatedCoordinateRef.current ? (
+                <MarkerAnimated
+                  coordinate={driverAnimatedCoordinateRef.current}
+                  title={order?.driverName || 'Driver'}
+                  description={arrivalEtaLabel ? `${arrivalEtaLabel} ${arrivalEtaHint}` : mapLiveStatusDetail}
+                  anchor={{ x: 0.5, y: 1 }}
+                  tracksViewChanges
+                  zIndex={12}>
+                  <VehicleDriverMarker
+                    vehicleKey={orderVehicleKey}
+                    assigned
+                    label={order?.driverName || undefined}
+                  />
+                </MarkerAnimated>
+              ) : (
+                <Marker
+                  coordinate={snappedDriverPoint}
+                  title={order?.driverName || 'Driver'}
+                  description={arrivalEtaLabel ? `${arrivalEtaLabel} ${arrivalEtaHint}` : mapLiveStatusDetail}
+                  anchor={{ x: 0.5, y: 1 }}
+                  tracksViewChanges
+                  zIndex={12}>
+                  <VehicleDriverMarker
+                    vehicleKey={orderVehicleKey}
+                    assigned
+                    label={order?.driverName || undefined}
+                  />
+                </Marker>
+              )
             ) : null}
           </NativeMapView>
         ) : (
           <View style={[styles.map, styles.mapUnavailableCard]}>
-            <Text style={styles.mapUnavailableTitle}>Google Map unavailable</Text>
-            <Text style={styles.mapUnavailableText}>
-              Turn on the Android Google Maps build key to see the full live route preview here.
-            </Text>
+            <View style={styles.mapPreviewIcon}>
+              <MaterialCommunityIcons name="map-marker-path" size={28} color={cargoTheme.colors.primary} />
+            </View>
+            <Text style={styles.mapUnavailableTitle}>{copy.track.mapPreview}</Text>
+            {order ? (
+              <Text style={styles.mapUnavailableText}>
+                {order.pickupLabel} → {order.dropoffLabel}
+              </Text>
+            ) : null}
           </View>
         )}
 
@@ -1164,51 +1527,20 @@ export default function TrackOrderScreen() {
             <MaterialCommunityIcons name="menu" size={22} color={cargoTheme.colors.text} />
           </TouchableOpacity>
           <View style={styles.titleChip}>
-            <Text style={styles.titleChipText}>
-              {order?.status === 'delivered' ? 'Completed trip' : order?.status === 'cancelled' ? 'Tracking closed' : 'Live tracking'}
-            </Text>
+            <Text style={styles.titleChipText}>{copy.track.title}</Text>
           </View>
           <TouchableOpacity style={styles.chromeButton} onPress={() => router.push('/support-center')}>
-            <MaterialCommunityIcons name="headset" size={22} color={cargoTheme.colors.text} />
+            <MaterialCommunityIcons name="lifebuoy" size={22} color={cargoTheme.colors.text} />
           </TouchableOpacity>
         </View>
-
-        {order ? (
+        {arrivalEtaLabel ? (
           <View style={styles.mapLiveCard}>
-            <View
-              style={[
-                styles.mapLiveIcon,
-                order.status === 'delivered'
-                  ? styles.mapLiveIconComplete
-                  : order.status === 'cancelled'
-                    ? styles.mapLiveIconClosed
-                    : hasFreshDriverGpsPoint
-                  ? styles.mapLiveIconFresh
-                  : hasDriverGpsPoint
-                    ? styles.mapLiveIconKnown
-                    : styles.mapLiveIconPending,
-              ]}>
-              <MaterialCommunityIcons
-                name={
-                  order.status === 'delivered'
-                    ? 'check-decagram-outline'
-                    : order.status === 'cancelled'
-                      ? 'close-circle-outline'
-                      : hasFreshDriverGpsPoint
-                        ? 'crosshairs-gps'
-                        : hasDriverGpsPoint
-                          ? 'map-marker-radius-outline'
-                          : 'map-marker-outline'
-                }
-                size={18}
-                color="#FFFFFF"
-              />
+            <View style={[styles.mapLiveIcon, styles.mapLiveIconFresh]}>
+              <MaterialCommunityIcons name="clock-outline" size={20} color="#FFFFFF" />
             </View>
             <View style={styles.mapLiveCopy}>
-              <Text style={styles.mapLiveLabel}>{mapLiveStatusLabel}</Text>
-              <Text style={styles.mapLiveText} numberOfLines={2}>
-                {mapLiveStatusDetail}
-              </Text>
+              <Text style={styles.mapLiveLabel}>{arrivalEtaLabel}</Text>
+              <Text style={styles.mapLiveText}>{arrivalEtaHint}</Text>
             </View>
           </View>
         ) : null}
@@ -1218,448 +1550,265 @@ export default function TrackOrderScreen() {
         <ScrollView contentContainerStyle={styles.sheetContent} showsVerticalScrollIndicator={false}>
           {!order && !loading ? (
             <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="map-marker-question-outline" size={30} color="#94A3B8" />
-              <Text style={styles.emptyTitle}>Order not found</Text>
-              <Text style={styles.emptyText}>Open a recent order from history or create a new booking first.</Text>
+              <MaterialCommunityIcons name="map-marker-outline" size={28} color="#94A3B8" />
+              <Text style={styles.emptyTitle}>{copy.track.emptyTitle}</Text>
+              <Text style={styles.emptyText}>{copy.track.emptyText}</Text>
             </View>
           ) : null}
 
           {loading ? (
             <View style={styles.emptyState}>
-              <View style={styles.liveLoadingVisual}>
-                <Animated.View
-                  style={[
-                    styles.liveLoadingRing,
-                    {
-                      opacity: loadingPulse.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [0.62, 0.16],
-                      }),
-                      transform: [
-                        {
-                          scale: loadingPulse.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0.82, 1.25],
-                          }),
-                        },
-                      ],
-                    },
-                  ]}
-                />
-                <MaterialCommunityIcons name="progress-clock" size={30} color={cargoTheme.colors.primary} />
-              </View>
-              <Text style={styles.emptyTitle}>Loading live order data</Text>
-              <Text style={styles.emptyText}>We are pulling the latest dispatch status from Firestore.</Text>
+              <Text style={styles.emptyTitle}>{copy.common.loading}</Text>
             </View>
           ) : null}
 
           {order ? (
             <>
               <View style={styles.statusCard}>
-                <View style={styles.statusBadge}>
-                  <MaterialCommunityIcons
-                    name={order.status === 'cancelled' && order.autoCancelledReason ? 'map-marker-off-outline' : order.status === 'pending_assignment' ? 'clock-outline' : 'map-marker-path'}
-                    size={16}
-                    color="#FFFFFF"
-                  />
-                  <Text style={styles.statusBadgeText}>{getTrackingBadgeLabel(order)}</Text>
-                </View>
-                <Text style={styles.statusTitle}>{getTrackingTitle(order)}</Text>
-                <Text style={styles.statusText}>{getDriverSearchStatusText(order)}</Text>
-                {isOrderAlive ? (
-                  <View style={styles.liveActivityCard}>
-                    <View style={styles.liveActivityHeader}>
-                      <View style={styles.liveActivityPulseWrap}>
-                        <Animated.View
+                {isWaitingForDriver ? (
+                  <FindingDriverVisual />
+                ) : showDriverFound ? (
+                  <DriverFoundVisual driverName={order.driverName} />
+                ) : (
+                  <>
+                    <Text style={styles.statusTitle}>{statusHeadline}</Text>
+                    <Text style={styles.statusText} numberOfLines={2}>
+                      {statusDetail}
+                    </Text>
+                  </>
+                )}
+                <View style={styles.timeline}>
+                  {progressSteps.map((step, index) => (
+                    <View key={step.title} style={styles.timelineStep}>
+                      <View style={styles.timelineNodeRow}>
+                        <View
                           style={[
-                            styles.liveActivityPulse,
-                            {
-                              opacity: livePulse.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: [0.72, 0.12],
-                              }),
-                              transform: [
-                                {
-                                  scale: livePulse.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [1, 1.9],
-                                  }),
-                                },
-                              ],
-                            },
+                            styles.timelineLine,
+                            index === 0 && styles.timelineLineHidden,
+                            index > 0 && progressSteps[index - 1].active && styles.timelineLineActive,
                           ]}
                         />
-                        <View style={styles.liveActivityDot} />
+                        <View style={[styles.timelineDot, step.active && styles.timelineDotActive]} />
+                        <View
+                          style={[
+                            styles.timelineLine,
+                            index === progressSteps.length - 1 && styles.timelineLineHidden,
+                            step.active && index < progressSteps.length - 1 && progressSteps[index + 1].active
+                              ? styles.timelineLineActive
+                              : null,
+                          ]}
+                        />
                       </View>
-                      <View style={styles.liveActivityCopy}>
-                        <Text style={styles.liveActivityLabel}>{liveStatusLabel}</Text>
-                        <Text style={styles.liveActivityText}>{liveStatusDetail}</Text>
-                      </View>
+                      <Text style={[styles.timelineLabel, step.active && styles.timelineLabelActive]}>{step.title}</Text>
                     </View>
-                    <View style={styles.liveActivityTrack}>
-                      <Animated.View
-                        style={[
-                          styles.liveActivitySweep,
-                          {
-                            transform: [
-                              {
-                                translateX: liveSweep.interpolate({
-                                  inputRange: [0, 1],
-                                  outputRange: [-96, 260],
-                                }),
-                              },
-                            ],
-                          },
-                        ]}
-                      />
-                    </View>
-                  </View>
-                ) : null}
-                {isWaitingForDriver ? (
-                  <View style={styles.statusWaitingRow}>
-                    <View style={styles.statusWaitingIndicator}>
-                      <Animated.View
-                        style={[
-                          styles.statusWaitingPulse,
-                          {
-                            opacity: waitingPulse.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0.85, 0.18],
-                            }),
-                            transform: [
-                              {
-                                scale: waitingPulse.interpolate({
-                                  inputRange: [0, 1],
-                                  outputRange: [1, 1.9],
-                                }),
-                              },
-                            ],
-                          },
-                        ]}
-                      />
-                      <View style={styles.statusWaitingDot} />
-                    </View>
-                    <Text style={styles.statusWaitingText}>
-                      {order.driverSearchStatus === 'waiting_for_driver'
-                        ? 'No nearby driver is online yet. We will cancel automatically if no match appears in time.'
-                        : 'Dispatch is actively searching for the nearest driver.'}
-                    </Text>
-                  </View>
-                ) : null}
+                  ))}
+                </View>
               </View>
 
               <View style={styles.driverCard}>
                 <View style={styles.driverTop}>
-                  <View style={styles.driverAvatar}>
-                    <Text style={styles.driverAvatarText}>
-                      {(order.driverName ?? 'DD')
-                        .split(/\s+/)
-                        .slice(0, 2)
-                        .map((part) => part[0]?.toUpperCase() ?? '')
-                        .join('')}
-                    </Text>
-                  </View>
+                  {order.driverId ? (
+                    <View style={styles.driverAvatar}>
+                      <Text style={styles.driverAvatarText}>
+                        {(order.driverName ?? 'DD')
+                          .split(/\s+/)
+                          .slice(0, 2)
+                          .map((part) => part[0]?.toUpperCase() ?? '')
+                          .join('')}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={styles.driverAvatar}>
+                      <FindingDriverVisual compact />
+                    </View>
+                  )}
                   <View style={styles.driverCopy}>
-                    <Text style={styles.driverName}>{order.driverName || 'Driver not assigned yet'}</Text>
+                    <Text style={styles.driverName}>{order.driverName || copy.track.findingDriver}</Text>
                     <Text style={styles.driverMeta}>
                       {order.driverId
-                        ? `${order.driverVehicleLabel || 'Vehicle pending'} • ${order.driverPlateNumber || 'Plate pending'}`
-                        : order.driverSearchStatus === 'waiting_for_driver'
-                          ? 'No nearby online driver yet.'
-                          : 'Waiting for the nearest online driver.'}
+                        ? arrivalEtaLabel
+                          ? copy.track.arrivesIn.replace('{eta}', arrivalEtaLabel)
+                          : showDriverFound
+                            ? copy.track.driverFound
+                            : [order.driverVehicleLabel, order.driverPlateNumber].filter(Boolean).join(' · ') ||
+                              copy.track.assigned
+                        : copy.track.waitingDriver}
                     </Text>
-                  </View>
-                  <View style={styles.ratingWrap}>
-                    <MaterialCommunityIcons
-                      name={orderHasRating ? 'star' : order?.status === 'delivered' ? 'star-outline' : 'map-marker-path'}
-                      size={14}
-                      color={orderHasRating || order?.status === 'delivered' ? '#F59E0B' : cargoTheme.colors.primaryDark}
-                    />
-                    <Text style={styles.ratingText}>{ratingBadgeLabel}</Text>
                   </View>
                 </View>
 
-                <View style={styles.driverGpsStatusRow}>
-                  <View style={[styles.driverGpsDot, hasFreshDriverGpsPoint && styles.driverGpsDotFresh]} />
-                  <View style={styles.driverGpsCopy}>
-                    <Text style={styles.driverGpsLabel}>{mapLiveStatusLabel}</Text>
-                    <Text style={styles.driverGpsText}>{mapLiveStatusDetail}</Text>
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  activeOpacity={hasDriverPhone ? 0.88 : 1}
-                  onPress={() => {
-                    void handleCallDriver();
-                  }}
-                  style={[styles.phoneCard, !hasDriverPhone && styles.phoneCardMuted]}>
-                  <View style={styles.phoneCardLeading}>
-                    <MaterialCommunityIcons name="phone-outline" size={18} color={cargoTheme.colors.primaryDark} />
-                    <Text style={styles.phoneCardLabel}>Driver phone</Text>
-                  </View>
-                  <View style={styles.phoneCardTrailing}>
-                    <Text style={[styles.phoneCardValue, !hasDriverPhone && styles.phoneCardValueMuted]}>
-                      {driverPhone || 'Phone pending'}
-                    </Text>
+                {order.driverId ? (
+                  <View style={styles.quickActions}>
                     {hasDriverPhone ? (
-                      <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
+                      <TouchableOpacity
+                        activeOpacity={0.88}
+                        style={styles.quickAction}
+                        onPress={() => {
+                          void handleCallDriver();
+                        }}>
+                        <View style={styles.quickActionIcon}>
+                          <MaterialCommunityIcons name="phone-outline" size={18} color={cargoTheme.colors.primaryDark} />
+                        </View>
+                        <Text style={styles.quickActionLabel}>{copy.track.call}</Text>
+                      </TouchableOpacity>
                     ) : null}
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      style={styles.quickAction}
+                      onPress={() => {
+                        void handleShareTrip();
+                      }}>
+                      <View style={styles.quickActionIcon}>
+                        <MaterialCommunityIcons name="share-variant-outline" size={18} color={cargoTheme.colors.primaryDark} />
+                      </View>
+                      <Text style={styles.quickActionLabel}>{copy.track.share}</Text>
+                    </TouchableOpacity>
                   </View>
-                </TouchableOpacity>
-
-                <View style={styles.driverActions}>
-                  <PrimaryButton
-                    label={hasDriverPhone ? 'Call driver' : 'Phone pending'}
-                    variant="secondary"
-                    icon="phone-outline"
-                    style={[styles.actionButton, !hasDriverPhone && styles.actionButtonDisabled]}
-                    onPress={() => {
-                      void handleCallDriver();
-                    }}
-                  />
-                  <PrimaryButton
-                    label="Share trip"
-                    variant="secondary"
-                    icon="share-variant-outline"
-                    style={styles.actionButton}
-                    onPress={() => {
-                      void handleShareTrip();
-                    }}
-                  />
-                </View>
+                ) : null}
               </View>
 
               <View style={styles.summaryCard}>
-                <Text style={styles.summaryTitle}>Trip details</Text>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Order ID</Text>
-                  <Text style={styles.summaryValue}>{order.orderNumber}</Text>
+                <View style={styles.routeStop}>
+                  <View style={styles.pickupDot} />
+                  <View style={styles.routeCopy}>
+                    <Text style={styles.routeLabel}>{copy.common.from}</Text>
+                    <Text style={styles.routeValue}>{order.pickupLabel}</Text>
+                  </View>
                 </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Route</Text>
-                  <Text style={styles.summaryValue}>{order.routeLabel || `${order.pickupLabel} to ${order.dropoffLabel}`}</Text>
+                <View style={styles.routeLine} />
+                <View style={styles.routeStop}>
+                  <View style={styles.dropoffDot} />
+                  <View style={styles.routeCopy}>
+                    <Text style={styles.routeLabel}>{copy.common.to}</Text>
+                    <Text style={styles.routeValue}>{order.dropoffLabel}</Text>
+                  </View>
                 </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Fare</Text>
-                  <Text style={styles.summaryValue}>{order.totalLabel}</Text>
+                <View style={styles.fareRow}>
+                  <Text style={styles.summaryLabel}>{order.orderNumber}</Text>
+                  <Text style={styles.fareValue}>{order.totalLabel}</Text>
                 </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Created</Text>
-                  <Text style={styles.summaryValue}>{formatDeliveryDateTime(order.createdAt)}</Text>
-                </View>
+                {isNotifiableRecipientPhone(order.recipientPhone) ? (
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    style={styles.smsRecipientButton}
+                    onPress={() => void handleSmsRecipient()}>
+                    <MaterialCommunityIcons name="message-text-outline" size={16} color={cargoTheme.colors.primaryDark} />
+                    <Text style={styles.smsRecipientText}>{copy.track.smsRecipient}</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
               {order.status === 'delivered' ? (
                 <View style={styles.reviewCard}>
                   <View style={styles.reviewHeader}>
-                    <View style={styles.reviewHeaderCopy}>
-                      <Text style={styles.reviewTitle}>Your delivery rating</Text>
-                      <Text style={styles.reviewSubtitle}>
-                        {orderHasRating
-                          ? 'Thanks for rating this completed DoorDrop order.'
-                          : 'Tell DoorDrop how this completed delivery went.'}
-                      </Text>
-                    </View>
+                    <Text style={styles.reviewTitle}>{copy.track.rating}</Text>
                     {canRateOrder ? (
-                      <TouchableOpacity activeOpacity={0.88} onPress={handleOpenRatingPanel} style={styles.reviewEditChip}>
-                        <MaterialCommunityIcons name={orderHasRating ? 'pencil-outline' : 'star-outline'} size={15} color={cargoTheme.colors.primaryDark} />
-                        <Text style={styles.reviewEditChipText}>{orderHasRating ? 'Edit' : 'Rate'}</Text>
+                      <TouchableOpacity activeOpacity={0.88} onPress={handleOpenRatingPanel}>
+                        <Text style={styles.reviewEditChipText}>{orderHasRating ? copy.track.edit : copy.track.rate}</Text>
                       </TouchableOpacity>
                     ) : null}
                   </View>
-
                   <View style={styles.reviewStarsRow}>
                     {ratingOptions.map((star) => (
                       <MaterialCommunityIcons
                         key={star}
                         name={star <= (order.customerRating ?? 0) ? 'star' : 'star-outline'}
-                        size={20}
+                        size={18}
                         color="#F59E0B"
                       />
                     ))}
-                    <Text style={styles.reviewStarsText}>
-                      {orderHasRating ? `${order.customerRating}/5` : 'Not rated yet'}
-                    </Text>
                   </View>
-
                   {order.customerReview?.trim() ? (
-                    <Text style={styles.reviewBody}>&quot;{order.customerReview.trim()}&quot;</Text>
-                  ) : (
-                    <Text style={styles.reviewEmptyText}>
-                      {orderHasRating ? 'No written comment was added for this trip.' : 'Add a star rating and an optional note for dispatch quality tracking.'}
-                    </Text>
-                  )}
-
-                  {order.customerRatedAt ? (
-                    <Text style={styles.reviewMeta}>Rated {formatDeliveryDateTime(order.customerRatedAt)}</Text>
+                    <Text style={styles.reviewBody}>{order.customerReview.trim()}</Text>
                   ) : null}
                 </View>
               ) : null}
 
-              <View style={styles.messageCard}>
-                <Text style={styles.messageTitle}>Message driver</Text>
-                <Text style={styles.messageSubtitle}>
-                  {order.driverId
-                    ? 'Use in-app chat for pickup notes, gate access and quick delivery updates.'
-                    : 'Dispatch will unlock driver chat after a driver is assigned to this order.'}
-                </Text>
+              {order.driverId ? (
+                <View style={styles.messageCard}>
+                  <Text style={styles.messageTitle}>{copy.track.chat}</Text>
+                  {messagesLoading ? (
+                    <Text style={styles.messageHint}>{copy.common.loading}</Text>
+                  ) : messages.length ? (
+                    <View style={styles.messageThread}>
+                      {messages.slice(-6).map((item) => {
+                        const isCustomerMessage = item.senderRole === 'customer';
 
-                {messagesLoading ? (
-                  <Text style={styles.messageHint}>Loading your latest conversation...</Text>
-                ) : messages.length ? (
-                  <View style={styles.messageThread}>
-                    {messages.slice(-6).map((item) => {
-                      const isCustomerMessage = item.senderRole === 'customer';
-
-                      return (
-                        <View
-                          key={item.id}
-                          style={[styles.messageRow, isCustomerMessage ? styles.messageRowSelf : styles.messageRowOther]}>
+                        return (
                           <View
-                            style={[
-                              styles.messageBubble,
-                              isCustomerMessage ? styles.messageBubbleSelf : styles.messageBubbleOther,
-                            ]}>
-                            <Text
+                            key={item.id}
+                            style={[styles.messageRow, isCustomerMessage ? styles.messageRowSelf : styles.messageRowOther]}>
+                            <View
                               style={[
-                                styles.messageSender,
-                                isCustomerMessage ? styles.messageSenderSelf : styles.messageSenderOther,
+                                styles.messageBubble,
+                                isCustomerMessage ? styles.messageBubbleSelf : styles.messageBubbleOther,
                               ]}>
-                              {isCustomerMessage ? 'You' : item.senderName || 'Driver'}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.messageText,
-                                isCustomerMessage ? styles.messageTextSelf : styles.messageTextOther,
-                              ]}>
-                              {item.message}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.messageTime,
-                                isCustomerMessage ? styles.messageTimeSelf : styles.messageTimeOther,
-                              ]}>
-                              {formatDeliveryDateTime(item.createdAt)}
-                            </Text>
+                              <Text
+                                style={[
+                                  styles.messageText,
+                                  isCustomerMessage ? styles.messageTextSelf : styles.messageTextOther,
+                                ]}>
+                                {item.message}
+                              </Text>
+                            </View>
                           </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-                ) : (
-                  <View style={styles.messageEmptyCard}>
-                    <MaterialCommunityIcons name="message-text-outline" size={20} color="#94A3B8" />
-                    <Text style={styles.messageHint}>
-                      {order.driverId
-                        ? 'No messages yet. Send the driver a quick note when you need help with pickup or delivery.'
-                        : 'No driver conversation yet.'}
-                    </Text>
-                  </View>
-                )}
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <Text style={styles.messageHint}>{copy.track.noMessages}</Text>
+                  )}
 
-                <View style={[styles.messageComposer, !canMessageDriver && styles.messageComposerDisabled]}>
-                  <TextInput
-                    value={messageDraft}
-                    onChangeText={setMessageDraft}
-                    editable={canMessageDriver && !messageSending}
-                    multiline
-                    maxLength={240}
-                    placeholder={
-                      canMessageDriver ? 'Write a message to your driver' : 'Driver chat becomes available after assignment'
-                    }
-                    placeholderTextColor="#94A3B8"
-                    style={styles.messageInput}
-                    textAlignVertical="top"
-                  />
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    disabled={!canMessageDriver || !messageDraft.trim() || messageSending}
-                    style={[
-                      styles.messageSendButton,
-                      (!canMessageDriver || !messageDraft.trim() || messageSending) && styles.messageSendButtonDisabled,
-                    ]}
-                    onPress={() => {
-                      void handleSendMessage();
-                    }}>
-                    <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
-                    <Text style={styles.messageSendButtonText}>{messageSending ? 'Sending...' : 'Send'}</Text>
-                  </TouchableOpacity>
+                  <View style={[styles.messageComposer, !canMessageDriver && styles.messageComposerDisabled]}>
+                    <TextInput
+                      value={messageDraft}
+                      onChangeText={setMessageDraft}
+                      editable={canMessageDriver && !messageSending}
+                      multiline
+                      maxLength={240}
+                      placeholder={canMessageDriver ? copy.track.message : copy.track.chatUnavailable}
+                      placeholderTextColor="#94A3B8"
+                      style={styles.messageInput}
+                      textAlignVertical="top"
+                    />
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      disabled={!canMessageDriver || !messageDraft.trim() || messageSending}
+                      style={[
+                        styles.messageSendButton,
+                        (!canMessageDriver || !messageDraft.trim() || messageSending) && styles.messageSendButtonDisabled,
+                      ]}
+                      onPress={() => {
+                        void handleSendMessage();
+                      }}>
+                      <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-
-                {!user?.uid ? (
-                  <Text style={styles.messageHint}>Sign in first to message the driver from inside the app.</Text>
-                ) : user.uid !== order.userId ? (
-                  <Text style={styles.messageHint}>This chat is only available to the customer account that booked the trip.</Text>
-                ) : !order.driverId ? (
-                  <Text style={styles.messageHint}>Dispatch will connect your driver here as soon as one is assigned.</Text>
-                ) : null}
-              </View>
+              ) : null}
 
               {order.status === 'cancelled' ? (
                 <View style={styles.cancelInfoCard}>
-                  <Text style={styles.cancelInfoTitle}>Cancellation details</Text>
+                  <Text style={styles.cancelInfoTitle}>{copy.track.cancelled}</Text>
                   <Text style={styles.cancelInfoText}>
-                    Cancelled by {getCancellationActorLabel(order.cancelledBy)}
-                    {order.cancelledAt ? ` • ${formatDeliveryDateTime(order.cancelledAt)}` : ''}
+                    {getCancellationActorLabel(order.cancelledBy)}
+                    {order.cancelledAt ? ` · ${formatDeliveryDateTime(order.cancelledAt)}` : ''}
                   </Text>
                   {cancellationReason ? <Text style={styles.cancelInfoReason}>{cancellationReason}</Text> : null}
                 </View>
               ) : null}
 
               {canCancelOrder ? (
-                <View style={styles.cancelToggleHitArea}>
-                  <PrimaryButton
-                    label="Cancel order"
-                    variant="dark"
-                    icon="close-circle-outline"
-                    style={styles.cancelToggleButton}
-                    onPress={() => setShowCancelPanel(true)}
-                  />
-                </View>
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  style={styles.cancelToggleHitArea}
+                  onPress={() => {
+                    setCancelError('');
+                    setShowCancelPanel(true);
+                  }}>
+                  <Text style={styles.cancelTextButton}>{copy.track.cancelOrder}</Text>
+                </TouchableOpacity>
               ) : null}
-
-              <View style={styles.progressCard}>
-                <Text style={styles.progressTitle}>Order progress</Text>
-                {progressSteps.map((step, index) => (
-                  <View key={step.title} style={styles.progressRow}>
-                    <View style={styles.progressRail}>
-                      {isOrderAlive && index === activeProgressIndex ? (
-                        <Animated.View
-                          style={[
-                            styles.progressDotPulse,
-                            {
-                              opacity: livePulse.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: [0.5, 0.08],
-                              }),
-                              transform: [
-                                {
-                                  scale: livePulse.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [0.85, 1.8],
-                                  }),
-                                },
-                              ],
-                            },
-                          ]}
-                        />
-                      ) : null}
-                      <View
-                        style={[
-                          styles.progressDot,
-                          step.active && styles.progressDotActive,
-                          isOrderAlive && index === activeProgressIndex && styles.progressDotCurrent,
-                        ]}
-                      />
-                      {index !== progressSteps.length - 1 ? <View style={styles.progressLine} /> : null}
-                    </View>
-                    <View style={styles.progressCopy}>
-                      <Text style={[styles.progressStepTitle, step.active && styles.progressStepTitleActive]}>{step.title}</Text>
-                      <Text style={styles.progressStepNote}>{step.note}</Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
             </>
           ) : null}
         </ScrollView>
@@ -1678,53 +1827,53 @@ export default function TrackOrderScreen() {
           />
           <View style={styles.cancelCard}>
             <View style={styles.cancelHeader}>
-              <Text style={styles.cancelTitle}>Cancel this order</Text>
+              <Text style={styles.cancelTitle}>{copy.track.cancelTitle}</Text>
               <TouchableOpacity
                 disabled={cancelSubmitting}
                 onPress={() => {
                   setShowCancelPanel(false);
                   setCancelReason('');
+                  setCancelError('');
                 }}>
                 <MaterialCommunityIcons name="close" size={22} color={cargoTheme.colors.subtext} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.cancelText}>Choose the reason that best explains why you want to cancel.</Text>
+            <Text style={styles.cancelText}>{copy.track.cancelHint}</Text>
             <View style={styles.reasonList}>
-              {cancellationReasons.map((reason) => {
+              {copy.track.cancelReasons.map((reason) => {
                 const isSelected = cancelReason === reason;
+                const isBusy = cancelSubmitting && isSelected;
 
                 return (
                   <TouchableOpacity
                     key={reason}
                     activeOpacity={0.88}
+                    disabled={cancelSubmitting}
                     style={[styles.reasonOption, isSelected && styles.reasonOptionSelected]}
-                    onPress={() => setCancelReason(reason)}>
+                    onPress={() => {
+                      handleSubmitCancelOrder(reason);
+                    }}>
                     <View style={[styles.reasonRadio, isSelected && styles.reasonRadioSelected]}>
                       {isSelected ? <View style={styles.reasonRadioDot} /> : null}
                     </View>
-                    <Text style={[styles.reasonLabel, isSelected && styles.reasonLabelSelected]}>{reason}</Text>
+                    <Text style={[styles.reasonLabel, isSelected && styles.reasonLabelSelected]}>
+                      {isBusy ? copy.track.cancelling : reason}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-            <View style={styles.cancelActionRow}>
-              <PrimaryButton
-                label="Keep order"
-                variant="secondary"
-                style={styles.cancelSecondaryAction}
-                onPress={() => {
-                  setShowCancelPanel(false);
-                  setCancelReason('');
-                }}
-              />
-              <PrimaryButton
-                label={cancelSubmitting ? 'Cancelling...' : 'Confirm cancel'}
-                variant="dark"
-                icon="close-circle-outline"
-                style={styles.cancelPrimaryAction}
-                onPress={handleSubmitCancelOrder}
-              />
-            </View>
+            {cancelError ? <Text style={styles.cancelErrorText}>{cancelError}</Text> : null}
+            <PrimaryButton
+              label={copy.track.keepOrder}
+              variant="secondary"
+              disabled={cancelSubmitting}
+              onPress={() => {
+                setShowCancelPanel(false);
+                setCancelReason('');
+                setCancelError('');
+              }}
+            />
           </View>
         </View>
       </Modal>
@@ -1794,6 +1943,46 @@ export default function TrackOrderScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal animationType="slide" transparent visible={showPlacedSheet} onRequestClose={dismissPlacedSheet}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={dismissPlacedSheet} />
+          <View style={styles.placedCard}>
+            <View style={styles.placedIconWrap}>
+              <MaterialCommunityIcons name="check" size={28} color="#166534" />
+            </View>
+            <Text style={styles.placedTitle}>{copy.track.orderPlaced}</Text>
+            {order?.orderNumber ? <Text style={styles.placedOrderNumber}>{order.orderNumber}</Text> : null}
+            <Text style={styles.placedBody}>{copy.track.lookingDriver}</Text>
+            {notifyRecipientParam === '1' && (!order || isNotifiableRecipientPhone(order.recipientPhone)) ? (
+              <>
+                <Text style={styles.placedNotify}>
+                  {copy.track.notifyPrompt.replace('{phone}', order?.recipientPhone || '')}
+                </Text>
+                <View style={styles.placedActionRow}>
+                  <PrimaryButton
+                    label={copy.common.notNow}
+                    variant="secondary"
+                    style={styles.placedSecondaryAction}
+                    onPress={dismissPlacedSheet}
+                  />
+                  <PrimaryButton
+                    label={smsOpening ? copy.common.loading : copy.track.sendSms}
+                    icon="message-text-outline"
+                    style={styles.placedPrimaryAction}
+                    disabled={!order || smsOpening}
+                    onPress={() => {
+                      void handlePlacedNotifySms();
+                    }}
+                  />
+                </View>
+              </>
+            ) : (
+              <PrimaryButton label={copy.common.gotIt} style={styles.placedGotIt} onPress={dismissPlacedSheet} />
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1812,20 +2001,32 @@ const styles = StyleSheet.create({
   mapUnavailableCard: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#ECFDF3',
     paddingHorizontal: 24,
   },
+  mapPreviewIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
   mapUnavailableTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.bold,
+    letterSpacing: -0.2,
     color: cargoTheme.colors.text,
-    marginBottom: 8,
+    marginBottom: 6,
     textAlign: 'center',
   },
   mapUnavailableText: {
     fontSize: 13,
     lineHeight: 20,
-    color: '#475569',
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
     textAlign: 'center',
   },
   routeMarker: {
@@ -1896,14 +2097,16 @@ const styles = StyleSheet.create({
   },
   titleChipText: {
     fontSize: 13,
-    fontWeight: '800',
+    lineHeight: 16,
+    fontFamily: typography.bold,
+    letterSpacing: -0.1,
     color: cargoTheme.colors.text,
   },
   mapLiveCard: {
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: 36,
+    bottom: 52,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -1940,8 +2143,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   mapLiveLabel: {
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 20,
+    fontFamily: typography.bold,
     color: cargoTheme.colors.text,
   },
   mapLiveText: {
@@ -1973,13 +2177,16 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    lineHeight: 24,
+    fontFamily: typography.bold,
+    letterSpacing: -0.3,
     color: cargoTheme.colors.text,
   },
   emptyText: {
     textAlign: 'center',
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
   liveLoadingVisual: {
@@ -1998,38 +2205,72 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16, 185, 129, 0.22)',
   },
   statusCard: {
-    backgroundColor: cargoTheme.colors.darkSurface,
-    borderRadius: 28,
-    padding: 18,
-    marginBottom: 18,
-  },
-  statusBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+    padding: 16,
     marginBottom: 12,
   },
-  statusBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
   statusTitle: {
-    fontSize: 22,
-    lineHeight: 28,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 8,
+    fontSize: 20,
+    lineHeight: 26,
+    fontFamily: typography.bold,
+    letterSpacing: -0.4,
+    color: cargoTheme.colors.text,
+    marginBottom: 4,
   },
   statusText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: '#D7E1EA',
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+    marginBottom: 16,
+  },
+  timeline: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  timelineStep: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  timelineNodeRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  timelineLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: '#E2E8F0',
+  },
+  timelineLineActive: {
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  timelineLineHidden: {
+    backgroundColor: 'transparent',
+  },
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#CBD5E1',
+  },
+  timelineDotActive: {
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  timelineLabel: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.medium,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
+  },
+  timelineLabelActive: {
+    color: cargoTheme.colors.text,
+    fontFamily: typography.bold,
   },
   liveActivityCard: {
     marginTop: 14,
@@ -2135,27 +2376,27 @@ const styles = StyleSheet.create({
     backgroundColor: cargoTheme.colors.surface,
     borderWidth: 1,
     borderColor: '#EDF2F7',
-    borderRadius: 24,
-    padding: 18,
-    marginBottom: 18,
+    borderRadius: 20,
+    padding: 14,
+    marginBottom: 12,
   },
   driverTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 14,
   },
   driverAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     backgroundColor: '#F0FDF4',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
   driverAvatarText: {
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 15,
+    lineHeight: 18,
+    fontFamily: typography.bold,
     color: cargoTheme.colors.primaryDark,
   },
   driverCopy: {
@@ -2164,13 +2405,16 @@ const styles = StyleSheet.create({
   },
   driverName: {
     fontSize: 16,
-    fontWeight: '800',
+    lineHeight: 21,
+    fontFamily: typography.bold,
+    letterSpacing: -0.2,
     color: cargoTheme.colors.text,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   driverMeta: {
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 18,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
   ratingWrap: {
@@ -2226,6 +2470,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
+  quickActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  quickAction: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  quickActionIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    backgroundColor: '#ECFDF3',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickActionLabel: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.text,
+  },
   phoneCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2272,6 +2547,20 @@ const styles = StyleSheet.create({
   actionButtonDisabled: {
     opacity: 0.72,
   },
+  smsRecipientButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 8,
+  },
+  smsRecipientText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.primaryDark,
+  },
   cancelToggleButton: {
     minHeight: 64,
     marginBottom: 18,
@@ -2279,8 +2568,15 @@ const styles = StyleSheet.create({
     borderColor: '#DC2626',
   },
   cancelToggleHitArea: {
-    paddingVertical: 6,
-    marginHorizontal: -2,
+    alignItems: 'center',
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  cancelTextButton: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: '#DC2626',
   },
   modalRoot: {
     flex: 1,
@@ -2291,11 +2587,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.42)',
   },
   cancelCard: {
-    backgroundColor: '#FFF7ED',
+    backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderWidth: 1,
-    borderColor: '#FED7AA',
+    borderColor: '#E2E8F0',
     padding: 18,
     paddingBottom: 28,
   },
@@ -2308,6 +2604,72 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 28,
   },
+  placedCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 28,
+    alignItems: 'center',
+  },
+  placedIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#ECFDF3',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  placedTitle: {
+    fontFamily: typography.bold,
+    fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: -0.4,
+    color: cargoTheme.colors.text,
+    textAlign: 'center',
+  },
+  placedOrderNumber: {
+    marginTop: 4,
+    fontFamily: typography.medium,
+    fontSize: 13,
+    color: cargoTheme.colors.subtext,
+  },
+  placedBody: {
+    marginTop: 8,
+    fontFamily: typography.body,
+    fontSize: 14,
+    lineHeight: 21,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
+  },
+  placedNotify: {
+    marginTop: 14,
+    fontFamily: typography.body,
+    fontSize: 13,
+    lineHeight: 20,
+    color: cargoTheme.colors.text,
+    textAlign: 'center',
+  },
+  placedActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 18,
+    width: '100%',
+  },
+  placedPrimaryAction: {
+    flex: 1,
+  },
+  placedSecondaryAction: {
+    flex: 1,
+  },
+  placedGotIt: {
+    marginTop: 18,
+    alignSelf: 'stretch',
+  },
   ratingHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2316,12 +2678,15 @@ const styles = StyleSheet.create({
   },
   ratingTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    lineHeight: 24,
+    fontFamily: typography.bold,
+    letterSpacing: -0.3,
     color: cargoTheme.colors.text,
   },
   ratingTextBody: {
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
     marginBottom: 14,
   },
@@ -2382,14 +2747,24 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   cancelTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 18,
+    lineHeight: 24,
+    fontFamily: typography.bold,
+    letterSpacing: -0.3,
     color: cargoTheme.colors.text,
   },
   cancelText: {
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
+    marginBottom: 12,
+  },
+  cancelErrorText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.medium,
+    color: '#DC2626',
     marginBottom: 12,
   },
   reasonList: {
@@ -2400,44 +2775,45 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#FDBA74',
+    borderColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 14,
-    paddingVertical: 13,
+    paddingVertical: 12,
   },
   reasonOptionSelected: {
-    borderColor: '#DC2626',
-    backgroundColor: '#FEF2F2',
+    borderColor: cargoTheme.colors.primary,
+    backgroundColor: '#ECFDF3',
   },
   reasonRadio: {
     width: 20,
     height: 20,
     borderRadius: 10,
     borderWidth: 2,
-    borderColor: '#F97316',
+    borderColor: '#CBD5E1',
     alignItems: 'center',
     justifyContent: 'center',
   },
   reasonRadioSelected: {
-    borderColor: '#DC2626',
+    borderColor: cargoTheme.colors.primary,
   },
   reasonRadioDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#DC2626',
+    backgroundColor: cargoTheme.colors.primary,
   },
   reasonLabel: {
     flex: 1,
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: typography.body,
     color: cargoTheme.colors.text,
   },
   reasonLabelSelected: {
-    color: '#991B1B',
-    fontWeight: '700',
+    color: cargoTheme.colors.primaryDark,
+    fontFamily: typography.semibold,
   },
   cancelActionRow: {
     flexDirection: 'row',
@@ -2463,28 +2839,92 @@ const styles = StyleSheet.create({
   },
   cancelInfoTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    lineHeight: 21,
+    fontFamily: typography.bold,
     color: '#991B1B',
     marginBottom: 6,
   },
   cancelInfoText: {
     fontSize: 13,
     lineHeight: 19,
+    fontFamily: typography.body,
     color: '#991B1B',
     marginBottom: 8,
   },
   cancelInfoReason: {
     fontSize: 13,
     lineHeight: 20,
+    fontFamily: typography.medium,
     color: cargoTheme.colors.text,
   },
   summaryCard: {
-    backgroundColor: cargoTheme.colors.card,
-    borderRadius: 24,
-    padding: 18,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
     borderWidth: 1,
     borderColor: '#EDF2F7',
-    marginBottom: 18,
+    marginBottom: 14,
+  },
+  routeStop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  pickupDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 5,
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  dropoffDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 3,
+    marginTop: 5,
+    backgroundColor: cargoTheme.colors.ink,
+  },
+  routeLine: {
+    width: 2,
+    height: 14,
+    marginLeft: 4,
+    marginVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#86EFAC',
+  },
+  routeCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  routeLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  routeValue: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.text,
+  },
+  fareRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8EEF4',
+  },
+  fareValue: {
+    fontSize: 16,
+    lineHeight: 20,
+    fontFamily: typography.bold,
+    letterSpacing: -0.2,
+    color: cargoTheme.colors.ink,
   },
   summaryTitle: {
     fontSize: 16,
@@ -2500,12 +2940,15 @@ const styles = StyleSheet.create({
   },
   summaryLabel: {
     fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.medium,
     color: cargoTheme.colors.subtext,
   },
   summaryValue: {
     flex: 1,
     fontSize: 13,
-    fontWeight: '700',
+    lineHeight: 18,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
     textAlign: 'right',
   },
@@ -2529,7 +2972,9 @@ const styles = StyleSheet.create({
   },
   reviewTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    lineHeight: 21,
+    fontFamily: typography.bold,
+    letterSpacing: -0.2,
     color: cargoTheme.colors.text,
     marginBottom: 4,
   },
@@ -2551,7 +2996,8 @@ const styles = StyleSheet.create({
   },
   reviewEditChipText: {
     fontSize: 12,
-    fontWeight: '800',
+    lineHeight: 16,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
   },
   reviewStarsRow: {
@@ -2568,8 +3014,8 @@ const styles = StyleSheet.create({
   reviewBody: {
     fontSize: 14,
     lineHeight: 21,
+    fontFamily: typography.body,
     color: cargoTheme.colors.text,
-    fontStyle: 'italic',
   },
   reviewEmptyText: {
     fontSize: 13,
@@ -2592,12 +3038,15 @@ const styles = StyleSheet.create({
   },
   messageTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    lineHeight: 21,
+    fontFamily: typography.bold,
+    letterSpacing: -0.2,
     color: cargoTheme.colors.text,
   },
   messageSubtitle: {
     fontSize: 13,
     lineHeight: 20,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
   messageThread: {
@@ -2642,6 +3091,7 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: typography.body,
   },
   messageTextSelf: {
     color: '#FFFFFF',
@@ -2691,16 +3141,16 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     color: cargoTheme.colors.text,
     fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.body,
   },
   messageSendButton: {
-    minHeight: 52,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     backgroundColor: cargoTheme.colors.primary,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
   },
   messageSendButtonDisabled: {
     backgroundColor: '#94A3B8',
@@ -2711,8 +3161,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   messageHint: {
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
   progressCard: {

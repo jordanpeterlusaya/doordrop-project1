@@ -216,6 +216,7 @@ module.exports = {
     owner: easOwner,
     name: 'DoorDrop',
     slug: 'DoorDrop',
+    scheme: 'doordrop',
     version: '1.0.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
@@ -223,7 +224,7 @@ module.exports = {
     splash: {
       image: './assets/images/doordrop.png',
       resizeMode: 'contain',
-      backgroundColor: '#ffffff',
+      backgroundColor: '#16A34A',
     },
     assetBundlePatterns: ['**/*'],
     android: {

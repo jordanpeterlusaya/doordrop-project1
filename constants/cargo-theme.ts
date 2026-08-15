@@ -45,58 +45,26 @@ export const bottomTabs: {
 ];
 
 export const menuSections: {
-  title: string;
+  title?: string;
   items: {
     title: string;
-    subtitle: string;
     icon: CargoIcon;
-    route: '/home' | '/send-parcel' | '/book-cargo' | '/track-order' | '/history' | '/account';
+    route:
+      | '/history'
+      | '/account'
+      | '/saved-places'
+      | '/notifications'
+      | '/support-center'
+      | '/policies';
   }[];
 }[] = [
   {
-    title: 'Delivery tools',
     items: [
-      {
-        title: 'Send parcel',
-        subtitle: 'Door-to-door parcel delivery inside or outside the city',
-        icon: 'package-variant-closed',
-        route: '/send-parcel',
-      },
-      {
-        title: 'Book cargo',
-        subtitle: 'Request a TOYO or Kirikuu cargo carrier',
-        icon: 'truck-fast-outline',
-        route: '/book-cargo',
-      },
-      {
-        title: 'Track orders',
-        subtitle: 'See live status, driver progress and ETA',
-        icon: 'map-marker-path',
-        route: '/track-order',
-      },
-    ],
-  },
-  {
-    title: 'Your account',
-    items: [
-      {
-        title: 'Home dashboard',
-        subtitle: 'Back to your main booking screen',
-        icon: 'view-dashboard-outline',
-        route: '/home',
-      },
-      {
-        title: 'Order history',
-        subtitle: 'Previous deliveries, invoices and repeats',
-        icon: 'history',
-        route: '/history',
-      },
-      {
-        title: 'Account & settings',
-        subtitle: 'Profile, payments, saved places and support',
-        icon: 'account-circle-outline',
-        route: '/account',
-      },
+      { title: 'Account', icon: 'account-circle-outline', route: '/account' },
+      { title: 'Saved places', icon: 'bookmark-outline', route: '/saved-places' },
+      { title: 'Notifications', icon: 'bell-outline', route: '/notifications' },
+      { title: 'Help', icon: 'lifebuoy', route: '/support-center' },
+      { title: 'Policies', icon: 'shield-check-outline', route: '/policies' },
     ],
   },
 ];
@@ -113,7 +81,7 @@ export const parcelScopes: {
   },
   {
     key: 'outside',
-    label: 'Outside city',
+    label: 'Other regions',
     subtitle: 'Long-distance deliveries with planned dispatch',
   },
 ];

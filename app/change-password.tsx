@@ -23,6 +23,7 @@ import {
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { useAppCopy } from '@/lib/app-copy';
 import {
   getFirebasePasswordChangeErrorMessage,
   getFirebasePasswordResetErrorMessage,
@@ -37,6 +38,7 @@ const screenScope = 'ChangePasswordScreen';
 
 function ChangePasswordScreenContent() {
   const router = useRouter();
+  const copy = useAppCopy();
   const { user } = useAuthSession();
   const [currentPassword, setCurrentPassword] = useState('');
   const [nextPassword, setNextPassword] = useState('');
@@ -214,8 +216,7 @@ function ChangePasswordScreenContent() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
           <CargoHeader
-            title="Change password"
-            subtitle="Confirm your current password, then save a new one for this DoorDrop account."
+            title={copy.password.title}
             onLeftPress={() => router.back()}
           />
 

@@ -1,27 +1,33 @@
 import { useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
-import { StatusBar, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Image, StatusBar, StyleSheet, Text, View } from 'react-native';
 
+import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
 import { logError } from '@/lib/debug-logger';
 
 export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
 
-const splashDurationMs = 1500;
+const splashDurationMs = 4000;
+const splashGreen = cargoTheme.colors.primary;
+const logo = require('@/assets/images/doordrop.png');
 
 export default function SplashScreen() {
   const router = useRouter();
+  const copy = useAppCopy();
   const navigationCommittedRef = useRef(false);
-  const [progressPercent, setProgressPercent] = useState(12);
+  const progress = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    let currentProgress = 12;
     let retryCount = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const progressTimer = setInterval(() => {
-      currentProgress = Math.min(currentProgress + 8, 96);
-      setProgressPercent(currentProgress);
-    }, 120);
+
+    Animated.timing(progress, {
+      toValue: 1,
+      duration: splashDurationMs,
+      useNativeDriver: false,
+    }).start();
 
     const navigateFromSplash = () => {
       if (navigationCommittedRef.current) {
@@ -29,7 +35,6 @@ export default function SplashScreen() {
       }
 
       navigationCommittedRef.current = true;
-      setProgressPercent(100);
       try {
         router.replace('/home');
       } catch (error) {
@@ -46,84 +51,77 @@ export default function SplashScreen() {
     const navigationTimer = setTimeout(navigateFromSplash, splashDurationMs);
 
     return () => {
-      clearInterval(progressTimer);
       clearTimeout(navigationTimer);
       if (retryTimer) {
         clearTimeout(retryTimer);
       }
     };
-  }, [router]);
+  }, [progress, router]);
+
+  const progressWidth = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['16%', '100%'],
+  });
+  const contentOpacity = progress.interpolate({
+    inputRange: [0, 0.18, 1],
+    outputRange: [0, 1, 1],
+  });
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#22C55E" />
+    <View style={styles.screen}>
+      <StatusBar barStyle="light-content" backgroundColor={splashGreen} />
 
-      <View style={styles.copyWrap}>
-        <Text style={styles.title}>DoorDrop</Text>
-        <Text style={styles.subtitle}>
-          Fast, reliable cargo and parcel delivery services at your fingertips. Track your shipments in real-time and enjoy seamless logistics solutions.
-        </Text>
-      </View>
+      <Animated.View style={[styles.center, { opacity: contentOpacity }]}>
+        <Image source={logo} style={styles.logo} resizeMode="contain" />
+        <Text style={styles.tagline}>{copy.splash.tagline}</Text>
+      </Animated.View>
 
-      <View style={styles.progressWrap}>
+      <View style={styles.footer}>
         <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
+          <Animated.View style={[styles.progressFill, { width: progressWidth }]} />
         </View>
-        <Text style={styles.loaderText}>Loading DoorDrop...</Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
+    flex: 1,
+    backgroundColor: splashGreen,
+  },
+  center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 28,
-    backgroundColor: '#16A34A',
+    paddingHorizontal: 32,
   },
-  copyWrap: {
-    alignItems: 'center',
-    gap: 16,
-    marginBottom: 26,
+  logo: {
+    width: 128,
+    height: 128,
+    borderRadius: 32,
   },
-  title: {
-    color: '#FFFFFF',
-    fontSize: 56,
-    fontFamily: typography.extrabold,
-    lineHeight: 60,
-  },
-  subtitle: {
-    color: '#E8F5E9',
-    fontSize: 15,
-    lineHeight: 23,
+  tagline: {
+    marginTop: 20,
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.medium,
+    color: 'rgba(255, 255, 255, 0.92)',
     textAlign: 'center',
-    maxWidth: 340,
-    fontWeight: '500',
   },
-  progressWrap: {
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: 280,
-    gap: 12,
+  footer: {
+    paddingHorizontal: 56,
+    paddingBottom: 40,
   },
   progressTrack: {
-    width: '100%',
-    height: 8,
+    height: 3,
     overflow: 'hidden',
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.32)',
+    backgroundColor: 'rgba(255, 255, 255, 0.28)',
   },
   progressFill: {
     height: '100%',
     borderRadius: 999,
     backgroundColor: '#FFFFFF',
-  },
-  loaderText: {
-    color: '#ECFDF5',
-    fontSize: 13,
-    fontFamily: typography.bold,
-    textAlign: 'center',
   },
 });

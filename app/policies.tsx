@@ -4,39 +4,39 @@ import { Linking, StyleSheet, Text, View } from 'react-native';
 
 import { CargoHeader, CargoScreen, MenuRow } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { useAppCopy } from '@/lib/app-copy';
 
 export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function PoliciesScreen() {
   const router = useRouter();
+  const copy = useAppCopy();
   const termsUrl = 'https://doordrop-terms.vercel.app/';
   const privacyUrl = 'https://doordrop-terms.vercel.app/privacy.html';
 
   return (
     <CargoScreen contentContainerStyle={styles.content}>
       <CargoHeader
-        title="Policies"
-        subtitle="Review the terms and privacy information for DoorDrop."
+        title={copy.policies.title}
+        subtitle={copy.policies.subtitle}
         onLeftPress={() => router.back()}
       />
 
       <View style={styles.heroCard}>
-        <Text style={styles.heroTitle}>Policies and protection</Text>
-        <Text style={styles.heroText}>
-          Open the legal and privacy pages below to understand how DoorDrop handles deliveries and account information.
-        </Text>
+        <Text style={styles.heroTitle}>{copy.policies.heroTitle}</Text>
+        <Text style={styles.heroText}>{copy.policies.heroText}</Text>
       </View>
 
       <MenuRow
         icon="file-document-outline"
-        title="Terms and conditions"
-        subtitle="Read the customer terms for bookings, cancellations and deliveries"
+        title={copy.policies.terms}
+        subtitle={copy.policies.termsSub}
         onPress={() => void Linking.openURL(termsUrl)}
       />
       <MenuRow
         icon="shield-lock-outline"
-        title="Privacy policy"
-        subtitle="See how DoorDrop stores and uses personal information"
+        title={copy.policies.privacy}
+        subtitle={copy.policies.privacySub}
         onPress={() => void Linking.openURL(privacyUrl)}
       />
     </CargoScreen>

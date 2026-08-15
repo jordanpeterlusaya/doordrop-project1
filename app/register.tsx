@@ -1,30 +1,37 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Linking, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Linking, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
-import { PrimaryButton } from '@/components/cargo-ui';
+import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
+import { PasswordInput } from '@/components/password-input';
+import { PhoneInput } from '@/components/phone-input';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { resolveAuthReturnTo } from '@/lib/auth-navigation';
+import { useAppCopy } from '@/lib/app-copy';
 import { useAuthSession } from '@/providers/auth-provider';
 
 export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+
+const TERMS_URL = 'https://doordrop-terms.vercel.app/';
+const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
 
 function RegisterScreenContent() {
   const router = useRouter();
   const params = useLocalSearchParams<{ returnTo?: string }>();
   const { authError, authenticating, clearAuthError, registerWithEmail, user } = useAuthSession();
+  const copy = useAppCopy();
   const [fullName, setFullName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [formError, setFormError] = useState('');
   const returnTo = resolveAuthReturnTo(params.returnTo);
-  const TERMS_URL = 'https://doordrop-terms.vercel.app/';
-  const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
+  const errorText = formError || authError;
 
   useEffect(() => {
     if (!user) {
@@ -39,23 +46,42 @@ function RegisterScreenContent() {
     router.replace(returnTo);
   }, [returnTo, router, user]);
 
+  const clearErrors = () => {
+    if (formError) {
+      setFormError('');
+    }
+    if (authError) {
+      clearAuthError();
+    }
+  };
+
   const handleRegister = () => {
     const trimmedFullName = fullName.trim();
     const trimmedPhoneNumber = phoneNumber.trim();
     const trimmedEmail = email.trim().toLowerCase();
 
     if (!trimmedFullName || !trimmedPhoneNumber || !trimmedEmail || !password.trim()) {
-      setFormError('Fill in full name, phone number, email and password.');
+      setFormError(copy.register.missing);
+      return;
+    }
+
+    if (trimmedPhoneNumber.replace(/\D/g, '').length < 11) {
+      setFormError(copy.register.invalidPhone);
       return;
     }
 
     if (password.length < 6) {
-      setFormError('Password must have at least 6 characters.');
+      setFormError(copy.register.shortPassword);
       return;
     }
 
     if (password !== confirmPassword) {
-      setFormError('Password confirmation does not match.');
+      setFormError(copy.register.mismatch);
+      return;
+    }
+
+    if (!acceptedTerms) {
+      setFormError(copy.register.termsRequired);
       return;
     }
 
@@ -69,165 +95,118 @@ function RegisterScreenContent() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.card}>
-          <View style={styles.badge}>
-            <MaterialCommunityIcons name="account-check-outline" size={18} color={cargoTheme.colors.primaryDark} />
-            <Text style={styles.badgeText}>Fast onboarding</Text>
-          </View>
+    <CargoScreen backgroundColor="#FFFFFF" keyboardAvoiding contentContainerStyle={styles.content}>
+      <CargoHeader
+        title={copy.register.title}
+        onLeftPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+            return;
+          }
+          router.replace('/login');
+        }}
+      />
 
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Create your DoorDrop account</Text>
-            <Text style={styles.cardSubtitle}>
-              Register with your full name, phone number, email and password, then return and complete your order.
-            </Text>
-          </View>
+      <TextInput
+        value={fullName}
+        onChangeText={(value) => {
+          setFullName(value);
+          clearErrors();
+        }}
+        placeholder={copy.register.fullName}
+        autoCapitalize="words"
+        autoComplete="name"
+        textContentType="name"
+        style={styles.input}
+        placeholderTextColor="#94A3B8"
+      />
 
-          <View style={styles.infoCard}>
-            <MaterialCommunityIcons
-              name={authError || formError ? 'alert-circle-outline' : 'shield-check-outline'}
-              size={18}
-              color={authError || formError ? '#DC2626' : cargoTheme.colors.primary}
-            />
-            <Text style={styles.infoText}>
-              {authError || formError || 'We use these details for customer identity, order updates and driver contact.'}
-            </Text>
-          </View>
+      <PhoneInput
+        value={phoneNumber}
+        onChangeText={(value) => {
+          setPhoneNumber(value);
+          clearErrors();
+        }}
+      />
 
-          <View style={styles.termsCard}>
-            <MaterialCommunityIcons name="file-document-outline" size={18} color={cargoTheme.colors.primaryDark} />
-            <View style={styles.termsCopy}>
-              <Text style={styles.termsText}>
-                By continuing, you agree to the{' '}
-                <Text style={styles.termsLink} onPress={() => void Linking.openURL(TERMS_URL)}>
-                  Terms & Conditions
-                </Text>{' '}
-                and{' '}
-                <Text style={styles.termsLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
-                  Privacy Policy
-                </Text>
-                .
-              </Text>
-            </View>
-          </View>
+      <TextInput
+        value={email}
+        onChangeText={(value) => {
+          setEmail(value);
+          clearErrors();
+        }}
+        placeholder={copy.register.email}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="email"
+        textContentType="emailAddress"
+        style={styles.input}
+        placeholderTextColor="#94A3B8"
+      />
 
-          <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Full name</Text>
-            <TextInput
-              value={fullName}
-              onChangeText={(value) => {
-                setFullName(value);
-                if (formError) {
-                  setFormError('');
-                }
-                if (authError) {
-                  clearAuthError();
-                }
-              }}
-              placeholder="Enter your full name"
-              style={styles.input}
-              placeholderTextColor="#94A3B8"
-            />
-          </View>
+      <PasswordInput
+        value={password}
+        onChangeText={(value) => {
+          setPassword(value);
+          clearErrors();
+        }}
+        placeholder={copy.register.password}
+        autoComplete="password-new"
+        textContentType="newPassword"
+      />
 
-          <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Phone number</Text>
-            <TextInput
-              value={phoneNumber}
-              onChangeText={(value) => {
-                setPhoneNumber(value);
-                if (formError) {
-                  setFormError('');
-                }
-                if (authError) {
-                  clearAuthError();
-                }
-              }}
-              placeholder="+255 7XX XXX XXX"
-              keyboardType="phone-pad"
-              style={styles.input}
-              placeholderTextColor="#94A3B8"
-            />
-          </View>
+      <PasswordInput
+        value={confirmPassword}
+        onChangeText={(value) => {
+          setConfirmPassword(value);
+          clearErrors();
+        }}
+        placeholder={copy.register.confirmPassword}
+        textContentType="newPassword"
+        onSubmitEditing={handleRegister}
+      />
 
-          <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Email address</Text>
-            <TextInput
-              value={email}
-              onChangeText={(value) => {
-                setEmail(value);
-                if (formError) {
-                  setFormError('');
-                }
-                if (authError) {
-                  clearAuthError();
-                }
-              }}
-              placeholder="you@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-              placeholderTextColor="#94A3B8"
-            />
-          </View>
+      <View style={styles.termsRow}>
+        <TouchableOpacity
+          activeOpacity={0.88}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: acceptedTerms }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          onPress={() => {
+            setAcceptedTerms((current) => !current);
+            clearErrors();
+          }}
+          style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}>
+          {acceptedTerms ? <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" /> : null}
+        </TouchableOpacity>
+        <Text style={styles.termsText}>
+          {copy.register.agree}{' '}
+          <Text style={styles.termsLink} onPress={() => void Linking.openURL(TERMS_URL)}>
+            {copy.register.terms}
+          </Text>{' '}
+          {copy.register.and}{' '}
+          <Text style={styles.termsLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
+            {copy.register.privacy}
+          </Text>
+        </Text>
+      </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Password</Text>
-            <TextInput
-              value={password}
-              onChangeText={(value) => {
-                setPassword(value);
-                if (formError) {
-                  setFormError('');
-                }
-                if (authError) {
-                  clearAuthError();
-                }
-              }}
-              placeholder="Create password"
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-              placeholderTextColor="#94A3B8"
-            />
-          </View>
+      {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
 
-          <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Confirm password</Text>
-            <TextInput
-              value={confirmPassword}
-              onChangeText={(value) => {
-                setConfirmPassword(value);
-                if (formError) {
-                  setFormError('');
-                }
-                if (authError) {
-                  clearAuthError();
-                }
-              }}
-              placeholder="Repeat password"
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-              placeholderTextColor="#94A3B8"
-            />
-          </View>
+      <PrimaryButton
+        label={authenticating ? copy.register.submitting : copy.register.submit}
+        onPress={handleRegister}
+        style={authenticating ? styles.buttonDisabled : undefined}
+      />
 
-          <PrimaryButton label={authenticating ? 'Creating account...' : 'Register to continue'} onPress={handleRegister} />
-
-          <View style={styles.footerRow}>
-            <Text style={styles.footerText}>Already have a DoorDrop account?</Text>
-            <TouchableOpacity onPress={() => router.push({ pathname: '/login', params: { returnTo } })}>
-              <Text style={styles.footerLink}>Login here</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+      <View style={styles.footerRow}>
+        <Text style={styles.footerText}>{copy.register.haveAccount}</Text>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/login', params: { returnTo } })}>
+          <Text style={styles.footerLink}>{copy.common.login}</Text>
+        </TouchableOpacity>
+      </View>
+    </CargoScreen>
   );
 }
 
@@ -240,125 +219,80 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: cargoTheme.colors.canvas,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 28,
-    justifyContent: 'center',
-  },
-  card: {
-    borderRadius: cargoTheme.radius.xl,
-    backgroundColor: cargoTheme.colors.surface,
-    padding: 20,
-    gap: 18,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 12 },
-    shadowRadius: 24,
-    elevation: 4,
-  },
-  badge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: '#ECFDF5',
-  },
-  badgeText: {
-    color: cargoTheme.colors.primaryDark,
-    fontSize: 12,
-    fontFamily: typography.bold,
-  },
-  cardHeader: {
-    gap: 6,
-  },
-  cardTitle: {
-    color: cargoTheme.colors.text,
-    fontSize: 24,
-    fontFamily: typography.extrabold,
-    letterSpacing: -0.5,
-  },
-  cardSubtitle: {
-    color: cargoTheme.colors.subtext,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  infoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: '#F8FAFC',
-  },
-  infoText: {
-    flex: 1,
-    color: cargoTheme.colors.subtext,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  termsCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: '#F8FAFC',
-  },
-  termsCopy: {
-    flex: 1,
-  },
-  termsText: {
-    color: cargoTheme.colors.subtext,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  termsLink: {
-    color: cargoTheme.colors.primary,
-    fontFamily: typography.bold,
-  },
-  formGroup: {
-    gap: 8,
-  },
-  fieldLabel: {
-    color: cargoTheme.colors.text,
-    fontSize: 13,
-    fontFamily: typography.bold,
+  content: {
+    paddingBottom: 40,
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#D9E2EC',
+    minHeight: 54,
     borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    fontSize: 15,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontFamily: typography.body,
     color: cargoTheme.colors.text,
-    backgroundColor: '#FFFFFF',
+    marginBottom: 12,
+  },
+  errorText: {
+    marginBottom: 12,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: '#DC2626',
+  },
+  buttonDisabled: {
+    opacity: 0.7,
   },
   footerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    marginTop: 16,
   },
   footerText: {
+    fontSize: 14,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
-    fontSize: 13,
   },
   footerLink: {
-    color: cargoTheme.colors.primary,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: typography.bold,
+    color: cargoTheme.colors.primaryDark,
+  },
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginTop: 4,
+    marginBottom: 16,
+    paddingVertical: 4,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    borderColor: cargoTheme.colors.primary,
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  termsText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+  },
+  termsLink: {
+    fontFamily: typography.bold,
+    color: cargoTheme.colors.primaryDark,
   },
 });

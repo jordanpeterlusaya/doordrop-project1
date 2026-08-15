@@ -1,5 +1,5 @@
 import { checkDoorDropBackendHealth, hasDoorDropApiBaseUrl, maskConfigSecret } from '@/lib/api-config';
-import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo } from '@/lib/debug-logger';
+import { logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import {
   createSearchSessionToken,
   fetchLocationSuggestions,
@@ -27,6 +27,10 @@ type MapsDiagnosticsOptions = {
 };
 
 export async function runMapsDiagnostics(scope: string, options?: MapsDiagnosticsOptions) {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) {
+    return;
+  }
+
   if (scopesRun.has(scope)) {
     return;
   }
@@ -45,7 +49,11 @@ export async function runMapsDiagnostics(scope: string, options?: MapsDiagnostic
     googleMapsKeyMasked: maskConfigSecret(googleMapsApiKey),
   });
 
-  await checkDoorDropBackendHealth(scope);
+  const health = await checkDoorDropBackendHealth(scope);
+  if (!health) {
+    logWarning(scope, 'maps-diagnostics skipped; backend unavailable');
+    return;
+  }
 
   if (!hasDoorDropApiBaseUrl()) {
     return;
@@ -60,7 +68,10 @@ export async function runMapsDiagnostics(scope: string, options?: MapsDiagnostic
       firstPlaceId: suggestions[0]?.placeId ?? null,
     });
   } catch (error) {
-    logAsyncFailure(scope, 'diagnosticPlacesAutocomplete', error, { query: placeQuery });
+    logWarning(scope, 'diagnosticPlacesAutocomplete unavailable', {
+      query: placeQuery,
+      message: error instanceof Error ? error.message : 'unavailable',
+    });
   }
 
   logAsyncStart(scope, 'diagnosticRouteEstimate', { origin, destination });
@@ -72,6 +83,10 @@ export async function runMapsDiagnostics(scope: string, options?: MapsDiagnostic
       coordinateCount: estimate.coordinates.length,
     });
   } catch (error) {
-    logAsyncFailure(scope, 'diagnosticRouteEstimate', error, { origin, destination });
+    logWarning(scope, 'diagnosticRouteEstimate unavailable', {
+      origin,
+      destination,
+      message: error instanceof Error ? error.message : 'unavailable',
+    });
   }
 }

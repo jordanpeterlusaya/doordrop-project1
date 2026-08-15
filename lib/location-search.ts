@@ -11,9 +11,19 @@ import {
   recordDoorDropApiResponse,
   syncDoorDropApiRuntimeConfig,
 } from '@/lib/api-debug';
-import { ensureDoorDropApiBaseUrl, getDoorDropApiRuntimeConfig } from '@/lib/api-config';
-import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
+import {
+  ensureDoorDropApiBaseUrl,
+  getDoorDropApiRuntimeConfig,
+  isDoorDropBackendCoolingDown,
+  markDoorDropBackendFailure,
+  markDoorDropBackendHealthy,
+} from '@/lib/api-config';
+import { logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
+import { isNetworkError } from '@/lib/network-status';
+import { fetchFallbackSuggestions, searchLocalPlaces } from '@/lib/places-fallback';
+import { fetchRoadFollowingRoute } from '@/lib/road-route';
 import { decodePolyline, filterValidCoordinates, getDistanceBetweenPoints, type RoutePoint } from '@/lib/route-utils';
+import * as Location from 'expo-location';
 import { Platform } from 'react-native';
 
 const screenScope = 'DoorDropLocationSearch';
@@ -142,6 +152,7 @@ type FetchRouteEstimateOptions = {
 type DoorDropRequestDebug = {
   kind: 'backend-health' | 'places-autocomplete' | 'place-details' | 'place-resolve' | 'routes-estimate' | 'pricing-estimate';
   requestBody?: unknown;
+  timeoutMs?: number;
 };
 
 type FetchErrorDetails = {
@@ -152,6 +163,7 @@ type FetchErrorDetails = {
 };
 
 const REQUEST_TIMEOUT_MS = 15000;
+const PLACES_BACKEND_TIMEOUT_MS = 4000;
 
 type LooseRoutePoint = {
   latitude?: number | string;
@@ -355,23 +367,32 @@ function createFallbackRouteEstimate(
   vehicleType: RouteEstimateVehicleType,
   cargoSize?: RouteEstimateCargoSize,
   pricingScope?: RouteEstimatePricingScope,
-  warning = 'DoorDrop route endpoint failed. Showing an estimated fare from map distance.'
+  warning = 'DoorDrop route endpoint failed. Showing an estimated fare from map distance.',
+  road?: { coordinates: RoutePoint[]; polyline?: string; distanceMeters?: number; durationSeconds?: number } | null
 ): RouteEstimate {
   const directDistanceMeters = getDistanceBetweenPoints(origin, destination);
-  const distanceMeters = Math.max(1000, Math.round(directDistanceMeters * 1.25));
+  const distanceMeters = Math.max(
+    1000,
+    Math.round(road?.distanceMeters && road.distanceMeters > 0 ? road.distanceMeters : directDistanceMeters * 1.25)
+  );
   const averageMetersPerSecond = 9.7;
-  const durationSeconds = Math.max(600, Math.round(distanceMeters / averageMetersPerSecond));
+  const durationSeconds =
+    road?.durationSeconds && road.durationSeconds > 0
+      ? Math.round(road.durationSeconds)
+      : Math.max(600, Math.round(distanceMeters / averageMetersPerSecond));
   const pricingEstimate = {
     ...createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope),
     warning,
   };
+  const coordinates =
+    road?.coordinates && road.coordinates.length > 2 ? road.coordinates : [origin, destination];
 
   return {
     distanceMeters,
     distanceKm: Number((distanceMeters / 1000).toFixed(2)),
     durationSeconds,
-    polyline: '',
-    coordinates: [origin, destination],
+    polyline: road?.polyline ?? '',
+    coordinates,
     price: pricingEstimate.estimatedPrice,
     pricingEstimate,
   };
@@ -512,11 +533,12 @@ async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDro
 
   let response: Response;
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutMs = debug?.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const timeoutId =
     controller && typeof setTimeout === 'function'
       ? setTimeout(() => {
           controller.abort();
-        }, REQUEST_TIMEOUT_MS)
+        }, timeoutMs)
       : null;
 
   try {
@@ -550,26 +572,11 @@ async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDro
       errorName: details.name,
     };
 
-    recordDoorDropApiError({
-      url: input,
-      kind: 'network_error',
-      error: {
-        name: details.name,
-        message: details.message,
-        userMessage: details.userMessage,
-        rawError: details.rawError,
-      },
-      body: {
-        requestBody: debug?.requestBody ?? null,
-        requestMethod,
-      },
-    });
-
     logWarning(screenScope, 'backendRequest network failure', {
       ...debugContext,
     });
-    console.error('[DoorDrop][AndroidNetworkFailure]', debugContext);
 
+    markDoorDropBackendFailure();
     throw new Error(details.userMessage);
   } finally {
     if (timeoutId !== null) {
@@ -606,18 +613,12 @@ async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDro
     });
 
     if (response.ok) {
-      const error = new Error('DoorDrop backend returned an empty response body.');
-      recordDoorDropApiError({
+      logWarning(screenScope, 'backendEmptyResponse', {
+        kind: debug?.kind ?? 'unknown',
         url: input,
-        kind: 'empty_response',
         status: response.status,
-        body: {
-          requestMethod,
-          requestBody: debug?.requestBody ?? null,
-        },
-        error,
       });
-      throw error;
+      throw new Error('LOCATION_SERVICE_UNAVAILABLE');
     }
   } else {
     try {
@@ -635,7 +636,7 @@ async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDro
         rawText: trimmedRawBody,
         parsedBody: payload,
       });
-    } catch (error) {
+    } catch {
       recordDoorDropApiResponse({
         url: input,
         status: response.status,
@@ -644,41 +645,82 @@ async function requestJson<T>(input: string, init?: RequestInit, debug?: DoorDro
         parsedBody: null,
       });
 
-      recordDoorDropApiError({
+      logWarning(screenScope, 'backendNonJsonResponse', {
+        kind: debug?.kind ?? 'unknown',
         url: input,
-        kind: 'json_parse_error',
         status: response.status,
-        body: {
-          requestMethod,
-          requestBody: debug?.requestBody ?? null,
-          rawResponseText: trimmedRawBody,
-        },
-        error: error instanceof Error ? error : new Error('Response body was not valid JSON.'),
       });
-
-      throw new Error('DoorDrop backend returned invalid JSON.');
+      markDoorDropBackendFailure();
+      throw new Error('LOCATION_SERVICE_UNAVAILABLE');
     }
   }
 
   if (!response.ok) {
     const errorMessage = payload?.error || payload?.message || `DoorDrop API request failed with ${response.status}`;
-
-    recordDoorDropApiError({
+    logWarning(screenScope, 'backendHttpError', {
+      kind: debug?.kind ?? 'unknown',
       url: input,
-      kind: 'http_error',
       status: response.status,
-      body: payload ?? trimmedRawBody,
-      error: errorMessage,
+      message: errorMessage,
     });
-
-    throw new Error(errorMessage);
+    if (response.status >= 500) {
+      markDoorDropBackendFailure();
+    }
+    throw new Error(response.status >= 500 ? 'LOCATION_SERVICE_UNAVAILABLE' : errorMessage);
   }
 
+  markDoorDropBackendHealthy();
   return (payload ?? {}) as T;
+}
+
+function uniqueLocationSuggestions(suggestions: LocationSuggestion[], limit: number) {
+  const seen = new Set<string>();
+  const unique: LocationSuggestion[] = [];
+
+  for (const suggestion of suggestions) {
+    const key = `${suggestion.placeId}::${suggestion.name}`.trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(suggestion);
+    if (unique.length >= limit) {
+      break;
+    }
+  }
+
+  return unique;
 }
 
 export function createSearchSessionToken() {
   return `dd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function geocodeQueryToSuggestions(query: string): Promise<LocationSuggestion[]> {
+  try {
+    const results = await Location.geocodeAsync(query);
+    return results
+      .filter((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude))
+      .slice(0, 4)
+      .map((item, index) => {
+        const placeId = `geo:${item.latitude},${item.longitude}:${index}`;
+        return {
+          id: placeId,
+          placeId,
+          name: query,
+          address: query,
+          fullText: query,
+          featureType: 'geocode',
+          coordinates: {
+            latitude: item.latitude,
+            longitude: item.longitude,
+          },
+        } satisfies LocationSuggestion;
+      });
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchLocationSuggestions(query: string, sessionToken: string, origin?: RoutePoint, limit = 6) {
@@ -693,6 +735,19 @@ export async function fetchLocationSuggestions(query: string, sessionToken: stri
     hasOrigin: Boolean(origin),
   });
 
+  if (isDoorDropBackendCoolingDown()) {
+    const fallbackSuggestions = await fetchFallbackSuggestions(trimmedQuery, origin, limit);
+    const geocodedSuggestions = fallbackSuggestions.length ? [] : await geocodeQueryToSuggestions(trimmedQuery);
+    const resolvedSuggestions = fallbackSuggestions.length ? fallbackSuggestions : geocodedSuggestions;
+    if (resolvedSuggestions.length) {
+      logWarning(screenScope, 'placesAutocomplete skipping backend cooldown', {
+        query: trimmedQuery,
+        count: resolvedSuggestions.length,
+      });
+      return resolvedSuggestions;
+    }
+  }
+
   try {
     const requestUrl = buildRequestUrl('/places/autocomplete', {
       input: trimmedQuery,
@@ -706,6 +761,7 @@ export async function fetchLocationSuggestions(query: string, sessionToken: stri
       undefined,
       {
         kind: 'places-autocomplete',
+        timeoutMs: PLACES_BACKEND_TIMEOUT_MS,
       }
     );
 
@@ -770,9 +826,21 @@ export async function fetchLocationSuggestions(query: string, sessionToken: stri
       backendUrl: requestUrl,
     });
 
-    return suggestions;
+    return uniqueLocationSuggestions([...suggestions, ...searchLocalPlaces(trimmedQuery, limit)], limit);
   } catch (error) {
-    logAsyncFailure(screenScope, 'placesAutocomplete', error, { query: trimmedQuery });
+    const fallbackSuggestions = await fetchFallbackSuggestions(trimmedQuery, origin, limit);
+    const geocodedSuggestions = fallbackSuggestions.length ? [] : await geocodeQueryToSuggestions(trimmedQuery);
+    const resolvedSuggestions = fallbackSuggestions.length ? fallbackSuggestions : geocodedSuggestions;
+    if (resolvedSuggestions.length) {
+      logWarning(screenScope, 'placesAutocomplete using fallback suggestions', {
+        query: trimmedQuery,
+        count: resolvedSuggestions.length,
+        offline: isNetworkError(error),
+      });
+      return resolvedSuggestions;
+    }
+
+    logWarning(screenScope, 'placesAutocomplete:failure', { query: trimmedQuery });
     throw error;
   }
 }
@@ -865,7 +933,32 @@ export async function retrieveLocationSuggestion(
 
     throw lastError ?? new Error('DoorDrop could not resolve this place to coordinates.');
   } catch (error) {
-    logAsyncFailure(screenScope, 'placeResolve', error, { placeId: resolvedPlaceId });
+    const fallbackQuery = [suggestion.fullText, suggestion.name, suggestion.address].filter(Boolean).join(', ');
+    const geocoded = fallbackQuery ? await geocodeQueryToSuggestions(fallbackQuery) : [];
+    const fallbackPoint = geocoded[0]?.coordinates;
+
+    if (fallbackPoint) {
+      logWarning(screenScope, 'placeResolve using device geocode fallback', {
+        placeId: resolvedPlaceId,
+        query: fallbackQuery,
+      });
+      return {
+        label: suggestion.name || 'Selected place',
+        address: suggestion.address || '',
+        point: fallbackPoint,
+        suggestion: {
+          id: suggestion.id,
+          placeId: resolvedPlaceId,
+          name: suggestion.name,
+          address: suggestion.address,
+          featureType: suggestion.featureType ?? 'place',
+          fullText: suggestion.fullText,
+          coordinates: fallbackPoint,
+        },
+      } satisfies RetrievedLocation;
+    }
+
+    logWarning(screenScope, 'placeResolve:failure', { placeId: resolvedPlaceId });
     throw error instanceof Error
       ? error
       : new Error('DoorDrop could not resolve this place to coordinates.');
@@ -897,7 +990,7 @@ export async function resolveTypedLocation(query: string, origin?: RoutePoint) {
 
     return resolved;
   } catch (error) {
-    logAsyncFailure(screenScope, 'resolveTypedLocation', error, { query: trimmedQuery });
+    logWarning(screenScope, 'resolveTypedLocation:failure', { query: trimmedQuery });
     throw error;
   }
 }
@@ -916,6 +1009,11 @@ export async function fetchRouteEstimate(
   });
 
   try {
+    if (isDoorDropBackendCoolingDown()) {
+      logWarning(screenScope, 'routeEstimate skipping backend cooldown', { origin, destination });
+      throw new Error('LOCATION_SERVICE_UNAVAILABLE');
+    }
+
     const routeRequestBody = {
       origin,
       destination,
@@ -952,12 +1050,21 @@ export async function fetchRouteEstimate(
       ? createFrontendEstimate(distanceMeters, options.vehicleType, options?.cargoSize, options?.pricingScope)
       : null;
 
-    const coordinates =
+    let coordinates =
       filterValidCoordinates(payload.coordinates ?? []).length > 0
         ? filterValidCoordinates(payload.coordinates ?? [])
         : payload.polyline
           ? decodePolyline(payload.polyline)
           : [origin, destination];
+    let polyline = typeof payload.polyline === 'string' ? payload.polyline : '';
+
+    if (coordinates.length < 3) {
+      const road = await fetchRoadFollowingRoute(origin, destination);
+      if (road && road.coordinates.length > 2) {
+        coordinates = road.coordinates;
+        polyline = road.geometry;
+      }
+    }
 
     let pricingEstimate = normalizePricingEstimate(payload.pricingEstimate, routePricingFallback);
     const routePrice = normalizeNumber(payload.price);
@@ -993,7 +1100,7 @@ export async function fetchRouteEstimate(
         normalizeNumber(payload.km) ??
         Number((distanceMeters / 1000).toFixed(2)),
       durationSeconds,
-      polyline: typeof payload.polyline === 'string' ? payload.polyline : '',
+      polyline,
       coordinates,
       price: routePrice ?? pricingEstimate?.estimatedPrice ?? null,
       pricingEstimate,
@@ -1009,23 +1116,48 @@ export async function fetchRouteEstimate(
 
     return estimate;
   } catch (error) {
-    logAsyncFailure(screenScope, 'routeEstimate', error, { origin, destination });
+    logWarning(screenScope, 'routeEstimate:failure', { origin, destination });
+    const road = await fetchRoadFollowingRoute(origin, destination);
+    const roadShape = road
+      ? {
+          coordinates: road.coordinates,
+          polyline: road.geometry,
+          distanceMeters: road.distanceMeters,
+          durationSeconds: road.durationSeconds,
+        }
+      : null;
+
     if (options?.vehicleType) {
       const fallback = createFallbackRouteEstimate(
         origin,
         destination,
         options.vehicleType,
         options.cargoSize,
-        options.pricingScope
+        options.pricingScope,
+        'DoorDrop route endpoint failed. Showing an estimated fare from map distance.',
+        roadShape
       );
       logWarning(screenScope, 'routeEstimate request failed, using frontend fallback route', {
         vehicleType: options.vehicleType,
         cargoSize: options.cargoSize,
         pricingScope: options.pricingScope,
         distanceMeters: fallback.distanceMeters,
+        coordinateCount: fallback.coordinates.length,
         message: getErrorMessage(error, 'Route estimate failed.'),
       });
       return fallback;
+    }
+
+    if (roadShape && roadShape.coordinates.length > 2) {
+      return {
+        distanceMeters: Math.max(1, Math.round(roadShape.distanceMeters || getDistanceBetweenPoints(origin, destination))),
+        distanceKm: Number(((roadShape.distanceMeters || getDistanceBetweenPoints(origin, destination)) / 1000).toFixed(2)),
+        durationSeconds: Math.max(60, Math.round(roadShape.durationSeconds || 0)),
+        polyline: roadShape.polyline ?? '',
+        coordinates: roadShape.coordinates,
+        price: null,
+        pricingEstimate: null,
+      } satisfies RouteEstimate;
     }
 
     throw error;
@@ -1060,6 +1192,18 @@ export async function fetchPricingEstimate(
     cargoSize,
     pricingScope,
   });
+
+  if (isDoorDropBackendCoolingDown()) {
+    const fallbackEstimate = createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
+    logWarning(screenScope, 'pricingEstimate skipping backend cooldown', {
+      vehicleType,
+      distanceMeters,
+    });
+    return {
+      ...fallbackEstimate,
+      warning: 'DoorDrop pricing endpoint failed. Showing an estimated fare from distance.',
+    };
+  }
 
   try {
     const pricingRequestBody = {
@@ -1110,7 +1254,6 @@ export async function fetchPricingEstimate(
     });
     return estimate;
   } catch (error) {
-    logAsyncFailure(screenScope, 'pricingEstimate', error, { vehicleType, distanceMeters, cargoSize, pricingScope });
     const fallbackEstimate = createFrontendEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
 
     logWarning(screenScope, 'pricingEstimate request failed, using frontend fallback', {

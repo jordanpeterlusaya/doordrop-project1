@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import { cargoTheme } from '@/constants/cargo-theme';
+import { useAppCopy } from '@/lib/app-copy';
 import { getFirebasePasswordResetErrorMessage } from '@/lib/auth-errors';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
@@ -25,6 +26,7 @@ const screenScope = 'ForgotPasswordScreen';
 
 export default function ForgotPassword() {
   const router = useRouter();
+  const copy = useAppCopy();
   const params = useLocalSearchParams<{ email?: string | string[] }>();
   const seededEmail = typeof params.email === 'string' ? params.email : '';
   const [email, setEmail] = useState('');
@@ -44,15 +46,15 @@ export default function ForgotPassword() {
     }
 
     if (!email.length) {
-      return 'Enter the email address linked to your DoorDrop account.';
+      return copy.forgot.empty;
     }
 
     if (!emailLooksValid) {
-      return 'Use a valid email address to send the reset instructions.';
+      return copy.forgot.invalid;
     }
 
-    return `We will send the reset instructions to ${email.trim().toLowerCase()}.`;
-  }, [email, emailLooksValid, error, message]);
+    return copy.forgot.willSend.replace('{email}', email.trim().toLowerCase());
+  }, [copy.forgot.empty, copy.forgot.invalid, copy.forgot.willSend, email, emailLooksValid, error, message]);
 
   useEffect(() => {
     if (seededEmail && !email.length) {
@@ -76,7 +78,7 @@ export default function ForgotPassword() {
 
     try {
       await sendPasswordResetEmail(auth, email.trim().toLowerCase());
-      setMessage('Password reset email sent. Check your inbox and spam folder.');
+      setMessage(copy.forgot.sent);
       logAsyncSuccess(screenScope, 'sendPasswordResetEmail', { email: email.trim().toLowerCase() });
     } catch (authError) {
       logAsyncFailure(screenScope, 'sendPasswordResetEmail', authError, {
@@ -85,7 +87,7 @@ export default function ForgotPassword() {
       const nextError =
         authError instanceof FirebaseError
           ? getFirebasePasswordResetErrorMessage(authError.code)
-          : 'Unable to send the reset email right now. Please try again.';
+          : copy.forgot.failed;
       setError(nextError);
     } finally {
       setSubmitting(false);
@@ -98,10 +100,8 @@ export default function ForgotPassword() {
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.card}>
-          <Text style={styles.title}>Forgot password</Text>
-          <Text style={styles.subtitle}>
-            Enter the email address linked to your DoorDrop account and we’ll send reset instructions.
-          </Text>
+          <Text style={styles.title}>{copy.forgot.title}</Text>
+          <Text style={styles.subtitle}>{copy.forgot.subtitle}</Text>
 
           <View style={styles.form}>
             <TextInput
@@ -129,11 +129,11 @@ export default function ForgotPassword() {
               style={[styles.button, (!emailLooksValid || submitting) && styles.buttonDisabled]}
               disabled={!emailLooksValid || submitting}
               onPress={sendReset}>
-              {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>Send reset email</Text>}
+              {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>{copy.forgot.submit}</Text>}
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.secondaryButton} onPress={() => router.replace('/login')}>
-              <Text style={styles.secondaryButtonText}>Back to sign in</Text>
+              <Text style={styles.secondaryButtonText}>{copy.forgot.back}</Text>
             </TouchableOpacity>
           </View>
         </View>

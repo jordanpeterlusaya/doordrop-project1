@@ -13,6 +13,15 @@ const {
   normalizePricingScope,
   normalizeVehicleType,
 } = require('./pricing');
+const {
+  driverAccessFeeTzs,
+  handleDriverPaymentHistory: getDriverPaymentHistoryPayload,
+  handleDriverPaymentStatus: getDriverPaymentStatusPayload,
+  handleMongikeWebhook,
+  initiateDriverPayment,
+  mongikeNetworks,
+  verifyDriverPayment,
+} = require('./mongike-payments');
 
 function sendJson(res, statusCode, data, originHeader) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -20,7 +29,7 @@ function sendJson(res, statusCode, data, originHeader) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Headers': 'Content-Type,x-admin-email,x-admin-uid',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,x-api-key,x-admin-email,x-admin-uid',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   });
 
@@ -474,6 +483,34 @@ async function handlePricingEstimate(req, res) {
   }
 }
 
+async function handleDriverPaymentInitiate(req, res) {
+  const body = await readJsonBody(req);
+  const payload = await initiateDriverPayment(req, body);
+  sendJson(res, 200, payload, getRequestOrigin(req));
+}
+
+async function handleDriverPaymentVerify(req, res) {
+  const body = await readJsonBody(req);
+  const payload = await verifyDriverPayment(req, body);
+  sendJson(res, 200, payload, getRequestOrigin(req));
+}
+
+async function handleDriverPaymentStatus(req, res) {
+  const payload = await getDriverPaymentStatusPayload(req);
+  sendJson(res, 200, payload, getRequestOrigin(req));
+}
+
+async function handleDriverPaymentHistory(req, res) {
+  const payload = await getDriverPaymentHistoryPayload(req);
+  sendJson(res, 200, payload, getRequestOrigin(req));
+}
+
+async function handleDriverPaymentWebhook(req, res) {
+  const body = await readJsonBody(req);
+  const payload = await handleMongikeWebhook(req, body);
+  sendJson(res, 200, { ok: true, ...payload }, getRequestOrigin(req));
+}
+
 async function requestListener(req, res) {
   const originHeader = getRequestOrigin(req);
 
@@ -501,6 +538,11 @@ async function requestListener(req, res) {
             'GET /places/resolve',
             'POST /routes/estimate',
             'POST /pricing/estimate',
+            'POST /driver-payments/initiate',
+            'POST /driver-payments/verify',
+            'GET /driver-payments/status',
+            'GET /driver-payments/history',
+            'POST /driver-payments/webhook/mongike',
           ],
         },
         originHeader
@@ -516,6 +558,9 @@ async function requestListener(req, res) {
           ok: true,
           googlePlacesConfigured: Boolean(config.googlePlacesApiKey),
           googleRoutesConfigured: Boolean(config.googleRoutesApiKey),
+          mongikeConfigured: Boolean(process.env.MONGIKE_API_KEY),
+          driverAccessFeeTzs,
+          mongikeNetworks,
           supportedVehicleTypes: SUPPORTED_VEHICLE_TYPES,
         },
         originHeader
@@ -545,6 +590,31 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/pricing/estimate') {
       await handlePricingEstimate(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-payments/initiate') {
+      await handleDriverPaymentInitiate(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-payments/verify') {
+      await handleDriverPaymentVerify(req, res);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/driver-payments/status') {
+      await handleDriverPaymentStatus(req, res);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/driver-payments/history') {
+      await handleDriverPaymentHistory(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-payments/webhook/mongike') {
+      await handleDriverPaymentWebhook(req, res);
       return;
     }
 

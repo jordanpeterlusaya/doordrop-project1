@@ -99,23 +99,27 @@ export async function recordUserAppOpen(input: {
     return;
   }
 
-  await setDoc(
-    userProfileRef(input.uid),
-    {
-      uid: input.uid,
-      fullName: input.fullName,
-      email: input.email?.trim().toLowerCase() || '',
-      phoneNumber: input.phoneNumber,
-      phoneVerified: input.phoneVerified,
-      appOpenCount: increment(1),
-      lastActiveAt: serverTimestamp(),
-      lastActiveLatitude: input.latitude,
-      lastActiveLongitude: input.longitude,
-      updatedAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const payload: Record<string, unknown> = {
+    uid: input.uid,
+    fullName: input.fullName,
+    email: input.email?.trim().toLowerCase() || '',
+    phoneNumber: input.phoneNumber,
+    phoneVerified: input.phoneVerified,
+    appOpenCount: increment(1),
+    lastActiveAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  };
+
+  if (typeof input.latitude === 'number' && Number.isFinite(input.latitude)) {
+    payload.lastActiveLatitude = input.latitude;
+  }
+
+  if (typeof input.longitude === 'number' && Number.isFinite(input.longitude)) {
+    payload.lastActiveLongitude = input.longitude;
+  }
+
+  await setDoc(userProfileRef(input.uid), payload, { merge: true });
 }
 
 export async function recordUserPushToken(input: {

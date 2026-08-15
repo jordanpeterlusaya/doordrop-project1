@@ -34,8 +34,13 @@ import {
 } from '@/lib/debug-logger';
 import { tryRequire } from '@/lib/safety';
 import { useAuthSession } from '@/providers/auth-provider';
+import { useAppCopy } from '@/lib/app-copy';
+import { classifyLocationError, type CustomerNoticeKind } from '@/lib/network-status';
+import { MapStopPin } from '@/components/map-markers';
+import { ServiceNotice } from '@/components/service-notice';
+import { typography } from '@/constants/typography';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -120,10 +125,10 @@ const cargoVehicles: CargoVehicle[] = [
 ];
 
 const cargoLoadOptions: CargoSizeOption[] = [
-  { key: 'small', label: 'Kidogo', subtitle: 'Mzigo mdogo unaochukua nafasi ndogo.' },
-  { key: 'half', label: 'Nusu chombo', subtitle: 'Mzigo unachukua karibu nusu nafasi.' },
-  { key: 'full', label: 'Inajaa', subtitle: 'Mzigo unajaza nafasi ya chombo.' },
-  { key: 'overload', label: 'Inazidi', subtitle: 'Mzigo ni mkubwa au mzito zaidi.' },
+  { key: 'small', label: 'Kidogo', subtitle: 'Nafasi ndogo' },
+  { key: 'half', label: 'Nusu', subtitle: 'Karibu nusu' },
+  { key: 'full', label: 'Inajaa', subtitle: 'Nafasi imejaa' },
+  { key: 'overload', label: 'Inazidi', subtitle: 'Mzigo mkubwa' },
 ];
 
 const fallbackSavedPlaces: SavedPlace[] = [
@@ -198,6 +203,26 @@ function areSameRoutePoint(left?: RoutePoint | null, right?: RoutePoint | null) 
   }
 
   return Math.abs(left.latitude - right.latitude) < 0.000001 && Math.abs(left.longitude - right.longitude) < 0.000001;
+}
+
+function buildRouteCameraRegion(pickup: RoutePoint, dropoff: RoutePoint, sheetVisible: boolean) {
+  const minLat = Math.min(pickup.latitude, dropoff.latitude);
+  const maxLat = Math.max(pickup.latitude, dropoff.latitude);
+  const minLng = Math.min(pickup.longitude, dropoff.longitude);
+  const maxLng = Math.max(pickup.longitude, dropoff.longitude);
+  const latSpan = Math.max(maxLat - minLat, 0.01);
+  const lngSpan = Math.max(maxLng - minLng, 0.01);
+  const latitudeDelta = latSpan * (sheetVisible ? 2.4 : 1.85);
+  const longitudeDelta = lngSpan * 1.9;
+  const midLat = (minLat + maxLat) / 2;
+  const midLng = (minLng + maxLng) / 2;
+
+  return {
+    latitude: sheetVisible ? midLat - latitudeDelta * 0.22 : midLat,
+    longitude: midLng,
+    latitudeDelta,
+    longitudeDelta,
+  };
 }
 
 function mapEstimateToRouteMetrics(estimate: RouteEstimate): RouteMetrics {
@@ -283,37 +308,6 @@ function formatCompactLocationLabel(value: string, fallback: string) {
   return [first, second].filter(Boolean).join(', ') || cleaned;
 }
 
-function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
-
-  if (typeof error === 'string' && error.trim()) {
-    return error.trim();
-  }
-
-  return fallback;
-}
-
-function getCustomerFacingCargoError(error: unknown, fallback: string) {
-  const message = getErrorMessage(error, fallback);
-  const normalized = message.toLowerCase();
-
-  if (
-    normalized.includes('expo_public') ||
-    normalized.includes('api_base_url') ||
-    normalized.includes('backend') ||
-    normalized.includes('apk') ||
-    normalized.includes('cleartext') ||
-    normalized.includes('network request failed') ||
-    normalized.includes('private/local')
-  ) {
-    return 'Location service is unavailable right now. Please try again shortly.';
-  }
-
-  return message;
-}
-
 function mergeSavedPlaces(savedPlaces: SavedPlace[]) {
   const merged = [...savedPlaces, ...fallbackSavedPlaces];
   const seen = new Set<string>();
@@ -342,6 +336,51 @@ type PrimaryButtonProps = {
 };
 
 const PRIMARY_BUTTON_PRESS_GUARD_MS = 650;
+const ROUTE_LINE_FILL = '#16A34A';
+const ROUTE_LINE_FALLBACK = '#34D399';
+
+function MapRouteLine({
+  Polyline,
+  coordinates,
+  fallback = false,
+}: {
+  Polyline: any;
+  coordinates: RoutePoint[];
+  fallback?: boolean;
+}) {
+  if (!Polyline || coordinates.length < 2) {
+    return null;
+  }
+
+  return (
+    <>
+      <Polyline
+        coordinates={coordinates}
+        strokeColor="rgba(15, 23, 42, 0.20)"
+        strokeWidth={12}
+        lineCap="round"
+        lineJoin="round"
+        zIndex={1}
+      />
+      <Polyline
+        coordinates={coordinates}
+        strokeColor="#FFFFFF"
+        strokeWidth={8}
+        lineCap="round"
+        lineJoin="round"
+        zIndex={2}
+      />
+      <Polyline
+        coordinates={coordinates}
+        strokeColor={fallback ? ROUTE_LINE_FALLBACK : ROUTE_LINE_FILL}
+        strokeWidth={5}
+        lineCap="round"
+        lineJoin="round"
+        zIndex={3}
+      />
+    </>
+  );
+}
 
 const PrimaryButton: React.FC<PrimaryButtonProps> = ({ label, icon, onPress, style, disabled = false }) => {
   const lastPressRef = useRef(0);
@@ -377,10 +416,31 @@ const PrimaryButton: React.FC<PrimaryButtonProps> = ({ label, icon, onPress, sty
 // ============================================
 
 const { height: screenHeight } = Dimensions.get('window');
-const vehicleSheetMaxHeight = Math.min(screenHeight * 0.72, 540);
+const vehicleSheetMaxHeight = Math.min(screenHeight * 0.78, 580);
 
 export default function BookCargoScreen() {
   const router = useRouter();
+  const copy = useAppCopy();
+  const params = useLocalSearchParams<{
+    repeat?: string;
+    pickup?: string;
+    pickupLat?: string;
+    pickupLng?: string;
+    dropoff?: string;
+    dropoffLat?: string;
+    dropoffLng?: string;
+    vehicle?: string;
+    cargoSize?: string;
+  }>();
+  const isRepeat = params.repeat === '1';
+  const repeatPickupLat = Number(params.pickupLat);
+  const repeatPickupLng = Number(params.pickupLng);
+  const hasRepeatPickup =
+    isRepeat && Number.isFinite(repeatPickupLat) && Number.isFinite(repeatPickupLng) && Boolean(params.pickup?.trim());
+  const repeatDropoffLat = Number(params.dropoffLat);
+  const repeatDropoffLng = Number(params.dropoffLng);
+  const hasRepeatDropoff =
+    isRepeat && Number.isFinite(repeatDropoffLat) && Number.isFinite(repeatDropoffLng) && Boolean(params.dropoff?.trim());
   const { profile, user } = useAuthSession();
   const Location = useMemo(() => tryRequire<any>('expo-location'), []);
   const nativeMaps = useMemo(() => getNativeMaps(), []);
@@ -399,6 +459,7 @@ export default function BookCargoScreen() {
   const dropoffSessionTokenRef = useRef(createSearchSessionToken());
   const pickupSessionTokenRef = useRef(createSearchSessionToken());
   const mapRef = useRef<any>(null);
+  const fitCameraTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickupInputRef = useRef<TextInput | null>(null);
   const dropoffInputRef = useRef<TextInput | null>(null);
   const liveCarrierAnimatedCoordinatesRef = useRef<Record<string, any>>({});
@@ -406,25 +467,37 @@ export default function BookCargoScreen() {
   const defaultVehicleKey = cargoVehicles[0]?.key ?? 'toyo';
 
   // State
-  const [pickupPoint, setPickupPoint] = useState<RoutePoint | null>(null);
-  const [pickupLabel, setPickupLabel] = useState('Detecting your current location...');
-  const [pickupInput, setPickupInput] = useState('Detecting your current location...');
-  const [pickupState, setPickupState] = useState<PickupState>('loading');
+  const [pickupPoint, setPickupPoint] = useState<RoutePoint | null>(
+    hasRepeatPickup ? { latitude: repeatPickupLat, longitude: repeatPickupLng } : null
+  );
+  const [pickupLabel, setPickupLabel] = useState(
+    hasRepeatPickup ? String(params.pickup) : 'Detecting your current location...'
+  );
+  const [pickupInput, setPickupInput] = useState(
+    hasRepeatPickup ? String(params.pickup) : 'Detecting your current location...'
+  );
+  const [pickupState, setPickupState] = useState<PickupState>(hasRepeatPickup ? 'ready' : 'loading');
   const [pickupHint, setPickupHint] = useState('Checking your current GPS pickup point...');
   const [pickupSuggestions, setPickupSuggestions] = useState<LocationSuggestion[]>([]);
   const [pickupNeedsSelection, setPickupNeedsSelection] = useState(false);
   const [loadingPickupSuggestions, setLoadingPickupSuggestions] = useState(false);
-  const [dropoffInput, setDropoffInput] = useState('');
-  const [dropoffPoint, setDropoffPoint] = useState<RoutePoint | null>(null);
-  const [dropoffLabel, setDropoffLabel] = useState('');
+  const [dropoffInput, setDropoffInput] = useState(hasRepeatDropoff ? String(params.dropoff) : '');
+  const [dropoffPoint, setDropoffPoint] = useState<RoutePoint | null>(
+    hasRepeatDropoff ? { latitude: repeatDropoffLat, longitude: repeatDropoffLng } : null
+  );
+  const [dropoffLabel, setDropoffLabel] = useState(hasRepeatDropoff ? String(params.dropoff) : '');
   const [mapSelectionTarget, setMapSelectionTarget] = useState<'pickup' | 'dropoff'>('dropoff');
   const [destinationState, setDestinationState] = useState<DestinationState>('idle');
   const [destinationHint, setDestinationHint] = useState('Enter the drop-off location to see place suggestions and pricing.');
   const [routeMetrics, setRouteMetrics] = useState<RouteMetrics | null>(null);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
-  const [routeError, setRouteError] = useState('');
-  const [selectedVehicle, setSelectedVehicle] = useState(defaultVehicleKey);
-  const [selectedCargoType, setSelectedCargoType] = useState<CargoLoadType>('small');
+  const [routeNotice, setRouteNotice] = useState<CustomerNoticeKind | null>(null);
+  const [selectedVehicle, setSelectedVehicle] = useState(
+    params.vehicle === 'toyo' || params.vehicle === 'kirikuu' ? params.vehicle : defaultVehicleKey
+  );
+  const [selectedCargoType, setSelectedCargoType] = useState<CargoLoadType>(
+    cargoLoadOptions.find((option) => option.label === params.cargoSize)?.key ?? 'small'
+  );
   const [formError, setFormError] = useState('');
   const [dropoffSuggestions, setDropoffSuggestions] = useState<LocationSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -474,11 +547,11 @@ export default function BookCargoScreen() {
     } catch {}
   }, []);
 
-  const mapTopEdgePadding = routeEditorExpanded ? 236 : 96;
+  const mapTopEdgePadding = routeEditorExpanded ? 236 : 130;
   const mapBottomEdgePadding = routeEditorExpanded
-    ? 84
-    : Math.max(180, Math.min(vehicleSheetMaxHeight - 100, 236));
-  const mapSideEdgePadding = routeEditorExpanded ? 56 : 44;
+    ? 100
+    : Math.round(vehicleSheetMaxHeight + 28);
+  const mapSideEdgePadding = 52;
 
   const fitMapToPoints = useCallback((points: RoutePoint[]) => {
     const validPoints = filterValidCoordinates(points);
@@ -492,8 +565,13 @@ export default function BookCargoScreen() {
       return;
     }
 
+    const pickup = validPoints[0];
+    const dropoff = validPoints[validPoints.length - 1];
+    const region = buildRouteCameraRegion(pickup, dropoff, !routeEditorExpanded);
+
     try {
-      mapRef.current?.fitToCoordinates(validPoints, {
+      mapRef.current?.animateToRegion(region, 700);
+      mapRef.current?.fitToCoordinates([pickup, dropoff], {
         edgePadding: {
           top: mapTopEdgePadding,
           right: mapSideEdgePadding,
@@ -503,7 +581,24 @@ export default function BookCargoScreen() {
         animated: true,
       });
     } catch {}
-  }, [focusMapOnPoint, mapBottomEdgePadding, mapSideEdgePadding, mapTopEdgePadding]);
+  }, [focusMapOnPoint, mapBottomEdgePadding, mapSideEdgePadding, mapTopEdgePadding, routeEditorExpanded]);
+
+  const fitMapToPickupAndDropoff = useCallback(
+    (pickup?: RoutePoint | null, dropoff?: RoutePoint | null, delay = 380) => {
+      if (!isValidCoordinate(pickup) || !isValidCoordinate(dropoff)) {
+        return;
+      }
+
+      if (fitCameraTimeoutRef.current) {
+        clearTimeout(fitCameraTimeoutRef.current);
+      }
+
+      fitCameraTimeoutRef.current = setTimeout(() => {
+        fitMapToPoints([pickup, dropoff]);
+      }, delay);
+    },
+    [fitMapToPoints]
+  );
 
   useEffect(() => {
     if (bootLoggedRef.current) {
@@ -528,6 +623,9 @@ export default function BookCargoScreen() {
     });
 
     return () => {
+      if (fitCameraTimeoutRef.current) {
+        clearTimeout(fitCameraTimeoutRef.current);
+      }
       recordCargoDiagnostic('book-cargo-native:unmounted');
       logInfo(screenScope, 'native screen unmounted');
     };
@@ -578,6 +676,20 @@ export default function BookCargoScreen() {
       recordCargoDiagnostic('book-cargo-native:pickup:load-start');
       try {
         if (!isMounted) return;
+        if (hasRepeatPickup) {
+          setPickupPoint({ latitude: repeatPickupLat, longitude: repeatPickupLng });
+          setPickupLabel(String(params.pickup));
+          setPickupInput(String(params.pickup));
+          setPickupState('ready');
+          setPickupNeedsSelection(false);
+          if (Location) {
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (isMounted) {
+              setHasLocationPermission(status === 'granted');
+            }
+          }
+          return;
+        }
         const fallbackLabel = 'Dar es Salaam pickup preview';
         setPickupPoint(defaultPickupPoint);
         setPickupLabel(fallbackLabel);
@@ -662,7 +774,7 @@ export default function BookCargoScreen() {
     dropoffLookupIdRef.current += 1;
     setRouteEstimate(null);
     setRouteMetrics(null);
-    setRouteError('');
+    setRouteNotice(null);
     setVehicleEstimates({});
     setVehiclePricingLoading(false);
     setCargoSheetStep('cargo-details');
@@ -743,7 +855,7 @@ export default function BookCargoScreen() {
       const lookupId = ++dropoffLookupIdRef.current;
       Keyboard.dismiss();
       setDestinationState('searching');
-      setRouteError('');
+      setRouteNotice(null);
       setFormError('');
       setDropoffSuggestions([]);
       setLoadingSuggestions(false);
@@ -847,12 +959,13 @@ export default function BookCargoScreen() {
         setRouteMetrics(nextRoute);
         setVehicleEstimates(nextVehicleEstimates);
         setDestinationState('resolved');
-        setRouteError('');
+        setRouteNotice(null);
         setDestinationHint(nextHint);
         setRouteEditorExpanded(false);
         setActiveSearchField('dropoff');
         setCargoSheetStep('cargo-details');
         dropoffSessionTokenRef.current = createSearchSessionToken();
+        Keyboard.dismiss();
         logAsyncSuccess(screenScope, 'resolveAndRouteDropoff', {
           source: nextRoute.source,
           distanceMeters: nextRoute.distanceMeters,
@@ -867,19 +980,13 @@ export default function BookCargoScreen() {
           cargoSize: selectedCargoType,
         });
 
-        const fitPoints = nextRoute.coordinates.length >= 2 ? nextRoute.coordinates : [pickupPoint, dropoff];
-        fitMapToPoints(fitPoints);
+        fitMapToPickupAndDropoff(pickupPoint, dropoff, 420);
       } catch (err) {
         if (lookupId !== dropoffLookupIdRef.current) return;
-        const message = getCustomerFacingCargoError(
-          err,
-          'We could not place that drop-off yet. Try a different area, street, or landmark.'
-        );
-        logAsyncFailure(screenScope, 'resolveAndRouteDropoff', err, {
+        logWarning(screenScope, 'resolveAndRouteDropoff', {
           manual,
           query,
           suggestionId: suggestion?.id,
-          message,
         });
         setDropoffPoint(null);
         setRouteEstimate(null);
@@ -887,13 +994,12 @@ export default function BookCargoScreen() {
         setVehicleEstimates({});
         setVehiclePricingLoading(false);
         setShouldFetchSuggestions(true);
+        setRouteNotice(classifyLocationError(err));
         if (manual) {
           setDestinationState('error');
-          setRouteError(message);
           setDestinationHint('Search for a landmark, street, or area');
         } else {
           setDestinationState('idle');
-          setRouteError(message);
           setDestinationHint('Keep typing to see suggestions');
         }
         trackCargoActivity('destination_search_failed', 'cargo_destination_search', {
@@ -905,7 +1011,7 @@ export default function BookCargoScreen() {
         });
       }
     },
-    [dropoffInput, fitMapToPoints, pickupNeedsSelection, pickupPoint, selectedCargoType, selectedVehicle, trackCargoActivity]
+    [dropoffInput, fitMapToPickupAndDropoff, pickupNeedsSelection, pickupPoint, selectedCargoType, selectedVehicle, trackCargoActivity]
   );
 
   const pricingDistanceMeters = routeEstimate?.distanceMeters ?? routeMetrics?.distanceMeters;
@@ -975,7 +1081,7 @@ export default function BookCargoScreen() {
         if (lookupId === suggestionLookupIdRef.current) {
           setDropoffSuggestions(suggestions);
           setLoadingSuggestions(false);
-          setRouteError('');
+          setRouteNotice(null);
           setDestinationHint(
             suggestions.length > 0
               ? 'Choose a suggestion to resolve the drop-off and load pricing.'
@@ -988,18 +1094,13 @@ export default function BookCargoScreen() {
         }
       } catch (error) {
         if (lookupId === suggestionLookupIdRef.current) {
-          const message = getCustomerFacingCargoError(
-            error,
-            'Could not load destination suggestions. Please try again.'
-          );
           setDropoffSuggestions([]);
           setLoadingSuggestions(false);
           setDestinationState('error');
-          setRouteError(message);
-          setDestinationHint(message);
-          logAsyncFailure(screenScope, 'loadDropoffSuggestions', error, {
+          setRouteNotice(classifyLocationError(error));
+          setDestinationHint('Search for a landmark, street, or area');
+          logWarning(screenScope, 'loadDropoffSuggestions', {
             query: dropoffInput,
-            message,
           });
         }
       }
@@ -1028,7 +1129,7 @@ export default function BookCargoScreen() {
         if (lookupId === pickupSuggestionLookupIdRef.current) {
           setPickupSuggestions(suggestions);
           setLoadingPickupSuggestions(false);
-          setRouteError('');
+          setRouteNotice(null);
           setPickupHint(
             suggestions.length > 0
               ? 'Choose the exact pickup suggestion to refresh the route.'
@@ -1037,17 +1138,12 @@ export default function BookCargoScreen() {
         }
       } catch (error) {
         if (lookupId === pickupSuggestionLookupIdRef.current) {
-          const message = getCustomerFacingCargoError(
-            error,
-            'Could not load pickup suggestions. Please try again.'
-          );
           setPickupSuggestions([]);
           setLoadingPickupSuggestions(false);
-          setPickupHint(message);
-          setRouteError(message);
-          logAsyncFailure(screenScope, 'loadPickupSuggestions', error, {
+          setPickupHint('Choose a pickup suggestion or refine the text.');
+          setRouteNotice(classifyLocationError(error));
+          logWarning(screenScope, 'loadPickupSuggestions', {
             query: pickupInput,
-            message,
           });
         }
       }
@@ -1091,7 +1187,7 @@ export default function BookCargoScreen() {
       setPickupSuggestions([]);
       setLoadingPickupSuggestions(false);
       setPickupHint('Pickup updated. Enter drop-off to load cargo quotes.');
-      setRouteError('');
+      setRouteNotice(null);
       clearRouteState();
       setDropoffPoint(null);
       setDropoffLabel('');
@@ -1104,17 +1200,11 @@ export default function BookCargoScreen() {
         focusMapOnPoint(resolved.point, 700);
       } catch {}
     } catch (error) {
-      const message = getCustomerFacingCargoError(
-        error,
-        'Choose one of the pickup suggestions or refine the text.'
-      );
-      logAsyncFailure(screenScope, 'handleSelectPickupSuggestion', error, {
+      logWarning(screenScope, 'handleSelectPickupSuggestion', {
         suggestionId: suggestion.id,
         placeId: suggestion.placeId,
-        message,
       });
-      setRouteError(message);
-      Alert.alert('Pickup not found', message);
+      setRouteNotice(classifyLocationError(error));
     }
   }, [clearRouteState, dropoffPoint, focusDropoffField, focusMapOnPoint]);
 
@@ -1324,14 +1414,14 @@ export default function BookCargoScreen() {
         ? 'Choose the exact pickup point from suggestions or use GPS.'
         : pickupHint
       : destinationHint;
-  const activeSearchError = activeSearchField === 'pickup' ? '' : routeError;
+  const activeSearchNotice = routeNotice && routeNotice !== 'offline' ? routeNotice : null;
   const locationChipsTitle = activeSearchField === 'pickup' ? 'Saved pickup places' : 'Quick destinations';
   const shouldShowSuggestionCard =
     routeEditorExpanded &&
     (activeSearchSuggestions.length > 0 ||
       activeSearchLoading ||
       savedPlaces.length > 0 ||
-      Boolean(activeSearchError) ||
+      Boolean(activeSearchNotice) ||
       (activeSearchField === 'pickup' ? pickupNeedsSelection : Boolean(dropoffInput.trim())));
   const routePoints = useMemo(() => {
     if (routeMetrics?.coordinates.length) {
@@ -1481,18 +1571,29 @@ export default function BookCargoScreen() {
     return quotes;
   }, [vehicleEstimates]);
 
-  const fallbackActiveVehicleEstimate = useMemo(() => {
+  const fallbackVehicleQuotes = useMemo(() => {
     if (!routeMetrics) {
-      return null;
+      return {} as Record<string, number>;
     }
 
-    return buildFrontendPricingEstimates(
+    const estimates = buildFrontendPricingEstimates(
       routeMetrics.distanceMeters,
-      [selectedVehicle],
+      cargoVehicles.map((vehicle) => vehicle.key),
       selectedCargoType as RouteEstimateCargoSize
-    )[selectedVehicle];
-  }, [routeMetrics, selectedCargoType, selectedVehicle]);
-  const activeVehiclePrice = vehicleQuotes[selectedVehicle] || fallbackActiveVehicleEstimate?.estimatedPrice || 0;
+    );
+
+    return Object.fromEntries(
+      cargoVehicles.map((vehicle) => [vehicle.key, estimates[vehicle.key]?.estimatedPrice ?? 0])
+    ) as Record<string, number>;
+  }, [routeMetrics, selectedCargoType]);
+  const displayVehicleQuotes = useMemo(() => {
+    const quotes: Record<string, number> = {};
+    for (const vehicle of cargoVehicles) {
+      quotes[vehicle.key] = vehicleQuotes[vehicle.key] || fallbackVehicleQuotes[vehicle.key] || 0;
+    }
+    return quotes;
+  }, [fallbackVehicleQuotes, vehicleQuotes]);
+  const activeVehiclePrice = displayVehicleQuotes[selectedVehicle] || 0;
   const activeVehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
   const activeCargoSizeLabel = cargoLoadOptions.find((option) => option.key === selectedCargoType)?.label ?? 'Small';
 
@@ -1530,15 +1631,15 @@ export default function BookCargoScreen() {
   }, [routeMetrics, selectedCargoType, trackCargoActivity]);
 
   useEffect(() => {
-    if (routePoints.length >= 2) {
-      fitMapToPoints(routePoints);
+    if (pickupPoint && dropoffPoint) {
+      fitMapToPickupAndDropoff(pickupPoint, dropoffPoint, 420);
       return;
     }
 
     if (pickupPoint) {
       focusMapOnPoint(pickupPoint, 500);
     }
-  }, [fitMapToPoints, focusMapOnPoint, pickupPoint, routePoints]);
+  }, [dropoffPoint, fitMapToPickupAndDropoff, focusMapOnPoint, pickupPoint]);
 
   const handleMapPress = useCallback(async (event: any) => {
     const point: RoutePoint | undefined = event?.nativeEvent?.coordinate;
@@ -1600,7 +1701,6 @@ export default function BookCargoScreen() {
     setDestinationState('searching');
     setDestinationHint('Destination pin placed. Calculating route and live vehicle pricing...');
     setFormError('');
-    focusMapOnPoint(point, 500);
 
     await resolveAndRouteDropoff({
       query: resolvedLabel,
@@ -1638,18 +1738,26 @@ export default function BookCargoScreen() {
           {validPickupPoint ? (
             <Marker
               coordinate={validPickupPoint}
-              title="Pickup"
+              title={copy.cargo.pickup}
               description={pickupLabel}
-              pinColor={cargoTheme.colors.primaryDark}
-            />
+              anchor={{ x: 0.5, y: 1 }}
+              tracksViewChanges={false}
+              zIndex={8}
+            >
+              <MapStopPin kind="pickup" label={copy.cargo.pickup} />
+            </Marker>
           ) : null}
           {validDropoffPoint ? (
             <Marker
               coordinate={validDropoffPoint}
-              title="Drop-off"
+              title={copy.cargo.dropoff}
               description={dropoffLabel || dropoffInput}
-              pinColor="#2563EB"
-            />
+              anchor={{ x: 0.5, y: 1 }}
+              tracksViewChanges={false}
+              zIndex={9}
+            >
+              <MapStopPin kind="dropoff" label={copy.cargo.dropoff} />
+            </Marker>
           ) : null}
           {nearbyCarrierMarkers.map((driver) => {
             const markerImage = vehicleImages[driver.mappedVehicleKey];
@@ -1723,13 +1831,11 @@ export default function BookCargoScreen() {
               </Marker>
             );
           })}
-          {routePoints.length >= 2 ? (
-            <Polyline
-              coordinates={routePoints}
-              strokeColor={routeMetrics?.source === 'fallback' ? '#60A5FA' : cargoTheme.colors.primaryDark}
-              strokeWidth={5}
-            />
-          ) : null}
+          <MapRouteLine
+            Polyline={Polyline}
+            coordinates={routePoints}
+            fallback={routeMetrics?.source === 'fallback'}
+          />
         </NativeMapView>
       ) : (
         <View style={[styles.map, styles.mapUnavailableCard]}>
@@ -1742,24 +1848,6 @@ export default function BookCargoScreen() {
 
       <View pointerEvents="none" style={styles.mapShade} />
 
-      {showVehicleSheet ? (
-        <View pointerEvents="none" style={[styles.mapInfoCard, routeEditorExpanded && styles.mapInfoCardRaised]}>
-          <Text style={styles.mapInfoEyebrow}>
-            {routeEstimate?.polyline
-              ? 'Live polyline route'
-              : routeMetrics?.source === 'fallback'
-                ? 'Estimated route preview'
-                : 'Live route preview'}
-          </Text>
-          <Text style={styles.mapInfoTitle}>
-            {routeMetrics ? 'Route ready' : 'Set pickup and drop-off'}
-          </Text>
-          <Text style={styles.mapInfoText}>
-            {`${activeVehicleTitle} selected. Review the final fare on the next page.`}
-          </Text>
-        </View>
-      ) : null}
-
       <View pointerEvents="box-none" style={styles.topOverlay}>
         <View style={styles.chromeRow}>
           <TouchableOpacity style={styles.chromeButton} onPress={() => router.back()}>
@@ -1767,7 +1855,7 @@ export default function BookCargoScreen() {
           </TouchableOpacity>
           <View style={styles.titleChip}>
             <Text style={styles.titleChipText}>
-              {showVehicleSheet ? (showCarrierStep ? 'Choose carrier' : 'Cargo details') : 'Book cargo carrier'}
+              {showVehicleSheet ? (showCarrierStep ? copy.cargo.carrier : copy.cargo.details) : copy.cargo.book}
             </Text>
           </View>
           <TouchableOpacity style={styles.chromeButton} onPress={() => router.push('/menu')}>
@@ -1780,8 +1868,7 @@ export default function BookCargoScreen() {
             <View style={styles.searchCard}>
               <View style={styles.searchCardHeader}>
                 <View>
-                  <Text style={styles.searchCardTitle}>Pickup and destination</Text>
-                  <Text style={styles.searchCardSubtitle}>Keep the map visible while you search.</Text>
+                  <Text style={styles.searchCardTitle}>{copy.cargo.route}</Text>
                 </View>
                 {showVehicleSheet ? (
                   <TouchableOpacity
@@ -1789,84 +1876,89 @@ export default function BookCargoScreen() {
                     style={styles.searchCollapseButton}
                     onPress={() => setRouteEditorExpanded(false)}>
                     <MaterialCommunityIcons name="chevron-up" size={18} color={cargoTheme.colors.text} />
-                    <Text style={styles.searchCollapseButtonText}>Hide</Text>
+                    <Text style={styles.searchCollapseButtonText}>{copy.cargo.hide}</Text>
                   </TouchableOpacity>
                 ) : null}
               </View>
 
               <View style={styles.searchFieldShell}>
-                <View style={styles.searchFieldRow}>
-                  <View style={[styles.routeIconWrap, styles.pickupIconWrap]}>
+                <View style={styles.routeTimeline}>
+                  <View style={styles.routeSpineCol}>
                     <View style={styles.pickupDot} />
+                    <View style={styles.routeSpine}>
+                      <View style={styles.routeSpineFill} />
+                    </View>
+                    <View style={styles.dropoffSquare} />
                   </View>
-                  <View style={styles.routeCopy}>
-                    <Text style={styles.routeLabel}>Pickup</Text>
-                    <TextInput
-                      ref={pickupInputRef}
-                      value={pickupInput}
-                      onChangeText={handlePickupChange}
-                      onFocus={() => reopenRouteEditor('pickup')}
-                      placeholder="Start typing pickup location"
-                      placeholderTextColor="#94A3B8"
-                      style={styles.routeInput}
-                      autoCapitalize="words"
-                      autoCorrect={false}
-                      returnKeyType="search"
-                    />
-                  </View>
-                  {pickupState === 'loading' ? (
-                    <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-                  ) : (
-                    <Pressable hitSlop={10} onPress={refreshPickup}>
-                      <MaterialCommunityIcons name="crosshairs-gps" size={22} color={cargoTheme.colors.primaryDark} />
-                    </Pressable>
-                  )}
-                </View>
+                  <View style={styles.routeFields}>
+                    <View style={styles.searchFieldRow}>
+                      <View style={styles.routeCopy}>
+                        <Text style={styles.routeLabel}>{copy.cargo.pickup}</Text>
+                        <TextInput
+                          ref={pickupInputRef}
+                          value={pickupInput}
+                          onChangeText={handlePickupChange}
+                          onFocus={() => reopenRouteEditor('pickup')}
+                          placeholder={copy.cargo.pickupPlaceholder}
+                          placeholderTextColor="#94A3B8"
+                          style={styles.routeInput}
+                          autoCapitalize="words"
+                          autoCorrect={false}
+                          returnKeyType="search"
+                        />
+                      </View>
+                      {pickupState === 'loading' ? (
+                        <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
+                      ) : (
+                        <Pressable hitSlop={10} onPress={refreshPickup}>
+                          <MaterialCommunityIcons name="crosshairs-gps" size={22} color={cargoTheme.colors.primaryDark} />
+                        </Pressable>
+                      )}
+                    </View>
 
-                <View style={styles.searchFieldDivider} />
+                    <View style={styles.searchFieldHairline} />
 
-                <View style={styles.searchFieldRow}>
-                  <View style={[styles.routeIconWrap, styles.dropoffIconWrap]}>
-                    <MaterialCommunityIcons name="flag-checkered" size={18} color="#2563EB" />
-                  </View>
-                  <View style={styles.routeCopy}>
-                    <Text style={styles.routeLabel}>Drop-off</Text>
-                    <TextInput
-                      ref={dropoffInputRef}
-                      value={dropoffInput}
-                      onChangeText={resetDropoffSelection}
-                      onFocus={() => reopenRouteEditor('dropoff')}
-                      placeholder="Enter delivery destination"
-                      placeholderTextColor="#94A3B8"
-                      style={styles.routeInput}
-                      autoCapitalize="words"
-                      autoCorrect={false}
-                      returnKeyType="search"
-                      onSubmitEditing={() => resolveAndRouteDropoff({ manual: true })}
-                    />
-                  </View>
-                  <View style={styles.routeActions}>
-                    {dropoffInput ? (
-                      <Pressable hitSlop={10} onPress={clearDropoffSelection}>
-                        <MaterialCommunityIcons name="close" size={20} color="#94A3B8" />
-                      </Pressable>
-                    ) : null}
-                    {destinationState === 'searching' || loadingSuggestions ? (
-                      <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-                    ) : (
-                      <Pressable hitSlop={10} onPress={() => resolveAndRouteDropoff({ manual: true })}>
-                        <MaterialCommunityIcons name="magnify" size={22} color={cargoTheme.colors.primaryDark} />
-                      </Pressable>
-                    )}
+                    <View style={styles.searchFieldRow}>
+                      <View style={styles.routeCopy}>
+                        <Text style={styles.routeLabel}>{copy.cargo.dropoff}</Text>
+                        <TextInput
+                          ref={dropoffInputRef}
+                          value={dropoffInput}
+                          onChangeText={resetDropoffSelection}
+                          onFocus={() => reopenRouteEditor('dropoff')}
+                          placeholder={copy.parcel.dropoffPlaceholder}
+                          placeholderTextColor="#94A3B8"
+                          style={styles.routeInput}
+                          autoCapitalize="words"
+                          autoCorrect={false}
+                          returnKeyType="search"
+                          onSubmitEditing={() => resolveAndRouteDropoff({ manual: true })}
+                        />
+                      </View>
+                      <View style={styles.routeActions}>
+                        {dropoffInput ? (
+                          <Pressable hitSlop={10} onPress={clearDropoffSelection}>
+                            <MaterialCommunityIcons name="close" size={20} color="#94A3B8" />
+                          </Pressable>
+                        ) : null}
+                        {destinationState === 'searching' || loadingSuggestions ? (
+                          <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
+                        ) : (
+                          <Pressable hitSlop={10} onPress={() => resolveAndRouteDropoff({ manual: true })}>
+                            <MaterialCommunityIcons name="magnify" size={22} color={cargoTheme.colors.primaryDark} />
+                          </Pressable>
+                        )}
+                      </View>
+                    </View>
                   </View>
                 </View>
               </View>
 
               <View style={styles.mapModeRow}>
-                {[
-                  { key: 'pickup', label: 'Place pickup pin' },
-                  { key: 'dropoff', label: 'Place destination pin' },
-                ].map((item) => {
+                    {[
+                      { key: 'pickup', label: 'Pickup pin' },
+                      { key: 'dropoff', label: 'Drop-off pin' },
+                    ].map((item) => {
                   const isActive = mapSelectionTarget === item.key;
                   return (
                     <TouchableOpacity
@@ -1883,10 +1975,9 @@ export default function BookCargoScreen() {
 
             {shouldShowSuggestionCard ? (
               <View style={styles.searchResultsCard}>
-                {activeSearchError ? (
-                  <View style={styles.errorBanner}>
-                    <MaterialCommunityIcons name="alert-circle-outline" size={18} color="#B91C1C" />
-                    <Text style={styles.errorBannerText}>{activeSearchError}</Text>
+                {activeSearchNotice ? (
+                  <View style={styles.noticeWrap}>
+                    <ServiceNotice kind={activeSearchNotice} />
                   </View>
                 ) : null}
 
@@ -1969,7 +2060,7 @@ export default function BookCargoScreen() {
                   ))}
                 </ScrollView>
 
-                <Text style={[styles.routeHint, activeSearchError && styles.routeHintError]}>{activeSearchHint}</Text>
+                <Text style={styles.routeHint}>{activeSearchHint}</Text>
               </View>
             ) : null}
           </>
@@ -1998,9 +2089,7 @@ export default function BookCargoScreen() {
           {showCargoDetailsStep ? (
             <>
               <Text style={styles.vehicleSheetTitle}>Maelezo ya mzigo</Text>
-              <Text style={styles.vehicleSheetSubtitle}>
-                Chagua ukubwa wa mzigo kabla ya kuchagua usafiri.
-              </Text>
+              <Text style={styles.vehicleSheetSubtitle}>Chagua ukubwa, kisha usafiri.</Text>
 
               <View style={styles.cargoTypeRowWrap}>
                 <Text style={styles.cargoTypeRowLabel}>Ukubwa wa mzigo</Text>
@@ -2028,7 +2117,7 @@ export default function BookCargoScreen() {
               <View style={styles.vehicleActionBar}>
                 {formError ? <Text style={styles.formError}>{formError}</Text> : null}
                 <PrimaryButton
-                  label="Endelea kuchagua usafiri"
+                  label={copy.common.continue}
                   icon="arrow-right"
                   onPress={handleCargoDetailsContinue}
                   style={styles.ctaButton}
@@ -2037,23 +2126,8 @@ export default function BookCargoScreen() {
             </>
           ) : (
             <>
-              <Text style={styles.vehicleSheetTitle}>Choose cargo carrier</Text>
-              <Text style={styles.vehicleSheetSubtitle}>
-                {`Select the carrier type. Fare and route summary appear on the next page.`}
-              </Text>
-
-              <View style={styles.vehicleStepHeaderRow}>
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  style={styles.editCargoDetailsButton}
-                  onPress={() => setCargoSheetStep('cargo-details')}>
-                  <MaterialCommunityIcons name="pencil-outline" size={15} color={cargoTheme.colors.primaryDark} />
-                  <Text style={styles.editCargoDetailsButtonText}>Edit details</Text>
-                </TouchableOpacity>
-                <Text numberOfLines={1} style={styles.vehicleStepSummary}>
-                  {`Ukubwa: ${activeCargoSizeLabel}`}
-                </Text>
-              </View>
+              <Text style={styles.vehicleSheetTitle}>Choose carrier</Text>
+              <Text style={styles.vehicleSheetSubtitle}>Chagua TOYO au Kirikuu</Text>
 
               {nearbyCarrierSummary ? (
                 <View style={styles.liveCarrierBanner}>
@@ -2062,22 +2136,30 @@ export default function BookCargoScreen() {
                 </View>
               ) : null}
 
-              <View style={styles.vehicleGrid}>
+              <View style={styles.vehicleList}>
                 {cargoVehicles.map((vehicle) => {
                   const isActive = vehicle.key === selectedVehicle;
+                  const vehiclePrice = displayVehicleQuotes[vehicle.key] || 0;
                   return (
                     <TouchableOpacity
                       key={vehicle.key}
                       activeOpacity={0.9}
-                      style={[styles.vehicleGridCard, isActive && styles.vehicleGridCardActive]}
+                      style={[styles.vehicleRow, isActive && styles.vehicleRowActive]}
                       onPress={() => handleVehicleSelect(vehicle.key)}>
-                      <View style={styles.vehicleGridImageWrap}>
-                        <Image source={vehicleImages[vehicle.key]} style={styles.vehicleGridImage} resizeMode="contain" />
+                      <View style={styles.vehiclePhotoWrap}>
+                        <Image source={vehicleImages[vehicle.key]} style={styles.vehiclePhoto} resizeMode="contain" />
                       </View>
-                      <Text numberOfLines={1} style={styles.vehicleGridTitle}>{vehicle.title}</Text>
-                      <Text numberOfLines={2} style={styles.vehicleGridMeta}>{vehicle.capacity}</Text>
-                      <View style={[styles.vehicleSelectBadge, styles.vehicleGridBadge, isActive && styles.vehicleSelectBadgeActive]}>
-                        {isActive ? <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" /> : null}
+                      <View style={styles.vehicleCopy}>
+                        <Text numberOfLines={1} style={styles.vehicleRowTitle}>{vehicle.title}</Text>
+                        <Text numberOfLines={1} style={styles.vehicleRowMeta}>{vehicle.capacity}</Text>
+                      </View>
+                      <View style={styles.vehiclePriceCol}>
+                        <Text style={styles.vehicleRowPrice}>{vehiclePrice ? formatTzs(vehiclePrice) : '—'}</Text>
+                        {isActive ? (
+                          <View style={styles.vehicleRowCheck}>
+                            <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
+                          </View>
+                        ) : null}
                       </View>
                     </TouchableOpacity>
                   );
@@ -2087,7 +2169,7 @@ export default function BookCargoScreen() {
               <View style={styles.vehicleActionBar}>
                 {formError ? <Text style={styles.formError}>{formError}</Text> : null}
                 <PrimaryButton
-                  label="Continue"
+                  label={activeVehiclePrice ? `${copy.common.continue} · ${formatTzs(activeVehiclePrice)}` : copy.common.continue}
                   icon="arrow-right"
                   onPress={handleContinue}
                   style={styles.ctaButton}
@@ -2122,7 +2204,7 @@ const styles = StyleSheet.create({
   },
   mapUnavailableTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.ink,
     marginBottom: 8,
     textAlign: 'center',
@@ -2130,8 +2212,47 @@ const styles = StyleSheet.create({
   mapUnavailableText: {
     fontSize: 13,
     lineHeight: 20,
+    fontFamily: typography.body,
     color: '#334155',
     textAlign: 'center',
+  },
+  mapPickupPin: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  mapPickupPinCore: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: ROUTE_LINE_FILL,
+  },
+  mapDropoffPin: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  mapDropoffPinCore: {
+    width: 11,
+    height: 11,
+    borderRadius: 3,
+    backgroundColor: cargoTheme.colors.ink,
   },
   liveCarrierMarkerShell: {
     alignItems: 'center',
@@ -2156,7 +2277,7 @@ const styles = StyleSheet.create({
   },
   liveCarrierMarkerLabelText: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: typography.bold,
     color: '#FFFFFF',
     letterSpacing: 0.3,
   },
@@ -2197,46 +2318,6 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
   },
-  mapInfoCard: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: vehicleSheetMaxHeight + 18,
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.94)',
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.94)',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    elevation: 6,
-  },
-  mapInfoCardRaised: {
-    bottom: vehicleSheetMaxHeight + 96,
-  },
-  mapInfoEyebrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    color: cargoTheme.colors.primaryDark,
-    marginBottom: 6,
-  },
-  mapInfoTitle: {
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: '800',
-    color: cargoTheme.colors.ink,
-    marginBottom: 6,
-  },
-  mapInfoText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: '#334155',
-  },
   mapShade: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
@@ -2254,45 +2335,42 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   chromeButton: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.96)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
   titleChip: {
     flex: 1,
-    minHeight: 46,
-    borderRadius: 23,
-    backgroundColor: 'rgba(255,255,255,0.94)',
+    minHeight: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.96)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.94)',
+    paddingHorizontal: 14,
   },
   titleChipText: {
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 14,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.ink,
+    letterSpacing: -0.2,
   },
   searchCard: {
     backgroundColor: 'rgba(255,255,255,0.98)',
-    borderRadius: 28,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.8)',
+    borderRadius: 22,
+    padding: 14,
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    elevation: 8,
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 7,
   },
   searchCardHeader: {
     flexDirection: 'row',
@@ -2302,16 +2380,11 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   searchCardTitle: {
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 20,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
-  },
-  searchCardSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-    marginTop: 2,
+    letterSpacing: -0.2,
   },
   searchCollapseButton: {
     flexDirection: 'row',
@@ -2326,7 +2399,7 @@ const styles = StyleSheet.create({
   },
   searchCollapseButtonText: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
   searchFieldShell: {
@@ -2340,60 +2413,84 @@ const styles = StyleSheet.create({
   searchFieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 62,
+    minHeight: 54,
   },
-  searchFieldDivider: {
-    height: 1,
+  searchFieldHairline: {
+    height: StyleSheet.hairlineWidth,
     backgroundColor: '#E2E8F0',
-    marginLeft: 54,
     marginVertical: 2,
+  },
+  routeTimeline: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  routeSpineCol: {
+    width: 18,
+    alignItems: 'center',
+    paddingTop: 20,
+    paddingBottom: 20,
+    marginRight: 12,
+  },
+  routeSpine: {
+    flex: 1,
+    width: 2,
+    marginVertical: 6,
+    alignItems: 'center',
+  },
+  routeSpineFill: {
+    flex: 1,
+    width: 2,
+    borderRadius: 999,
+    backgroundColor: '#86EFAC',
+  },
+  routeFields: {
+    flex: 1,
+    minWidth: 0,
   },
   routeRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  routeIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  pickupIconWrap: {
-    backgroundColor: '#ECFDF3',
-  },
   pickupDot: {
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: cargoTheme.colors.primary,
+    backgroundColor: ROUTE_LINE_FILL,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
   },
-  dropoffIconWrap: {
-    backgroundColor: '#EFF6FF',
+  dropoffSquare: {
+    width: 11,
+    height: 11,
+    borderRadius: 3,
+    backgroundColor: cargoTheme.colors.ink,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
   },
   routeCopy: {
     flex: 1,
   },
   routeLabel: {
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 11,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.subtext,
-    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 2,
   },
   routeValue: {
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 20,
-    fontWeight: '700',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
   routeInput: {
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 20,
-    fontWeight: '700',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
     paddingVertical: 0,
-    minHeight: 24,
+    minHeight: 22,
   },
   routeInlineHint: {
     marginTop: 6,
@@ -2430,24 +2527,8 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 7,
   },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
+  noticeWrap: {
     marginBottom: 10,
-  },
-  errorBannerText: {
-    flex: 1,
-    fontSize: 12,
-    lineHeight: 18,
-    color: '#B91C1C',
-    fontWeight: '600',
   },
   resultsLoadingRow: {
     flexDirection: 'row',
@@ -2486,13 +2567,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   suggestionTitle: {
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 14,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
   suggestionText: {
     fontSize: 12,
-    lineHeight: 17,
+    lineHeight: 16,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
     marginTop: 2,
   },
@@ -2504,7 +2586,7 @@ const styles = StyleSheet.create({
   },
   searchResultsSectionLabel: {
     fontSize: 11,
-    fontWeight: '800',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.subtext,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -2528,7 +2610,7 @@ const styles = StyleSheet.create({
   },
   savedPlaceChipText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
   routeHint: {
@@ -2536,9 +2618,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: cargoTheme.colors.primaryDark,
     marginTop: 12,
-  },
-  routeHintError: {
-    color: '#B91C1C',
   },
   mapModeRow: {
     flexDirection: 'row',
@@ -2562,7 +2641,7 @@ const styles = StyleSheet.create({
   },
   mapModeChipText: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
     textAlign: 'center',
   },
@@ -2590,23 +2669,25 @@ const styles = StyleSheet.create({
   },
   collapsedRouteEyebrow: {
     fontSize: 11,
-    fontWeight: '800',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
     textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 4,
+    letterSpacing: 0.5,
+    marginBottom: 2,
   },
   collapsedRouteTitle: {
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: '800',
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
+    letterSpacing: -0.2,
   },
   collapsedRouteMeta: {
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 16,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
-    marginTop: 4,
+    marginTop: 2,
   },
   editRouteChipButton: {
     width: 38,
@@ -2645,35 +2726,37 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   vehicleSheetTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    fontSize: 20,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
+    letterSpacing: -0.4,
   },
   vehicleSheetSubtitle: {
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 18,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
     marginTop: 4,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   liveCarrierBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderRadius: 16,
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 14,
-    backgroundColor: '#ECFDF3',
+    paddingVertical: 8,
+    marginBottom: 12,
+    backgroundColor: '#F8FAFC',
     borderWidth: 1,
-    borderColor: '#BBF7D0',
+    borderColor: '#E2E8F0',
   },
   liveCarrierBannerText: {
     flex: 1,
     fontSize: 12,
     lineHeight: 18,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
-    fontWeight: '700',
   },
   routeStatsGrid: {
     flexDirection: 'row',
@@ -2707,8 +2790,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cargoTypeRowLabel: {
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 11,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.subtext,
     marginBottom: 8,
     textTransform: 'uppercase',
@@ -2720,41 +2803,40 @@ const styles = StyleSheet.create({
   },
   cargoSizeGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   cargoSizeCard: {
-    flex: 1,
-    minHeight: 82,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 10,
+    width: '47.5%',
+    minHeight: 68,
+    borderRadius: 16,
+    backgroundColor: '#F4F5F7',
+    paddingHorizontal: 12,
     paddingVertical: 12,
     justifyContent: 'center',
   },
   cargoSizeCardActive: {
-    backgroundColor: cargoTheme.colors.primary,
-    borderColor: cargoTheme.colors.primary,
+    backgroundColor: '#0F172A',
   },
   cargoSizeTitle: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
-    marginBottom: 5,
+    marginBottom: 2,
+    letterSpacing: -0.2,
   },
   cargoSizeTitleActive: {
     color: '#FFFFFF',
   },
   cargoSizeSubtitle: {
-    fontSize: 10,
+    fontSize: 11,
     lineHeight: 14,
-    fontWeight: '700',
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
   cargoSizeSubtitleActive: {
-    color: '#DCFCE7',
+    color: '#CBD5E1',
   },
   cargoTypeButton: {
     flex: 1,
@@ -2798,14 +2880,14 @@ const styles = StyleSheet.create({
     borderColor: '#BBF7D0',
   },
   editCargoDetailsButtonText: {
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 12,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
   },
   vehicleStepSummary: {
     flex: 1,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.subtext,
     textAlign: 'right',
   },
@@ -2828,85 +2910,72 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   vehicleList: {
-    flexGrow: 0,
-  },
-  vehicleListContent: {
     gap: 10,
-    paddingBottom: 6,
   },
-  vehicleGrid: {
+  vehicleRow: {
     flexDirection: 'row',
-    gap: 8,
-  },
-  vehicleGridCard: {
-    flex: 1,
-    minHeight: 168,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
     alignItems: 'center',
-    position: 'relative',
+    gap: 12,
+    minHeight: 108,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
-  vehicleGridCardActive: {
+  vehicleRowActive: {
     borderColor: cargoTheme.colors.primary,
     backgroundColor: '#F0FDF4',
-    shadowColor: '#16A34A',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 3,
   },
-  vehicleGridImageWrap: {
-    width: '100%',
-    height: 48,
-    borderRadius: 15,
+  vehiclePhotoWrap: {
+    width: 118,
+    height: 88,
+    borderRadius: 16,
+    backgroundColor: '#F8FAFC',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    marginBottom: 8,
+    overflow: 'hidden',
   },
-  vehicleGridImage: {
-    width: '82%',
-    height: '82%',
+  vehiclePhoto: {
+    width: '108%',
+    height: '108%',
   },
-  vehicleGridTitle: {
-    fontSize: 12,
-    fontWeight: '900',
+  vehicleCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  vehicleRowTitle: {
+    fontSize: 16,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
-    textAlign: 'center',
+    letterSpacing: -0.3,
   },
-  vehicleGridPrice: {
+  vehicleRowMeta: {
     marginTop: 4,
-    fontSize: 11,
-    fontWeight: '900',
-    color: cargoTheme.colors.primaryDark,
-    textAlign: 'center',
-  },
-  vehicleGridMeta: {
-    marginTop: 5,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
-    textAlign: 'center',
   },
-  vehicleGridEta: {
-    marginTop: 6,
-    fontSize: 10,
-    fontWeight: '900',
-    color: cargoTheme.colors.text,
-    textAlign: 'center',
+  vehiclePriceCol: {
+    alignItems: 'flex-end',
+    gap: 8,
+    paddingRight: 2,
   },
-  vehicleGridBadge: {
-    position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+  vehicleRowPrice: {
+    fontSize: 14,
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.ink,
+    letterSpacing: -0.3,
+  },
+  vehicleRowCheck: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: cargoTheme.colors.primary,
   },
   vehicleOptionCard: {
     flexDirection: 'row',
@@ -3026,6 +3095,7 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: typography.extrabold,
+    letterSpacing: -0.2,
   },
 });

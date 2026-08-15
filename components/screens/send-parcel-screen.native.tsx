@@ -1,13 +1,17 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Contacts from 'expo-contacts';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { CargoHeader, CargoScreen, PrimaryButton, SectionHeader, SummaryRow } from '@/components/cargo-ui';
+import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
+import { MapStopPin } from '@/components/map-markers';
+import { PhoneInput } from '@/components/phone-input';
+import { ServiceNotice } from '@/components/service-notice';
 import { doordropAdminHandoffLocation } from '@/constants/admin-location';
 import { cargoTheme, parcelScopes, type ParcelScope } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
 import { buildFrontendPricingEstimate } from '@/lib/cargo-pricing';
 import { lightMapStyle } from '@/lib/light-map-style';
 import {
@@ -22,11 +26,12 @@ import {
   type RouteEstimateVehicleType,
 } from '@/lib/location-search';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
-import { runMapsDiagnostics } from '@/lib/maps-diagnostics';
 import { canRenderNativeGoogleMap } from '@/lib/maps-config';
 import { getNativeMaps } from '@/lib/native-maps';
 import { filterValidCoordinates, formatDistance, formatDuration, isValidCoordinate } from '@/lib/route-utils';
 import { getSavedPlaces, type SavedPlace } from '@/lib/saved-places';
+import { useAppCopy } from '@/lib/app-copy';
+import { classifyLocationError, type CustomerNoticeKind } from '@/lib/network-status';
 
 const cityParcelTypes = [
   {
@@ -121,6 +126,25 @@ const outsideDestinationCities: OutsideDestinationCity[] = [
         label: 'Magufuli Bus Terminal',
         query: 'Magufuli Bus Terminal, Dar es Salaam, Tanzania',
         fallbackPoint: { latitude: -6.8124, longitude: 39.1538 },
+      },
+    ],
+  },
+  {
+    key: 'tanga',
+    label: 'Tanga',
+    centerPoint: { latitude: -5.0889, longitude: 39.1023 },
+    stands: [
+      {
+        id: 'central',
+        label: 'Tanga Bus Stand',
+        query: 'Tanga Bus Stand, Tanga, Tanzania',
+        fallbackPoint: { latitude: -5.0692, longitude: 39.0988 },
+      },
+      {
+        id: 'korogwe',
+        label: 'Korogwe Bus Stand',
+        query: 'Korogwe Bus Stand, Tanga, Tanzania',
+        fallbackPoint: { latitude: -5.1556, longitude: 38.5167 },
       },
     ],
   },
@@ -243,37 +267,6 @@ function formatTzs(amount: number) {
 
 function buildLocationDisplayLabel(name?: string, address?: string) {
   return [name, address].filter(Boolean).join(', ');
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
-
-  if (typeof error === 'string' && error.trim()) {
-    return error.trim();
-  }
-
-  return fallback;
-}
-
-function getCustomerFacingLocationError(error: unknown, fallback: string) {
-  const message = getErrorMessage(error, fallback);
-  const normalized = message.toLowerCase();
-
-  if (
-    normalized.includes('expo_public') ||
-    normalized.includes('api_base_url') ||
-    normalized.includes('backend') ||
-    normalized.includes('apk') ||
-    normalized.includes('cleartext') ||
-    normalized.includes('network request failed') ||
-    normalized.includes('private/local')
-  ) {
-    return 'Location service is unavailable right now. Please try again shortly.';
-  }
-
-  return message;
 }
 
 function getOutsideParcelFlatFare(destinationCityKey?: OutsideDestinationCityKey | null) {
@@ -434,6 +427,30 @@ function buildParcelPricing(params: {
 
 export default function SendParcelScreen() {
   const router = useRouter();
+  const copy = useAppCopy();
+  const params = useLocalSearchParams<{
+    repeat?: string;
+    scope?: string;
+    parcelType?: string;
+    pickup?: string;
+    pickupLat?: string;
+    pickupLng?: string;
+    dropoff?: string;
+    dropoffLat?: string;
+    dropoffLng?: string;
+    recipientName?: string;
+    recipientPhone?: string;
+    parcelWeightKg?: string;
+  }>();
+  const isRepeat = params.repeat === '1';
+  const repeatPickupLat = Number(params.pickupLat);
+  const repeatPickupLng = Number(params.pickupLng);
+  const hasRepeatPickup =
+    isRepeat && Number.isFinite(repeatPickupLat) && Number.isFinite(repeatPickupLng) && Boolean(params.pickup?.trim());
+  const repeatDropoffLat = Number(params.dropoffLat);
+  const repeatDropoffLng = Number(params.dropoffLng);
+  const hasRepeatDropoff =
+    isRepeat && Number.isFinite(repeatDropoffLat) && Number.isFinite(repeatDropoffLng) && Boolean(params.dropoff?.trim());
   const mapRef = useRef<any>(null);
   const nativeMaps = useMemo(() => getNativeMaps(), []);
   const NativeMapView = nativeMaps.MapView;
@@ -447,31 +464,42 @@ export default function SendParcelScreen() {
   const pickupSuggestionLookupIdRef = useRef(0);
   const dropoffSessionTokenRef = useRef(createSearchSessionToken());
   const pickupSessionTokenRef = useRef(createSearchSessionToken());
-  const [selectedScope, setSelectedScope] = useState<ParcelScope>('city');
-  const [selectedPackage, setSelectedPackage] = useState<ParcelOption['key']>(cityParcelTypes[0].key);
+  const [selectedScope, setSelectedScope] = useState<ParcelScope>(params.scope === 'outside' ? 'outside' : 'city');
+  const [selectedPackage, setSelectedPackage] = useState<ParcelOption['key']>(
+    (params.parcelType as ParcelOption['key']) || cityParcelTypes[0].key
+  );
   const [timing, setTiming] = useState<'now' | 'later'>('now');
-  const [pickupLabel, setPickupLabel] = useState('Detecting your current location...');
-  const [pickupInput, setPickupInput] = useState('Detecting your current location...');
+  const [pickupLabel, setPickupLabel] = useState(
+    hasRepeatPickup ? String(params.pickup) : copy.parcel.detecting
+  );
+  const [pickupInput, setPickupInput] = useState(
+    hasRepeatPickup ? String(params.pickup) : copy.parcel.detecting
+  );
   const [pickupPoint, setPickupPoint] = useState({
-    latitude: defaultRegion.latitude,
-    longitude: defaultRegion.longitude,
+    latitude: hasRepeatPickup ? repeatPickupLat : defaultRegion.latitude,
+    longitude: hasRepeatPickup ? repeatPickupLng : defaultRegion.longitude,
   });
   const [pickupSuggestions, setPickupSuggestions] = useState<LocationSuggestion[]>([]);
   const [loadingPickupSuggestions, setLoadingPickupSuggestions] = useState(false);
   const [pickupNeedsSelection, setPickupNeedsSelection] = useState(false);
-  const [dropoff, setDropoff] = useState('');
-  const [dropoffPoint, setDropoffPoint] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [dropoff, setDropoff] = useState(hasRepeatDropoff ? String(params.dropoff) : '');
+  const [dropoffPoint, setDropoffPoint] = useState<{ latitude: number; longitude: number } | null>(
+    hasRepeatDropoff ? { latitude: repeatDropoffLat, longitude: repeatDropoffLng } : null
+  );
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [mapSelectionTarget, setMapSelectionTarget] = useState<'pickup' | 'dropoff'>('dropoff');
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
-  const [parcelWeightKg, setParcelWeightKg] = useState('');
-  const [recipientName, setRecipientName] = useState('');
-  const [recipientPhone, setRecipientPhone] = useState('');
+  const [parcelWeightKg, setParcelWeightKg] = useState(params.parcelWeightKg ? String(params.parcelWeightKg) : '');
+  const [recipientName, setRecipientName] = useState(params.recipientName ? String(params.recipientName) : '');
+  const [recipientPhone, setRecipientPhone] = useState(params.recipientPhone ? String(params.recipientPhone) : '');
+  const [notifyRecipient, setNotifyRecipient] = useState(true);
   const [contacts, setContacts] = useState<Contacts.Contact[]>([]);
   const [contactsLoaded, setContactsLoaded] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
+  const [editingPickup, setEditingPickup] = useState(false);
+  const [showContacts, setShowContacts] = useState(false);
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
   const [pricingEstimate, setPricingEstimate] = useState<PricingEstimate | null>(null);
@@ -480,7 +508,7 @@ export default function SendParcelScreen() {
   const [pricingLoading, setPricingLoading] = useState(false);
   const [pricingError, setPricingError] = useState(false);
   const [pricingErrorMessage, setPricingErrorMessage] = useState('');
-  const [lookupErrorMessage, setLookupErrorMessage] = useState('');
+  const [locationNotice, setLocationNotice] = useState<CustomerNoticeKind | null>(null);
   const [dropoffSuggestions, setDropoffSuggestions] = useState<LocationSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [shouldFetchSuggestions, setShouldFetchSuggestions] = useState(true);
@@ -523,7 +551,7 @@ export default function SendParcelScreen() {
   const scheduleReady = timing === 'now' || (scheduledDate.trim().length > 0 && scheduledTime.trim().length > 0);
   const parsedParcelWeightKg = Number(parcelWeightKg.trim());
   const outsideWeightReady = selectedScope === 'city' || (Number.isFinite(parsedParcelWeightKg) && parsedParcelWeightKg > 0);
-  const destinationReady = selectedScope === 'city' ? Boolean(dropoffPoint) || dropoff.trim().length >= 3 : Boolean(selectedOutsideStand);
+  const destinationReady = selectedScope === 'city' ? Boolean(dropoffPoint) : Boolean(selectedOutsideStand);
   const parcelVehicleType = useMemo(
     () => getParcelVehicleType(selectedScope, activePackage.key),
     [activePackage.key, selectedScope]
@@ -563,7 +591,7 @@ export default function SendParcelScreen() {
     }
 
     if (!outsideWeightReady) {
-      return 'Enter the parcel weight in kilograms for outside-city delivery.';
+      return 'Enter the parcel weight in kilograms for other-region delivery.';
     }
 
     if (recipientName.trim().length < 2) {
@@ -580,7 +608,7 @@ export default function SendParcelScreen() {
 
     if (!routePricingReady) {
       return selectedScope === 'outside'
-        ? 'Outside-city flat fare is preparing. Try again in a moment.'
+        ? 'Regional fare is preparing. Try again in a moment.'
         : 'Wait for the route fare to finish calculating.';
     }
 
@@ -612,6 +640,50 @@ export default function SendParcelScreen() {
   );
   const price = pricing.priceLabel;
   const eta = timing === 'later' ? 'Scheduled by your selected time' : pricing.etaLabel;
+  const showRecipientStep = destinationReady && outsideWeightReady;
+  const footerLabel = useMemo(() => {
+    if (pickupNeedsSelection) {
+      return copy.parcel.nextPickup;
+    }
+    if (selectedScope === 'outside' && !selectedOutsideCity) {
+      return copy.parcel.nextCity;
+    }
+    if (selectedScope === 'outside' && !selectedOutsideStand) {
+      return copy.parcel.nextStand;
+    }
+    if (!destinationReady) {
+      return copy.parcel.nextDropoff;
+    }
+    if (!outsideWeightReady) {
+      return copy.parcel.nextWeight;
+    }
+    if (recipientName.trim().length < 2 || recipientPhoneDigits.length < 9) {
+      return copy.parcel.nextRecipient;
+    }
+    if (!routePricingReady) {
+      return copy.parcel.calculating;
+    }
+    return `${copy.common.continue} · ${price}`;
+  }, [
+    copy.common.continue,
+    copy.parcel.calculating,
+    copy.parcel.nextCity,
+    copy.parcel.nextDropoff,
+    copy.parcel.nextPickup,
+    copy.parcel.nextRecipient,
+    copy.parcel.nextStand,
+    copy.parcel.nextWeight,
+    destinationReady,
+    outsideWeightReady,
+    pickupNeedsSelection,
+    price,
+    recipientName,
+    recipientPhoneDigits.length,
+    routePricingReady,
+    selectedOutsideCity,
+    selectedOutsideStand,
+    selectedScope,
+  ]);
   const routeDistanceLabel = typeof routeDistanceKm === 'number' ? formatDistance(routeDistanceKm * 1000) : '';
   const routeDurationLabel = typeof routeDurationSeconds === 'number' ? formatDuration(routeDurationSeconds) : '';
   const pricingNoticeMessage = pricingEstimate?.warning ?? routeEstimate?.pricingEstimate?.warning ?? '';
@@ -620,13 +692,9 @@ export default function SendParcelScreen() {
     void getSavedPlaces().then(setSavedPlaces);
   }, []);
 
-  useEffect(() => {
-    void runMapsDiagnostics(screenScope);
-  }, []);
-
   const handleReviewOrder = () => {
     if (!isFormValid) {
-      Alert.alert('Complete order details', reviewBlockerMessage || 'Complete the missing order details before reviewing.');
+      Alert.alert(copy.parcel.completeTitle, reviewBlockerMessage || copy.parcel.completeTitle);
       return;
     }
 
@@ -661,6 +729,7 @@ export default function SendParcelScreen() {
         durationSeconds: typeof routeDurationSeconds === 'number' ? String(Math.round(routeDurationSeconds)) : '',
         recipientName: recipientName.trim(),
         recipientPhone: recipientPhone.trim(),
+        notifyRecipient: notifyRecipient ? '1' : '0',
         parcelWeightKg: selectedScope === 'outside' ? parcelWeightKg.trim() : '',
         scheduleDate: scheduledDate.trim(),
         scheduleTime: scheduledTime.trim(),
@@ -677,7 +746,7 @@ export default function SendParcelScreen() {
     setPricingLoading(false);
     setPricingError(false);
     setPricingErrorMessage('');
-    setLookupErrorMessage('');
+    setLocationNotice(null);
   };
 
   const applySavedPlaceToPickup = async (place: SavedPlace) => {
@@ -694,17 +763,8 @@ export default function SendParcelScreen() {
       clearRouteEstimateState();
       animateMapToPoint(point);
     } catch (error) {
-      const message = getCustomerFacingLocationError(
-        error,
-        'We could not place this saved pickup on the map. Try a clearer address.'
-      );
-      logAsyncFailure(screenScope, 'applySavedPlaceToPickup', error, {
-        placeId: place.id,
-        address: place.address,
-        message,
-      });
-      setLookupErrorMessage(message);
-      Alert.alert('Location not found', message);
+      logWarning(screenScope, 'applySavedPlaceToPickup', { placeId: place.id });
+      setLocationNotice(classifyLocationError(error));
     }
   };
 
@@ -722,20 +782,11 @@ export default function SendParcelScreen() {
       setDropoffPoint(point);
       setDropoff([resolved.label, resolved.address].filter(Boolean).join(', ') || place.address);
       animateMapToPoint(point);
-      setLookupErrorMessage('');
+      setLocationNotice(null);
     } catch (error) {
-      const message = getCustomerFacingLocationError(
-        error,
-        'We could not place this saved destination on the map. Try a clearer address.'
-      );
-      logAsyncFailure(screenScope, 'applySavedPlaceToDropoff', error, {
-        placeId: place.id,
-        address: place.address,
-        message,
-      });
+      logWarning(screenScope, 'applySavedPlaceToDropoff', { placeId: place.id });
       setDropoffPoint(null);
-      setLookupErrorMessage(message);
-      Alert.alert('Location not found', message);
+      setLocationNotice(classifyLocationError(error));
     }
   };
 
@@ -748,7 +799,7 @@ export default function SendParcelScreen() {
     setLoadingSuggestions(false);
     setShouldFetchSuggestions(false);
     dropoffSessionTokenRef.current = createSearchSessionToken();
-    setLookupErrorMessage('');
+    setLocationNotice(null);
     animateMapToPoint(point);
   };
 
@@ -759,6 +810,9 @@ export default function SendParcelScreen() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         setHasLocationPermission(status === 'granted');
+        if (hasRepeatPickup) {
+          return;
+        }
         if (status !== 'granted') {
           if (isMounted) {
             const fallbackLabel = 'Location access is off. Using Dar es Salaam pickup preview.';
@@ -800,39 +854,12 @@ export default function SendParcelScreen() {
       }
     };
 
-    const loadContacts = async () => {
-      try {
-        const { status } = await Contacts.requestPermissionsAsync();
-        if (status !== 'granted') {
-          if (isMounted) {
-            setContactsLoaded(true);
-          }
-          return;
-        }
-
-        const result = await Contacts.getContactsAsync({
-          fields: [Contacts.Fields.PhoneNumbers],
-          pageSize: 1000,
-        });
-
-        if (isMounted) {
-          setContacts(result.data.filter((contact) => (contact.phoneNumbers?.length ?? 0) > 0));
-          setContactsLoaded(true);
-        }
-      } catch {
-        if (isMounted) {
-          setContactsLoaded(true);
-        }
-      }
-    };
-
     loadPickupLocation();
-    loadContacts();
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [hasRepeatPickup]);
 
   useEffect(() => {
     if (!availablePackages.some((item) => item.key === selectedPackage)) {
@@ -878,7 +905,7 @@ export default function SendParcelScreen() {
           }
 
           setDropoffSuggestions(suggestions);
-          setLookupErrorMessage('');
+          setLocationNotice(null);
           logAsyncSuccess(screenScope, 'loadDropoffSuggestions', {
             query: dropoff,
             results: suggestions.length,
@@ -890,15 +917,8 @@ export default function SendParcelScreen() {
           }
 
           setDropoffSuggestions([]);
-          const message = getCustomerFacingLocationError(
-            error,
-            'Could not load destination suggestions. Please try again.'
-          );
-          setLookupErrorMessage(message);
-          logAsyncFailure(screenScope, 'loadDropoffSuggestions', error, {
-            query: dropoff,
-            message,
-          });
+          setLocationNotice(classifyLocationError(error));
+          logWarning(screenScope, 'loadDropoffSuggestions', { query: dropoff });
         })
         .finally(() => {
           if (lookupId !== suggestionLookupIdRef.current) {
@@ -933,7 +953,7 @@ export default function SendParcelScreen() {
           }
 
           setPickupSuggestions(suggestions);
-          setLookupErrorMessage('');
+          setLocationNotice(null);
           logAsyncSuccess(screenScope, 'loadPickupSuggestions', {
             query: pickupInput,
             results: suggestions.length,
@@ -945,15 +965,8 @@ export default function SendParcelScreen() {
           }
 
           setPickupSuggestions([]);
-          const message = getCustomerFacingLocationError(
-            error,
-            'Could not load pickup suggestions. Please try again.'
-          );
-          setLookupErrorMessage(message);
-          logAsyncFailure(screenScope, 'loadPickupSuggestions', error, {
-            query: pickupInput,
-            message,
-          });
+          setLocationNotice(classifyLocationError(error));
+          logWarning(screenScope, 'loadPickupSuggestions', { query: pickupInput });
         })
         .finally(() => {
           if (lookupId !== pickupSuggestionLookupIdRef.current) {
@@ -987,7 +1000,7 @@ export default function SendParcelScreen() {
     setPricingLoading(true);
     setPricingError(false);
     setPricingErrorMessage('');
-    setLookupErrorMessage('');
+    setLocationNotice(null);
 
     const timeout = setTimeout(() => {
       void (async () => {
@@ -1022,7 +1035,7 @@ export default function SendParcelScreen() {
           setPricingLoading(false);
           setPricingError(false);
           setPricingErrorMessage('');
-          setLookupErrorMessage('');
+          setLocationNotice(null);
           if (!dropoffPoint) {
             setDropoffPoint(destinationPoint);
           }
@@ -1038,10 +1051,6 @@ export default function SendParcelScreen() {
           }
 
           setPricingLoading(false);
-          const message = getCustomerFacingLocationError(
-            error,
-            'We could not calculate this city route yet. Pick a suggestion or refine the address.'
-          );
           if (destinationPoint) {
             const fallbackRoute = buildFallbackRouteEstimate(pickupPoint, destinationPoint);
             const fallbackPricing = buildFrontendPricingEstimate({
@@ -1063,7 +1072,7 @@ export default function SendParcelScreen() {
             setRouteDurationSeconds(fallbackRoute.durationSeconds);
             setPricingError(false);
             setPricingErrorMessage('');
-            setLookupErrorMessage('');
+            setLocationNotice(null);
             if (!dropoffPoint) {
               setDropoffPoint(destinationPoint);
             }
@@ -1071,7 +1080,6 @@ export default function SendParcelScreen() {
               dropoff: trimmedDropoff,
               distanceMeters: fallbackRoute.distanceMeters,
               price: fallbackPricing.estimatedPrice,
-              message,
             });
             return;
           }
@@ -1081,12 +1089,11 @@ export default function SendParcelScreen() {
           setRouteDistanceKm(null);
           setRouteDurationSeconds(null);
           setPricingError(true);
-          setPricingErrorMessage(message);
-          logAsyncFailure(screenScope, 'cityRouteEstimate', error, {
+          setPricingErrorMessage('');
+          setLocationNotice(classifyLocationError(error));
+          logWarning(screenScope, 'cityRouteEstimate', {
             dropoff: trimmedDropoff,
             hasDropoffPoint: Boolean(dropoffPoint),
-            vehicleType: parcelVehicleType,
-            message,
           });
         }
       })();
@@ -1130,7 +1137,7 @@ export default function SendParcelScreen() {
     setPricingLoading(false);
     setPricingError(false);
     setPricingErrorMessage('');
-    setLookupErrorMessage('');
+    setLocationNotice(null);
     logAsyncSuccess(screenScope, 'outsideFlatPricingReady', {
       city: outsideCity.label,
       stand: outsideStand.label,
@@ -1230,7 +1237,7 @@ export default function SendParcelScreen() {
     setPickupNeedsSelection(true);
     setPickupSuggestions([]);
     setLoadingPickupSuggestions(false);
-    setLookupErrorMessage('');
+    setLocationNotice(null);
     setPricingErrorMessage('');
     clearRouteEstimateState();
 
@@ -1250,20 +1257,12 @@ export default function SendParcelScreen() {
       setLoadingPickupSuggestions(false);
       setPickupNeedsSelection(false);
       pickupSessionTokenRef.current = createSearchSessionToken();
-      setLookupErrorMessage('');
+      setLocationNotice(null);
       clearRouteEstimateState();
       animateMapToPoint(resolved.point);
     } catch (error) {
-      const message = getCustomerFacingLocationError(
-        error,
-        'Choose one of the pickup suggestions or refine the location text.'
-      );
-      logAsyncFailure(screenScope, 'handleSelectPickupSuggestion', error, {
-        placeId: suggestion.placeId,
-        message,
-      });
-      setLookupErrorMessage(message);
-      Alert.alert('Pickup not found', message);
+      logWarning(screenScope, 'handleSelectPickupSuggestion', { placeId: suggestion.placeId });
+      setLocationNotice(classifyLocationError(error));
     }
   };
 
@@ -1274,7 +1273,7 @@ export default function SendParcelScreen() {
     clearRouteEstimateState();
     setPricingError(false);
     setPricingErrorMessage('');
-    setLookupErrorMessage('');
+    setLocationNotice(null);
     setDropoffSuggestions([]);
     setLoadingSuggestions(false);
     setShouldFetchSuggestions(true);
@@ -1291,17 +1290,10 @@ export default function SendParcelScreen() {
         suggestion.fullText || buildLocationDisplayLabel(suggestion.name, suggestion.address),
         resolved.point
       );
-      setLookupErrorMessage('');
+      setLocationNotice(null);
     } catch (error) {
-      const message = getCustomerFacingLocationError(
-        error,
-        'We could not resolve that destination. Pick a suggestion or refine the address.'
-      );
-      logAsyncFailure(screenScope, 'handleSelectDropoffSuggestion', error, {
-        placeId: suggestion.placeId,
-        message,
-      });
-      setLookupErrorMessage(message);
+      logWarning(screenScope, 'handleSelectDropoffSuggestion', { placeId: suggestion.placeId });
+      setLocationNotice(classifyLocationError(error));
       setShouldFetchSuggestions(true);
     }
   };
@@ -1324,28 +1316,62 @@ export default function SendParcelScreen() {
     try {
       const resolved = await resolveTypedLocation(trimmedDropoff, pickupPoint);
       applyResolvedDropoff(buildLocationDisplayLabel(resolved.label, resolved.address) || trimmedDropoff, resolved.point);
-      setLookupErrorMessage('');
+      setLocationNotice(null);
     } catch (error) {
-      const message = getCustomerFacingLocationError(
-        error,
-        'We could not resolve that destination. Pick a suggestion or refine the address.'
-      );
-      logAsyncFailure(screenScope, 'handleSubmitDropoff', error, {
-        query: trimmedDropoff,
-        message,
-      });
-      setLookupErrorMessage(message);
+      logWarning(screenScope, 'handleSubmitDropoff', { query: trimmedDropoff });
+      setLocationNotice(classifyLocationError(error));
       setShouldFetchSuggestions(true);
     }
   };
 
   const handleSelectOutsideCity = (cityKey: OutsideDestinationCityKey) => {
-    if (cityKey !== selectedOutsideCityKey) {
-      setSelectedOutsideCityKey(cityKey);
-      setSelectedOutsideStandId(null);
-      setDropoff('');
-      setDropoffPoint(null);
+    if (cityKey === selectedOutsideCityKey) {
+      return;
+    }
+
+    const city = outsideDestinationCities.find((item) => item.key === cityKey);
+    const firstStand = city?.stands[0];
+    setSelectedOutsideCityKey(cityKey);
+
+    if (city && firstStand) {
+      setSelectedOutsideStandId(firstStand.id);
+      setDropoff(`${firstStand.label}, ${city.label}`);
+      setDropoffPoint(firstStand.fallbackPoint);
       clearRouteEstimateState();
+      setDropoffSuggestions([]);
+      setLoadingSuggestions(false);
+      setShouldFetchSuggestions(false);
+      setShowMapPicker(false);
+      return;
+    }
+
+    setSelectedOutsideStandId(null);
+    setDropoff('');
+    setDropoffPoint(null);
+    clearRouteEstimateState();
+  };
+
+  const openContactsPicker = async () => {
+    setShowContacts(true);
+    if (contactsLoaded) {
+      return;
+    }
+
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') {
+        setContactsLoaded(true);
+        return;
+      }
+
+      const result = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.PhoneNumbers],
+        pageSize: 1000,
+      });
+      setContacts(result.data.filter((contact) => (contact.phoneNumbers?.length ?? 0) > 0));
+      setContactsLoaded(true);
+    } catch {
+      setContactsLoaded(true);
     }
   };
 
@@ -1364,158 +1390,71 @@ export default function SendParcelScreen() {
   return (
     <CargoScreen
       keyboardAvoiding
+      backgroundColor="#FFFFFF"
       contentContainerStyle={styles.content}
       footer={
         <View style={styles.footer}>
+          {isFormValid ? <Text style={styles.footerEta}>{eta}</Text> : null}
           <PrimaryButton
-            label="Review parcel order"
-            icon="arrow-right"
+            label={footerLabel}
+            icon={isFormValid ? 'arrow-right' : undefined}
             onPress={handleReviewOrder}
             style={!isFormValid ? styles.reviewButtonDisabled : undefined}
           />
         </View>
       }>
-      <CargoHeader
-        title="Send parcel"
-        subtitle="Use your current pickup point, enter the destination, choose parcel type and set the right delivery time."
-        onLeftPress={() => router.back()}
-        rightIcon="bell-outline"
-        onRightPress={() => router.push('/notifications')}
-      />
+      <CargoHeader title={copy.parcel.title} onLeftPress={() => router.back()} />
 
-      <SectionHeader title="Delivery area" />
-      <View style={styles.scopeRow}>
+      <View style={styles.segment}>
         {parcelScopes.map((scope) => {
           const isActive = scope.key === selectedScope;
           return (
             <TouchableOpacity
               key={scope.key}
-              style={[styles.scopeCard, isActive && styles.scopeCardActive]}
+              style={[styles.segmentItem, isActive && styles.segmentItemActive]}
               activeOpacity={0.88}
               onPress={() => setSelectedScope(scope.key)}>
-              <Text style={[styles.scopeTitle, isActive && styles.scopeTitleActive]}>{scope.label}</Text>
-              <Text style={[styles.scopeSubtitle, isActive && styles.scopeSubtitleActive]}>{scope.subtitle}</Text>
+              <Text style={[styles.segmentText, isActive && styles.segmentTextActive]}>
+                {scope.key === 'city' ? copy.parcel.inCity : copy.parcel.outsideCity}
+              </Text>
             </TouchableOpacity>
           );
         })}
       </View>
 
-      <SectionHeader title="Route" />
       <View style={styles.routeCard}>
-        <View style={styles.routeRow}>
-          <View style={[styles.routeIconWrap, { backgroundColor: '#ECFDF3' }]}>
-            <MaterialCommunityIcons name="crosshairs-gps" size={20} color={cargoTheme.colors.primary} />
-          </View>
-          <View style={styles.routeCopy}>
-            <Text style={styles.routeLabel}>Pickup point</Text>
-            <TextInput
-              value={pickupInput}
-              onChangeText={handlePickupChange}
-              placeholder="Start typing pickup location"
-              placeholderTextColor="#94A3B8"
-              style={styles.routeInput}
-              autoCapitalize="words"
-              autoCorrect={false}
-              returnKeyType="search"
-            />
-            <Text style={styles.routeInlineHint}>
-              Search for a Tanzanian pickup address or use GPS to load your live location.
-            </Text>
-          </View>
-        </View>
-
-        {loadingPickupSuggestions ? <Text style={styles.helperText}>Loading pickup suggestions...</Text> : null}
-
-        {pickupSuggestions.length > 0 ? (
-          <View style={styles.suggestionList}>
-            {pickupSuggestions.map((suggestion) => (
-              <TouchableOpacity
-                key={suggestion.id}
-                activeOpacity={0.88}
-                style={styles.suggestionRow}
-                onPress={() => {
-                  void handleSelectPickupSuggestion(suggestion);
-                }}>
-                <View style={styles.suggestionIconWrap}>
-                  <MaterialCommunityIcons name="crosshairs-gps" size={16} color={cargoTheme.colors.primaryDark} />
-                </View>
-                <View style={styles.suggestionCopy}>
-                  <Text style={styles.suggestionTitle}>{suggestion.name}</Text>
-                  <Text numberOfLines={2} style={styles.suggestionText}>
-                    {suggestion.address || suggestion.fullText}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        ) : null}
-
-        {savedPlaces.length > 0 ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedPlacesRow}>
-            {savedPlaces.map((place) => (
-              <TouchableOpacity
-                key={place.id}
-                activeOpacity={0.88}
-                style={styles.savedPlaceChip}
-                onPress={() => {
-                  void applySavedPlaceToPickup(place);
-                }}>
-                <MaterialCommunityIcons name={place.icon} size={16} color={cargoTheme.colors.primaryDark} />
-                <Text style={styles.savedPlaceChipText}>Use {place.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        ) : null}
-
-        <View style={styles.routeDivider} />
-
-        <View style={styles.destinationBlock}>
+        {editingPickup || pickupNeedsSelection ? (
           <View style={styles.routeRow}>
-            <View style={[styles.routeIconWrap, { backgroundColor: '#EFF6FF' }]}>
-              <MaterialCommunityIcons name="flag-checkered" size={20} color="#2563EB" />
+            <View style={[styles.routeIconWrap, { backgroundColor: '#ECFDF3' }]}>
+              <MaterialCommunityIcons name="crosshairs-gps" size={18} color={cargoTheme.colors.primary} />
             </View>
             <View style={styles.routeCopy}>
-              <Text style={styles.routeLabel}>Destination</Text>
-              <Text style={styles.routeHint}>
-                {selectedScope === 'city'
-                  ? 'Type where the parcel should be delivered and pick a Google suggestion.'
-                  : 'Select the destination city, then choose its bus stand.'}
-              </Text>
-            </View>
-          </View>
-
-          {selectedScope === 'city' ? (
-            <>
+              <Text style={styles.routeLabel}>{copy.common.from}</Text>
               <TextInput
-                value={dropoff}
-                onChangeText={handleDropoffChange}
-                placeholder="Masaki, Haile Selassie Road"
+                value={pickupInput}
+                onChangeText={handlePickupChange}
+                placeholder={copy.parcel.pickupPlaceholder}
                 placeholderTextColor="#94A3B8"
                 style={styles.routeInput}
                 autoCapitalize="words"
                 autoCorrect={false}
                 returnKeyType="search"
-                onSubmitEditing={() => {
-                  void handleSubmitDropoff();
-                }}
               />
-
-              {dropoffSuggestions.length > 0 ? (
+              {loadingPickupSuggestions ? <Text style={styles.helperText}>{copy.parcel.searching}</Text> : null}
+              {pickupSuggestions.length > 0 ? (
                 <View style={styles.suggestionList}>
-                  {dropoffSuggestions.map((suggestion) => (
+                  {pickupSuggestions.map((suggestion) => (
                     <TouchableOpacity
                       key={suggestion.id}
                       activeOpacity={0.88}
                       style={styles.suggestionRow}
                       onPress={() => {
-                        void handleSelectDropoffSuggestion(suggestion);
+                        void handleSelectPickupSuggestion(suggestion);
+                        setEditingPickup(false);
                       }}>
-                      <View style={styles.suggestionIconWrap}>
-                        <MaterialCommunityIcons name="map-marker-radius-outline" size={16} color="#1D4ED8" />
-                      </View>
                       <View style={styles.suggestionCopy}>
                         <Text style={styles.suggestionTitle}>{suggestion.name}</Text>
-                        <Text numberOfLines={2} style={styles.suggestionText}>
+                        <Text numberOfLines={1} style={styles.suggestionText}>
                           {suggestion.address || suggestion.fullText}
                         </Text>
                       </View>
@@ -1523,393 +1462,386 @@ export default function SendParcelScreen() {
                   ))}
                 </View>
               ) : null}
+            </View>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.compactStop} activeOpacity={0.88} onPress={() => setEditingPickup(true)}>
+            <View style={[styles.routeIconWrap, { backgroundColor: '#ECFDF3' }]}>
+              <MaterialCommunityIcons name="crosshairs-gps" size={18} color={cargoTheme.colors.primary} />
+            </View>
+            <View style={styles.routeCopy}>
+              <Text style={styles.routeLabel}>{copy.common.from}</Text>
+              <Text numberOfLines={1} style={styles.compactStopValue}>{pickupLabel}</Text>
+            </View>
+            <Text style={styles.changeLink}>{copy.common.change}</Text>
+          </TouchableOpacity>
+        )}
 
-              {savedPlaces.length > 0 ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedPlacesRow}>
-                  {savedPlaces.map((place) => (
-                    <TouchableOpacity
-                      key={place.id}
-                      activeOpacity={0.88}
-                      style={styles.savedPlaceChip}
-                      onPress={() => {
-                        void applySavedPlaceToDropoff(place);
-                      }}>
-                      <MaterialCommunityIcons name={place.icon} size={16} color="#1D4ED8" />
-                      <Text style={styles.savedPlaceChipText}>{place.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              ) : null}
+        <View style={styles.routeDivider} />
 
-              <TouchableOpacity
-                activeOpacity={0.88}
-                style={[styles.mapToggleButton, showMapPicker && styles.mapToggleButtonActive]}
-                onPress={() => setShowMapPicker((value) => !value)}>
-                <MaterialCommunityIcons
-                  name={showMapPicker ? 'keyboard-close-outline' : 'map-marker-plus-outline'}
-                  size={18}
-                  color={showMapPicker ? cargoTheme.colors.primaryDark : cargoTheme.colors.info}
+        {selectedScope === 'city' ? (
+          <>
+            <View style={styles.routeRow}>
+              <View style={[styles.routeIconWrap, { backgroundColor: '#EFF6FF' }]}>
+                <MaterialCommunityIcons name="map-marker" size={18} color="#2563EB" />
+              </View>
+              <View style={styles.routeCopy}>
+                <Text style={styles.routeLabel}>{copy.common.to}</Text>
+                <TextInput
+                  value={dropoff}
+                  onChangeText={handleDropoffChange}
+                  placeholder={copy.parcel.dropoffPlaceholder}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.routeInput}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  onSubmitEditing={() => {
+                    void handleSubmitDropoff();
+                  }}
                 />
-                <Text style={[styles.mapToggleText, showMapPicker && styles.mapToggleTextActive]}>
-                  {showMapPicker ? 'Hide map picker' : 'Pick destination on map'}
-                </Text>
+              </View>
+              <TouchableOpacity
+                hitSlop={10}
+                onPress={() => {
+                  setMapSelectionTarget('dropoff');
+                  setShowMapPicker((value) => !value);
+                }}>
+                <MaterialCommunityIcons
+                  name={showMapPicker ? 'map-check-outline' : 'map-outline'}
+                  size={20}
+                  color={cargoTheme.colors.primaryDark}
+                />
               </TouchableOpacity>
+            </View>
 
-              {showMapPicker ? (
-                <View style={styles.mapCard}>
-                  <View style={styles.mapModeRow}>
-                    {[
-                      { key: 'pickup', label: 'Place pickup pin' },
-                      { key: 'dropoff', label: 'Place destination pin' },
-                    ].map((item) => {
-                      const isActive = mapSelectionTarget === item.key;
-                      return (
-                        <TouchableOpacity
-                          key={item.key}
-                          activeOpacity={0.88}
-                          style={[styles.mapModeChip, isActive && styles.mapModeChipActive]}
-                          onPress={() => setMapSelectionTarget(item.key as 'pickup' | 'dropoff')}>
-                          <Text style={[styles.mapModeChipText, isActive && styles.mapModeChipTextActive]}>{item.label}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-
-                  {mapCanRender && NativeMapView && Marker && Polyline ? (
-                    <NativeMapView
-                      ref={mapRef}
-                      provider={mapProvider}
-                      style={styles.map}
-                      customMapStyle={lightMapStyle}
-                      showsUserLocation={hasLocationPermission}
-                      initialRegion={{
-                        latitude: validPickupPoint.latitude,
-                        longitude: validPickupPoint.longitude,
-                        latitudeDelta: defaultRegion.latitudeDelta,
-                        longitudeDelta: defaultRegion.longitudeDelta,
-                      }}
-                      onPress={handleMapPress}>
-                      <Marker coordinate={validPickupPoint} title="Your location" description="Current pickup point" pinColor="#16A34A" />
-                      {validDropoffPoint ? <Marker coordinate={validDropoffPoint} title="Destination" pinColor="#2563EB" /> : null}
-                      {validRouteCoordinates.length >= 2 ? (
-                        <Polyline coordinates={validRouteCoordinates} strokeColor={cargoTheme.colors.primaryDark} strokeWidth={4} />
-                      ) : null}
-                    </NativeMapView>
-                  ) : (
-                    <View style={[styles.map, { alignItems: 'center', justifyContent: 'center' }]}>
-                      <Text style={{ color: '#94A3B8', textAlign: 'center', paddingHorizontal: 16 }}>
-                        Map preview is unavailable right now. You can still choose a suggestion or type the destination.
+            {dropoffSuggestions.length > 0 ? (
+              <View style={styles.suggestionList}>
+                {dropoffSuggestions.map((suggestion) => (
+                  <TouchableOpacity
+                    key={suggestion.id}
+                    activeOpacity={0.88}
+                    style={styles.suggestionRow}
+                    onPress={() => {
+                      void handleSelectDropoffSuggestion(suggestion);
+                    }}>
+                    <View style={styles.suggestionCopy}>
+                      <Text style={styles.suggestionTitle}>{suggestion.name}</Text>
+                      <Text numberOfLines={1} style={styles.suggestionText}>
+                        {suggestion.address || suggestion.fullText}
                       </Text>
                     </View>
-                  )}
-                  <Text style={styles.mapCaption}>
-                    Tap the map to place the {mapSelectionTarget === 'pickup' ? 'pickup' : 'destination'} pin, then we will redraw the route.
-                  </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
+            {savedPlaces.length > 0 && !dropoffPoint && !dropoff.trim() ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedPlacesRow}>
+                {savedPlaces.map((place) => (
+                  <TouchableOpacity
+                    key={place.id}
+                    activeOpacity={0.88}
+                    style={styles.savedPlaceChip}
+                    onPress={() => {
+                      void applySavedPlaceToDropoff(place);
+                    }}>
+                    <MaterialCommunityIcons name={place.icon} size={15} color={cargoTheme.colors.primaryDark} />
+                    <Text style={styles.savedPlaceChipText}>{place.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : null}
+
+            {showMapPicker ? (
+              <View style={styles.mapCard}>
+                {mapCanRender && NativeMapView && Marker && Polyline ? (
+                  <NativeMapView
+                    ref={mapRef}
+                    provider={mapProvider}
+                    style={styles.map}
+                    customMapStyle={lightMapStyle}
+                    showsUserLocation={hasLocationPermission}
+                    initialRegion={{
+                      latitude: validPickupPoint.latitude,
+                      longitude: validPickupPoint.longitude,
+                      latitudeDelta: defaultRegion.latitudeDelta,
+                      longitudeDelta: defaultRegion.longitudeDelta,
+                    }}
+                    onPress={handleMapPress}>
+                    <Marker
+                      coordinate={validPickupPoint}
+                      title={copy.cargo.pickup}
+                      anchor={{ x: 0.5, y: 1 }}
+                      tracksViewChanges={false}
+                      zIndex={8}>
+                      <MapStopPin kind="pickup" label={copy.cargo.pickup} />
+                    </Marker>
+                    {validDropoffPoint ? (
+                      <Marker
+                        coordinate={validDropoffPoint}
+                        title={copy.cargo.dropoff}
+                        anchor={{ x: 0.5, y: 1 }}
+                        tracksViewChanges={false}
+                        zIndex={9}>
+                        <MapStopPin kind="dropoff" label={copy.cargo.dropoff} />
+                      </Marker>
+                    ) : null}
+                    {validRouteCoordinates.length >= 2 ? (
+                      <Polyline coordinates={validRouteCoordinates} strokeColor={cargoTheme.colors.primaryDark} strokeWidth={4} />
+                    ) : null}
+                  </NativeMapView>
+                ) : (
+                  <View style={[styles.map, styles.mapFallback]}>
+                    <Text style={styles.mapFallbackText}>{copy.parcel.mapUnavailable}</Text>
+                  </View>
+                )}
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <View style={styles.outsideDestinationFlow}>
+            <Text style={styles.routeLabel}>{copy.parcel.destinationCity}</Text>
+            <View style={styles.selectionGrid}>
+              {outsideDestinationCities.map((city) => {
+                const isActive = city.key === selectedOutsideCityKey;
+                return (
+                  <TouchableOpacity
+                    key={city.key}
+                    activeOpacity={0.88}
+                    style={[styles.selectionCard, isActive && styles.selectionCardActive]}
+                    onPress={() => handleSelectOutsideCity(city.key)}>
+                    <Text style={[styles.selectionCardTitle, isActive && styles.selectionCardTitleActive]}>{city.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {selectedOutsideCity ? (
+              <View style={styles.standSelectorCard}>
+                <Text style={styles.routeLabel}>{copy.parcel.busStand}</Text>
+                <View style={styles.standList}>
+                  {selectedOutsideCity.stands.map((stand) => {
+                    const isActive = stand.id === selectedOutsideStandId;
+                    return (
+                      <TouchableOpacity
+                        key={stand.id}
+                        activeOpacity={0.88}
+                        style={[styles.standChip, isActive && styles.standChipActive]}
+                        onPress={() => handleSelectOutsideStand(selectedOutsideCity, stand)}>
+                        <MaterialCommunityIcons
+                          name="bus-stop"
+                          size={16}
+                          color={isActive ? '#FFFFFF' : cargoTheme.colors.primaryDark}
+                        />
+                        <Text style={[styles.standChipText, isActive && styles.standChipTextActive]}>{stand.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
-              ) : null}
-            </>
-          ) : (
-            <View style={styles.outsideDestinationFlow}>
-              <Text style={styles.selectionTitle}>Choose destination city</Text>
-              <View style={styles.selectionGrid}>
-                {outsideDestinationCities.map((city) => {
-                  const isActive = city.key === selectedOutsideCityKey;
+              </View>
+            ) : null}
+
+            {selectedOutsideStand ? (
+              <View style={styles.weightCard}>
+                <Text style={styles.routeLabel}>{copy.parcel.weight}</Text>
+                <TextInput
+                  value={parcelWeightKg}
+                  onChangeText={setParcelWeightKg}
+                  placeholder="e.g. 8"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="numeric"
+                  style={styles.input}
+                />
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
+
+      {locationNotice && locationNotice !== 'offline' ? (
+        <View style={styles.noticeWrap}>
+          <ServiceNotice kind={locationNotice} />
+        </View>
+      ) : null}
+      {pricingError && !locationNotice ? (
+        <View style={styles.noticeWrap}>
+          <ServiceNotice kind="service" />
+        </View>
+      ) : null}
+
+      {showRecipientStep ? (
+        <View style={styles.recipientCard}>
+          <Text style={styles.sectionLabel}>{copy.parcel.recipient}</Text>
+          <View style={styles.nameRow}>
+            <TextInput
+              value={recipientName}
+              onChangeText={setRecipientName}
+              placeholder={copy.parcel.recipientName}
+              placeholderTextColor="#94A3B8"
+              style={[styles.input, styles.nameInput]}
+            />
+            <TouchableOpacity
+              style={styles.contactIconButton}
+              activeOpacity={0.88}
+              onPress={() => {
+                if (showContacts) {
+                  setShowContacts(false);
+                  return;
+                }
+                void openContactsPicker();
+              }}>
+              <MaterialCommunityIcons name="account-plus-outline" size={20} color={cargoTheme.colors.primaryDark} />
+            </TouchableOpacity>
+          </View>
+          <PhoneInput value={recipientPhone} onChangeText={setRecipientPhone} style={styles.recipientPhone} />
+
+          {showContacts ? (
+            <View style={styles.contactList}>
+              <TextInput
+                value={contactSearch}
+                onChangeText={setContactSearch}
+                placeholder={copy.parcel.searchContacts}
+                placeholderTextColor="#94A3B8"
+                style={styles.searchInput}
+              />
+              <ScrollView nestedScrollEnabled style={styles.contactScrollArea} showsVerticalScrollIndicator={false}>
+                {filteredContacts.slice(0, 12).map((contact) => {
+                  const firstPhone = contact.phoneNumbers?.[0]?.number?.trim();
+                  if (!firstPhone) {
+                    return null;
+                  }
+
                   return (
-                    <TouchableOpacity
-                      key={city.key}
-                      activeOpacity={0.88}
-                      style={[styles.selectionCard, isActive && styles.selectionCardActive]}
-                      onPress={() => handleSelectOutsideCity(city.key)}>
-                      <Text style={[styles.selectionCardTitle, isActive && styles.selectionCardTitleActive]}>{city.label}</Text>
-                      <Text style={[styles.selectionCardSubtitle, isActive && styles.selectionCardSubtitleActive]}>
-                        Select bus stand
-                      </Text>
-                    </TouchableOpacity>
+                    <Pressable
+                      key={`${contact.name ?? 'contact'}-${firstPhone}`}
+                      onPress={() => {
+                        setRecipientName(contact.name ?? '');
+                        setRecipientPhone(firstPhone);
+                        setShowContacts(false);
+                      }}
+                      style={({ pressed }) => [styles.contactChip, pressed && styles.contactChipPressed]}>
+                      <MaterialCommunityIcons name="account-circle-outline" size={18} color={cargoTheme.colors.primaryDark} />
+                      <View style={styles.contactCopy}>
+                        <Text style={styles.contactName}>{contact.name}</Text>
+                        <Text style={styles.contactPhone}>{firstPhone}</Text>
+                      </View>
+                    </Pressable>
                   );
                 })}
-              </View>
-
-              {selectedOutsideCity ? (
-                <View style={styles.standSelectorCard}>
-                  <Text style={styles.selectionTitle}>Choose bus stand in {selectedOutsideCity.label}</Text>
-                  <View style={styles.standList}>
-                    {selectedOutsideCity.stands.map((stand) => {
-                      const isActive = stand.id === selectedOutsideStandId;
-                      return (
-                        <TouchableOpacity
-                          key={stand.id}
-                          activeOpacity={0.88}
-                          style={[styles.standChip, isActive && styles.standChipActive]}
-                          onPress={() => handleSelectOutsideStand(selectedOutsideCity, stand)}>
-                          <MaterialCommunityIcons
-                            name="bus-stop"
-                            size={18}
-                            color={isActive ? '#FFFFFF' : cargoTheme.colors.primaryDark}
-                          />
-                          <Text style={[styles.standChipText, isActive && styles.standChipTextActive]}>{stand.label}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
+                {!filteredContacts.length ? (
+                  <View style={styles.emptyContactsState}>
+                    <Text style={styles.emptyContactsText}>{copy.parcel.noContacts}</Text>
                   </View>
-                </View>
-              ) : null}
-
-              {selectedOutsideStand && selectedOutsideCity ? (
-                <View style={styles.selectedDestinationCard}>
-                  <Text style={styles.selectedDestinationLabel}>Selected destination</Text>
-                  <Text style={styles.selectedDestinationValue}>{dropoff}</Text>
-                </View>
-              ) : (
-                <Text style={styles.cardCaption}>
-                  Choose one of the listed destination cities, then select the matching bus stand for pricing.
-                </Text>
-              )}
+                ) : null}
+              </ScrollView>
             </View>
-          )}
-        </View>
-      </View>
-
-      <SectionHeader title="Parcel type" />
-      <View style={styles.packageGrid}>
-        {availablePackages.map((item) => {
-          const isActive = item.key === selectedPackage;
-          return (
-            <TouchableOpacity
-              key={item.key}
-              style={[styles.packageCard, isActive && styles.packageCardActive]}
-              activeOpacity={0.88}
-              onPress={() => setSelectedPackage(item.key)}>
-              <View style={[styles.packageIconWrap, isActive && styles.packageIconWrapActive]}>
-                <MaterialCommunityIcons name={item.icon} size={22} color={isActive ? '#FFFFFF' : cargoTheme.colors.text} />
-              </View>
-              <Text style={[styles.packageTitle, isActive && styles.packageTitleActive]}>{item.title}</Text>
-              <Text style={[styles.packageSubtitle, isActive && styles.packageSubtitleActive]}>{item.subtitle}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      <View style={styles.vehicleNoticeCard}>
-        <Text style={styles.cardTitle}>Vehicle matching</Text>
-        <Text style={styles.cardCaption}>
-          All send parcel orders are assigned to Bodaboda/Motorcycle drivers, including outside-city handoff trips.
-        </Text>
-      </View>
-
-      {selectedScope === 'outside' ? (
-        <View style={styles.weightCard}>
-          <Text style={styles.cardTitle}>Parcel weight</Text>
-          <TextInput
-            value={parcelWeightKg}
-            onChangeText={setParcelWeightKg}
-            placeholder="Enter weight in kg"
-            placeholderTextColor="#94A3B8"
-            keyboardType="numeric"
-            style={styles.input}
-          />
-          <Text style={styles.cardCaption}>Enter the parcel weight in kilograms for outside-city delivery.</Text>
+          ) : null}
         </View>
       ) : null}
-
-      <SectionHeader title="Delivery timing" />
-      <View style={styles.timingRow}>
-        {[
-          { key: 'now', label: 'Deliver now' },
-          { key: 'later', label: 'Schedule for later' },
-        ].map((item) => {
-          const isActive = item.key === timing;
-          return (
-            <TouchableOpacity
-              key={item.key}
-              style={[styles.timingChip, isActive && styles.timingChipActive]}
-              onPress={() => setTiming(item.key as 'now' | 'later')}>
-              <Text style={[styles.timingText, isActive && styles.timingTextActive]}>{item.label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {timing === 'later' ? (
-        <View style={styles.scheduleCard}>
-          <Text style={styles.cardTitle}>Scheduled time</Text>
-          <View style={styles.scheduleRow}>
-            <TextInput
-              value={scheduledDate}
-              onChangeText={setScheduledDate}
-              placeholder="Apr 18, 2026"
-              placeholderTextColor="#94A3B8"
-              style={[styles.input, styles.scheduleInput]}
-            />
-            <TextInput
-              value={scheduledTime}
-              onChangeText={setScheduledTime}
-              placeholder="14:30"
-              placeholderTextColor="#94A3B8"
-              style={[styles.input, styles.scheduleInput]}
-            />
-          </View>
-          <Text style={styles.cardCaption}>Enter the preferred delivery date and time for dispatch.</Text>
-        </View>
-      ) : null}
-
-      <SectionHeader title="Recipient details" />
-      <View style={styles.recipientCard}>
-        <Text style={styles.cardTitle}>Recipient</Text>
-        <TextInput
-          value={recipientName}
-          onChangeText={setRecipientName}
-          placeholder="Recipient name"
-          placeholderTextColor="#94A3B8"
-          style={[styles.input, styles.inputSpacing]}
-        />
-        <TextInput
-          value={recipientPhone}
-          onChangeText={setRecipientPhone}
-          keyboardType="phone-pad"
-          placeholder="+255 744 123 222"
-          placeholderTextColor="#94A3B8"
-          style={styles.input}
-        />
-        <Text style={styles.cardCaption}>{contactPreviewText}</Text>
-
-        {contacts.length ? (
-          <View style={styles.contactList}>
-            <TextInput
-              value={contactSearch}
-              onChangeText={setContactSearch}
-              placeholder="Search contacts by name or phone"
-              placeholderTextColor="#94A3B8"
-              style={styles.searchInput}
-            />
-            <ScrollView nestedScrollEnabled style={styles.contactScrollArea} showsVerticalScrollIndicator={false}>
-              {filteredContacts.map((contact) => {
-              const firstPhone = contact.phoneNumbers?.[0]?.number?.trim();
-              if (!firstPhone) {
-                return null;
-              }
-
-              return (
-                <Pressable
-                  key={`${contact.name ?? 'contact'}-${firstPhone}`}
-                  onPress={() => {
-                    setRecipientName(contact.name ?? '');
-                    setRecipientPhone(firstPhone);
-                  }}
-                  style={({ pressed }) => [styles.contactChip, pressed && styles.contactChipPressed]}>
-                  <MaterialCommunityIcons name="account-circle-outline" size={18} color={cargoTheme.colors.primaryDark} />
-                  <View style={styles.contactCopy}>
-                    <Text style={styles.contactName}>{contact.name}</Text>
-                    <Text style={styles.contactPhone}>{firstPhone}</Text>
-                  </View>
-                </Pressable>
-              );
-              })}
-              {!filteredContacts.length ? (
-                <View style={styles.emptyContactsState}>
-                  <Text style={styles.emptyContactsText}>No contacts match your search yet.</Text>
-                </View>
-              ) : null}
-            </ScrollView>
-          </View>
-        ) : null}
-      </View>
-
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryTitle}>Live estimate</Text>
-        <SummaryRow label="Service" value={selectedScope === 'city' ? 'In-city parcel' : 'Outside-city parcel'} />
-        <SummaryRow label="Parcel type" value={activePackage.title} />
-        <SummaryRow label="Vehicle match" value={activeVehicleOption.title} />
-        {selectedScope === 'outside' && parcelWeightKg.trim() ? <SummaryRow label="Weight" value={`${parcelWeightKg.trim()} kg`} /> : null}
-        <SummaryRow label="Pricing lane" value={pricing.routeLabel} />
-        {routeDistanceLabel ? <SummaryRow label="Route distance" value={routeDistanceLabel} /> : null}
-        {routeDurationLabel ? <SummaryRow label="Travel time" value={routeDurationLabel} /> : null}
-        <SummaryRow label="Estimated time" value={eta} />
-        <SummaryRow label="Estimated fare" value={price} emphasis />
-        {reviewBlockerMessage ? <Text style={styles.helperText}>{reviewBlockerMessage}</Text> : null}
-        {selectedScope === 'city' && loadingSuggestions ? <Text style={styles.helperText}>Loading destination suggestions...</Text> : null}
-        {loadingPickupSuggestions ? <Text style={styles.helperText}>Loading pickup suggestions...</Text> : null}
-        {pricingLoading ? <Text style={styles.helperText}>Using Google route distance to calculate your fare...</Text> : null}
-        {pricingNoticeMessage && !pricingLoading && !pricingError ? (
-          <Text style={styles.helperText}>{pricingNoticeMessage}</Text>
-        ) : null}
-        {selectedScope === 'outside' && !selectedOutsideStand ? (
-          <Text style={styles.helperText}>Choose the city and bus stand to calculate an outside-city route.</Text>
-        ) : null}
-        {selectedScope === 'outside' && selectedOutsideStand && pricingEstimate && !pricingLoading && !pricingError ? (
-          <Text style={styles.helperText}>
-            Fixed outside-city fare is ready. Review the order to send it to DoorDrop dispatch.
-          </Text>
-        ) : null}
-        {lookupErrorMessage ? <Text style={styles.helperTextError}>{lookupErrorMessage}</Text> : null}
-        {pricingError ? (
-          <Text style={styles.helperTextError}>
-            {pricingErrorMessage ||
-              (selectedScope === 'city'
-                ? 'We could not price this route yet. Select a suggested destination or refine the address.'
-                : 'We could not price this intercity route yet. Choose another listed bus stand or confirm the API key is active.')}
-          </Text>
-        ) : null}
-      </View>
     </CargoScreen>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
-    paddingBottom: 20,
+    paddingBottom: 12,
   },
   footer: {
     paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 18,
-    backgroundColor: cargoTheme.colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: '#EAF0F6',
+    paddingTop: 10,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+  },
+  footerEta: {
+    marginBottom: 8,
+    fontSize: 13,
+    fontFamily: typography.medium,
+    color: '#64748B',
+    textAlign: 'center',
   },
   reviewButtonDisabled: {
-    opacity: 0.65,
+    opacity: 0.72,
+  },
+  segment: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 16,
+  },
+  segmentItem: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentItemActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  segmentText: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+  },
+  segmentTextActive: {
+    color: cargoTheme.colors.text,
+    fontFamily: typography.bold,
   },
   scopeRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 22,
+    gap: 8,
+    marginBottom: 16,
   },
   scopeCard: {
     flex: 1,
-    backgroundColor: cargoTheme.colors.surface,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    borderRadius: 22,
-    padding: 16,
+    minHeight: 44,
+    backgroundColor: '#F4F5F7',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
   },
   scopeCardActive: {
-    backgroundColor: cargoTheme.colors.primaryDark,
-    borderColor: cargoTheme.colors.primaryDark,
+    backgroundColor: '#0F172A',
   },
   scopeTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-    marginBottom: 6,
+    fontSize: 14,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
   scopeTitleActive: {
     color: '#FFFFFF',
   },
-  scopeSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-  },
-  scopeSubtitleActive: {
-    color: '#D6E0EA',
-  },
   routeCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderWidth: 1,
-    borderColor: '#EDF2F7',
-    borderRadius: 24,
-    padding: 16,
-    marginBottom: 22,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 20,
+    padding: 14,
+    marginBottom: 18,
+  },
+  compactStop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  compactStopValue: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
+  },
+  changeLink: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.primaryDark,
+    marginLeft: 8,
   },
   routeRow: {
     flexDirection: 'row',
@@ -1927,9 +1859,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   routeLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: cargoTheme.colors.subtext,
+    fontSize: 11,
+    fontFamily: typography.semibold,
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
     marginBottom: 4,
   },
   routeValue: {
@@ -1975,18 +1909,17 @@ const styles = StyleSheet.create({
   },
   savedPlaceChipText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
   },
   routeInput: {
-    minHeight: 56,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    backgroundColor: cargoTheme.colors.card,
-    paddingHorizontal: 16,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
     fontSize: 15,
-    color: cargoTheme.colors.text,
+    fontFamily: typography.medium,
+    color: '#0F172A',
   },
   suggestionList: {
     borderTopWidth: 1,
@@ -2013,14 +1946,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   suggestionTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
+    fontSize: 14,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
   suggestionText: {
     fontSize: 12,
-    lineHeight: 17,
-    color: cargoTheme.colors.subtext,
+    lineHeight: 16,
+    fontFamily: typography.body,
+    color: '#64748B',
     marginTop: 2,
   },
   selectionTitle: {
@@ -2035,13 +1969,10 @@ const styles = StyleSheet.create({
   },
   selectionCard: {
     width: '48%',
-    minHeight: 84,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    backgroundColor: cargoTheme.colors.card,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
     justifyContent: 'center',
   },
   selectionCardActive: {
@@ -2050,9 +1981,8 @@ const styles = StyleSheet.create({
   },
   selectionCardTitle: {
     fontSize: 14,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-    marginBottom: 4,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
   selectionCardTitleActive: {
     color: cargoTheme.colors.primaryDark,
@@ -2118,27 +2048,51 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: cargoTheme.colors.text,
   },
-  mapToggleButton: {
+  mapLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  mapLinkText: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.primaryDark,
+  },
+  mapFallback: {
+    alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  mapFallbackText: {
+    color: '#64748B',
+    textAlign: 'center',
+    fontFamily: typography.body,
+    fontSize: 13,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: '#64748B',
+    marginBottom: 10,
+  },
+  quietHint: {
+    fontSize: 12,
+    fontFamily: typography.body,
+    color: '#94A3B8',
+    marginTop: -6,
+    marginBottom: 16,
+  },
+  contactsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    minHeight: 48,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    backgroundColor: '#EFF6FF',
+    marginTop: 12,
   },
-  mapToggleButtonActive: {
-    borderColor: '#BBF7D0',
-    backgroundColor: '#F0FDF4',
-  },
-  mapToggleText: {
-    color: cargoTheme.colors.info,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  mapToggleTextActive: {
+  contactsToggleText: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
   },
   mapCard: {
@@ -2190,47 +2144,31 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   packageGrid: {
-    gap: 12,
-    marginBottom: 16,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
   },
   packageCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F4F5F7',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    minWidth: '47%',
+    flexGrow: 1,
   },
   packageCardActive: {
-    backgroundColor: '#F0FDF4',
-    borderColor: '#BBF7D0',
-  },
-  packageIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: cargoTheme.colors.card,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  packageIconWrapActive: {
-    backgroundColor: cargoTheme.colors.primary,
+    backgroundColor: '#ECFDF3',
   },
   packageTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-    marginBottom: 4,
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
   packageTitleActive: {
-    color: cargoTheme.colors.primaryDark,
-  },
-  packageSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-  },
-  packageSubtitleActive: {
     color: cargoTheme.colors.primaryDark,
   },
   vehicleNoticeCard: {
@@ -2243,45 +2181,32 @@ const styles = StyleSheet.create({
   },
   timingRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginBottom: 22,
+    gap: 8,
+    marginBottom: 16,
   },
   timingChip: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 14,
-    borderRadius: 18,
-    backgroundColor: cargoTheme.colors.surface,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: '#F4F5F7',
   },
   timingChipActive: {
-    backgroundColor: '#ECFDF3',
-    borderColor: '#BBF7D0',
+    backgroundColor: '#0F172A',
   },
   timingText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: cargoTheme.colors.text,
+    fontSize: 14,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
   timingTextActive: {
-    color: cargoTheme.colors.primaryDark,
+    color: '#FFFFFF',
   },
   scheduleCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 24,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#EDF2F7',
-    marginBottom: 22,
+    marginBottom: 16,
   },
   weightCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 24,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#EDF2F7',
-    marginBottom: 22,
+    marginTop: 4,
   },
   scheduleRow: {
     flexDirection: 'row',
@@ -2291,27 +2216,63 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   recipientCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 24,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#EDF2F7',
-    marginBottom: 22,
+    marginBottom: 12,
   },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 10,
   },
+  nameInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  contactIconButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: '#ECFDF3',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   input: {
-    minHeight: 56,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    backgroundColor: cargoTheme.colors.card,
-    paddingHorizontal: 16,
+    minHeight: 50,
+    borderRadius: 14,
+    backgroundColor: '#F4F5F7',
+    paddingHorizontal: 14,
     fontSize: 15,
+    fontFamily: typography.medium,
+    color: '#0F172A',
+  },
+  recipientPhone: {
+    marginBottom: 0,
+  },
+  notifyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+    paddingVertical: 4,
+  },
+  notifyBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notifyBoxChecked: {
+    borderColor: cargoTheme.colors.primary,
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  notifyText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
   inputSpacing: {
@@ -2398,10 +2359,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: '#DCE3EC',
   },
-  helperTextError: {
-    marginTop: 8,
-    fontSize: 12,
-    lineHeight: 18,
-    color: '#FECACA',
+  noticeWrap: {
+    marginTop: 10,
+    marginBottom: 4,
   },
 });

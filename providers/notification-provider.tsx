@@ -1,11 +1,13 @@
-import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, InteractionManager, Platform } from 'react-native';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { InteractionManager, Platform, View } from 'react-native';
 
+import { InAppBanner } from '@/components/in-app-banner';
+import { AppOfflineBanner } from '@/components/service-notice';
 import {
   getDoorDropPushNotificationAvailability,
   logPushNotificationSetup,
+  nativeNotifications,
   readNotificationNavigationData,
   registerDoorDropPushNotifications,
 } from '@/lib/push-notifications';
@@ -40,13 +42,17 @@ function getInitialPushPermissionStatus(): PushPermissionStatus {
   return getDoorDropPushNotificationAvailability().available ? 'undetermined' : 'unavailable';
 }
 
-function shouldAlertForNotification(
+function shouldShowInAppBanner(
   notification: UserNotification,
   preferences: {
     orderUpdates?: boolean;
     promotions?: boolean;
   } | null | undefined
 ) {
+  if (notification.type === 'order_created') {
+    return false;
+  }
+
   if (notification.type === 'promotion') {
     return preferences?.promotions !== false;
   }
@@ -62,6 +68,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [pushPermissionStatus, setPushPermissionStatus] = useState<PushPermissionStatus>(getInitialPushPermissionStatus);
   const knownNotificationIdsRef = useRef<Set<string>>(new Set());
   const hydratedRef = useRef(false);
+  const [bannerNotification, setBannerNotification] = useState<UserNotification | null>(null);
 
   useEffect(() => {
     logPushNotificationSetup();
@@ -93,7 +100,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             return;
           }
 
-          const permissions = await Notifications.getPermissionsAsync();
+          if (!nativeNotifications) {
+            return;
+          }
+
+          const permissions = await nativeNotifications.getPermissionsAsync();
           if (active) {
             setPushPermissionStatus(permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined');
           }
@@ -111,11 +122,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }, [user?.uid]);
 
   useEffect(() => {
-    if (Platform.OS === 'web') {
+    if (Platform.OS === 'web' || !nativeNotifications) {
       return undefined;
     }
 
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const subscription = nativeNotifications.addNotificationResponseReceivedListener((response) => {
       const data = readNotificationNavigationData(response);
 
       if (data.orderId) {
@@ -138,6 +149,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     if (!user) {
       setNotifications([]);
       setLoading(false);
+      setBannerNotification(null);
       knownNotificationIdsRef.current = new Set();
       hydratedRef.current = false;
       return;
@@ -184,8 +196,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         });
 
         const newestNotification = freshNotifications[freshNotifications.length - 1];
-        if (newestNotification && shouldAlertForNotification(newestNotification, profile?.notificationPreferences)) {
-          Alert.alert(newestNotification.title, newestNotification.message);
+        if (newestNotification && shouldShowInAppBanner(newestNotification, profile?.notificationPreferences)) {
+          setBannerNotification(newestNotification);
         }
       },
       () => {
@@ -197,6 +209,30 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }, [profile?.notificationPreferences, user]);
 
   const unreadCount = useMemo(() => notifications.filter((item) => !item.readAt).length, [notifications]);
+
+  const dismissBanner = useCallback(() => {
+    setBannerNotification(null);
+  }, []);
+
+  const openBanner = useCallback(() => {
+    const current = bannerNotification;
+    setBannerNotification(null);
+    if (!current) {
+      return;
+    }
+
+    void markUserNotificationRead(current.id).catch(() => undefined);
+
+    if (current.orderId) {
+      router.push({
+        pathname: '/track-order',
+        params: { orderId: current.orderId },
+      });
+      return;
+    }
+
+    router.push('/notifications');
+  }, [bannerNotification, router]);
 
   const value = useMemo(
     () => ({
@@ -220,7 +256,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           return 'unavailable' as PushPermissionStatus;
         }
 
-        const permissions = await Notifications.getPermissionsAsync();
+        if (!nativeNotifications) {
+          setPushPermissionStatus('unavailable');
+          return 'unavailable' as PushPermissionStatus;
+        }
+
+        const permissions = await nativeNotifications.getPermissionsAsync();
         const nextStatus =
           permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined';
         setPushPermissionStatus(nextStatus);
@@ -243,7 +284,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           return 'granted';
         }
 
-        const permissions = await Notifications.getPermissionsAsync();
+        if (!nativeNotifications) {
+          setPushPermissionStatus('unavailable');
+          return 'unavailable';
+        }
+
+        const permissions = await nativeNotifications.getPermissionsAsync();
         const nextStatus =
           permissions.status === 'granted' ? 'granted' : permissions.status === 'denied' ? 'denied' : 'undetermined';
         setPushPermissionStatus(nextStatus);
@@ -263,7 +309,15 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [loading, notifications, pushPermissionStatus, unreadCount, user]
   );
 
-  return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
+  return (
+    <NotificationContext.Provider value={value}>
+      <View style={{ flex: 1 }}>
+        {children}
+        <AppOfflineBanner />
+        <InAppBanner notification={bannerNotification} onPress={openBanner} onDismiss={dismissBanner} />
+      </View>
+    </NotificationContext.Provider>
+  );
 }
 
 export function useNotifications() {

@@ -1,5 +1,4 @@
 import Constants from 'expo-constants';
-import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
@@ -7,14 +6,22 @@ import { recordUserPushToken } from '@/lib/user-profile';
 
 const pushScope = 'DoorDropPushNotifications';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+function isExpoGo() {
+  return Constants.appOwnership === 'expo' || Constants.executionEnvironment === 'storeClient';
+}
+
+export const nativeNotifications = isExpoGo() ? null : require('expo-notifications');
+
+if (nativeNotifications) {
+  nativeNotifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 function getExpoProjectId() {
   return (
@@ -32,7 +39,7 @@ type PushNotificationRuntimeConfig = {
 
 type PushNotificationAvailability = {
   available: boolean;
-  reason?: 'web' | 'android-fcm-not-configured';
+  reason?: 'web' | 'expo-go' | 'android-fcm-not-configured';
   androidPackage?: string;
   androidGoogleServicesPackage?: string | null;
 };
@@ -44,6 +51,10 @@ function getPushNotificationRuntimeConfig() {
 export function getDoorDropPushNotificationAvailability(): PushNotificationAvailability {
   if (Platform.OS === 'web') {
     return { available: false, reason: 'web' };
+  }
+
+  if (!nativeNotifications) {
+    return { available: false, reason: 'expo-go' };
   }
 
   const runtimeConfig = getPushNotificationRuntimeConfig();
@@ -88,22 +99,26 @@ export async function registerDoorDropPushNotifications(uid: string) {
   logAsyncStart(pushScope, 'registerDoorDropPushNotifications', { uid, platform: Platform.OS });
 
   try {
+    if (!nativeNotifications) {
+      return null;
+    }
+
     if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync('default', {
+      await nativeNotifications.setNotificationChannelAsync('default', {
         name: 'DoorDrop alerts',
         description: 'Order updates, driver messages, dispatch alerts, and offers.',
-        importance: Notifications.AndroidImportance.MAX,
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        importance: nativeNotifications.AndroidImportance.MAX,
+        lockscreenVisibility: nativeNotifications.AndroidNotificationVisibility.PUBLIC,
         lightColor: '#12B981',
         vibrationPattern: [0, 250, 250, 250],
       });
     }
 
-    const existingPermissions = await Notifications.getPermissionsAsync();
+    const existingPermissions = await nativeNotifications.getPermissionsAsync();
     const finalPermissions =
       existingPermissions.status === 'granted'
         ? existingPermissions
-        : await Notifications.requestPermissionsAsync();
+        : await nativeNotifications.requestPermissionsAsync();
 
     if (finalPermissions.status !== 'granted') {
       logWarning(pushScope, 'push-permission-not-granted', {
@@ -119,7 +134,7 @@ export async function registerDoorDropPushNotifications(uid: string) {
       return null;
     }
 
-    const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    const token = (await nativeNotifications.getExpoPushTokenAsync({ projectId })).data;
     if (!token) {
       logWarning(pushScope, 'missing-push-token', { uid });
       return null;
@@ -152,7 +167,9 @@ export async function registerDoorDropPushNotifications(uid: string) {
   }
 }
 
-export function readNotificationNavigationData(response: Notifications.NotificationResponse) {
+export function readNotificationNavigationData(response: {
+  notification: { request: { content: { data?: Record<string, unknown> } } };
+}) {
   const data = response.notification.request.content.data ?? {};
 
   return {

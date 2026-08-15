@@ -10,8 +10,12 @@
     },
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
       }
     },
     "production": {

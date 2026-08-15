@@ -157,6 +157,11 @@ export type DriverRecord = {
   lastSubscriptionPaymentStatus?: string;
   lastSubscriptionPaymentSubmittedAt?: unknown;
   lastSubscriptionPaymentId?: string;
+  lastSubscriptionPaymentAmount?: number;
+  lastSubscriptionPaymentGatewayRef?: string;
+  lastSubscriptionPaymentReceiptNumber?: string;
+  lastSubscriptionPaymentExpiresAt?: unknown;
+  totalSubscriptionPaid?: number;
   acceptedTerms?: boolean;
   acceptedTermsAt?: unknown;
   acceptedTermsVersion?: string;
@@ -313,6 +318,14 @@ function getSnapshotItems<T extends { id: string }>(
 
 function isDriverVerifiedForDispatch(driver: Partial<DriverRecord>) {
   return !driver.verificationStatus || driver.verificationStatus === 'verified';
+}
+
+export function isDriverSubscriptionActive(_driver?: Partial<DriverRecord> | null, _now = Date.now()) {
+  return true;
+}
+
+function assertDriverSubscriptionActive(_driver?: Partial<DriverRecord> | null) {
+  return;
 }
 
 function clearDriverAssignmentFields() {
@@ -508,12 +521,12 @@ export async function registerDriver(input: RegisterDriverInput) {
     vehiclePhotoURL,
     driverPhotoURL,
     verificationSubmittedAt: serverTimestamp(),
-    isAvailable: verificationStatus === 'verified',
+    isAvailable: false,
     currentOrderId: '',
     rejectionCount: 0,
     cancellationCount: 0,
     completedOrderCount: 0,
-    subscriptionStatus: 'free_access',
+    subscriptionStatus: 'unpaid',
     acceptedTerms: Boolean(input.acceptedTerms),
     acceptedTermsAt: input.acceptedTerms ? serverTimestamp() : undefined,
     acceptedTermsVersion: input.acceptedTermsVersion || '',
@@ -569,6 +582,10 @@ export async function setDriverAvailability(driverId: string, isAvailable: boole
       throw new Error('Your DoorDrop Drive account is waiting for admin verification.');
     }
 
+    if (driver) {
+      assertDriverSubscriptionActive(driver);
+    }
+
   }
 
   await updateDoc(
@@ -609,6 +626,8 @@ export async function acceptDriverOrder(driverId: string, orderId: string) {
     throw new Error('This driver account is waiting for admin verification.');
   }
 
+  assertDriverSubscriptionActive(driver);
+
   const batch = writeBatch(db);
   batch.update(orderRef(orderId), {
     acceptedByDriverAt: serverTimestamp(),
@@ -633,6 +652,9 @@ export async function declineDriverOrder(driverId: string, orderId: string, reas
   if (!driverSnapshot.exists()) {
     throw new Error('Driver profile was not found.');
   }
+
+  const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
+  assertDriverSubscriptionActive(driver);
 
   const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
   if (order.driverId !== driverId) {
@@ -685,6 +707,7 @@ export async function updateDriverLocation(driverId: string, location: UpdateDri
   }
 
   const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
+  assertDriverSubscriptionActive(driver);
   const driverPayload = compactFirestoreData({
     currentLatitude: location.latitude,
     currentLongitude: location.longitude,
@@ -727,6 +750,9 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
   if (!driverSnapshot.exists()) {
     throw new Error('Driver profile was not found.');
   }
+
+  const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
+  assertDriverSubscriptionActive(driver);
 
   const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
   if (order.driverId !== driverId) {

@@ -17,6 +17,7 @@ import {
 
 import { bottomTabs, cargoTheme, type AppTabKey, type CargoIcon } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
 
 type CargoScreenProps = {
   children: React.ReactNode;
@@ -280,7 +281,14 @@ export function SummaryRow({ label, value, emphasis = false }: SummaryRowProps) 
 
 export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
   const router = useRouter();
+  const copy = useAppCopy();
   const lastNavPressRef = useRef(0);
+  const tabLabels = {
+    home: copy.nav.home,
+    track: copy.nav.track,
+    history: copy.nav.history,
+    account: copy.nav.account,
+  };
 
   const handleTabPress = useCallback(
     (tab: (typeof bottomTabs)[number]) => {
@@ -319,7 +327,7 @@ export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
                 color={isActive ? cargoTheme.colors.primaryDark : '#94A3B8'}
               />
             </View>
-            <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{tab.label}</Text>
+            <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{tabLabels[tab.key]}</Text>
           </TouchableOpacity>
         );
       })}

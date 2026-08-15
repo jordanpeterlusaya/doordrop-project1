@@ -7,73 +7,23 @@ import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler'
 import { AuthNotificationBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
-import { formatDeliveryDateTime, getDeliveryOrderStatusLabel, type DeliveryOrderStatus } from '@/lib/delivery-data';
+import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
+import { formatDeliveryDateTime, getDeliveryOrderStatusLabel } from '@/lib/delivery-data';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
+import { getNotificationPresentation } from '@/lib/notification-presentation';
 import { useNotifications } from '@/providers/notification-provider';
 
 export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
 
 const screenScope = 'NotificationsScreen';
 
-function getNotificationPresentation(input: {
-  type: 'order_created' | 'order_status' | 'promotion' | 'message';
-  orderStatus?: DeliveryOrderStatus;
-}) {
-  if (input.type === 'promotion') {
-    return {
-      icon: 'ticket-percent-outline' as const,
-      tint: '#FFF7ED',
-      iconColor: '#EA580C',
-    };
-  }
-
-  if (input.type === 'order_created') {
-    return {
-      icon: 'clipboard-check-outline' as const,
-      tint: '#ECFDF3',
-      iconColor: '#166534',
-    };
-  }
-
-  if (input.type === 'message') {
-    return {
-      icon: 'message-text-outline' as const,
-      tint: '#EFF6FF',
-      iconColor: '#2563EB',
-    };
-  }
-
-  if (input.orderStatus === 'delivered') {
-    return {
-      icon: 'check-decagram-outline' as const,
-      tint: '#EFF6FF',
-      iconColor: '#2563EB',
-    };
-  }
-
-  if (input.orderStatus === 'cancelled') {
-    return {
-      icon: 'close-circle-outline' as const,
-      tint: '#FEF2F2',
-      iconColor: '#DC2626',
-    };
-  }
-
-  return {
-    icon: 'truck-fast-outline' as const,
-    tint: '#DCFCE7',
-    iconColor: '#166534',
-  };
-}
-
 function NotificationRow({
-  index,
   isLast,
   item,
   onDelete,
   onPress,
 }: {
-  index: number;
   isLast: boolean;
   item: ReturnType<typeof useNotifications>['notifications'][number];
   onDelete: (notificationId: string) => Promise<void>;
@@ -110,39 +60,38 @@ function NotificationRow({
         }
       }}
       renderLeftActions={() => (
-        <View style={[styles.deleteActionWrap, index !== 0 && styles.deleteActionGapTop, isLast && styles.deleteActionRoundedBottom]}>
-          <TouchableOpacity
-            activeOpacity={0.88}
-            style={styles.deleteActionButton}
-            onPress={handleDelete}>
-            <MaterialCommunityIcons name="trash-can-outline" size={20} color="#FFFFFF" />
-            <Text style={styles.deleteActionText}>Delete</Text>
+        <View style={styles.deleteActionWrap}>
+          <TouchableOpacity activeOpacity={0.88} style={styles.deleteActionButton} onPress={handleDelete}>
+            <MaterialCommunityIcons name="trash-can-outline" size={18} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
       )}>
       <TouchableOpacity
         activeOpacity={0.88}
-        style={[styles.itemRow, !isLast && styles.itemBorder, !item.readAt && styles.itemUnread]}
+        style={[styles.itemRow, !isLast && styles.itemBorder]}
         onPress={onPress}>
         <View style={[styles.iconWrap, { backgroundColor: presentation.tint }]}>
-          <MaterialCommunityIcons name={presentation.icon} size={20} color={presentation.iconColor} />
+          <MaterialCommunityIcons name={presentation.icon} size={18} color={presentation.iconColor} />
         </View>
         <View style={styles.itemCopy}>
           <View style={styles.itemTop}>
-            <Text style={styles.itemTitle}>{item.title}</Text>
-            <Text style={styles.itemTime}>{formatDeliveryDateTime(item.createdAt)}</Text>
-          </View>
-          <Text style={styles.itemMessage}>{item.message}</Text>
-          {item.orderStatus ? (
-            <Text style={styles.itemMeta}>
-              {getDeliveryOrderStatusLabel(item.orderStatus)}
-              {item.orderNumber ? ` • ${item.orderNumber}` : ''}
+            <Text numberOfLines={1} style={styles.itemTitle}>
+              {item.title}
             </Text>
-          ) : item.type === 'message' ? (
-            <Text style={styles.itemMeta}>{item.orderNumber ? `Driver chat • ${item.orderNumber}` : 'Driver chat'}</Text>
-          ) : item.orderNumber ? (
-            <Text style={styles.itemMeta}>{item.orderNumber}</Text>
-          ) : null}
+            {!item.readAt ? <View style={styles.unreadDot} /> : null}
+          </View>
+          <Text numberOfLines={2} style={styles.itemMessage}>
+            {item.message}
+          </Text>
+          <Text style={styles.itemTime}>
+            {formatDeliveryDateTime(item.createdAt)}
+            {item.orderStatus
+              ? ` · ${getDeliveryOrderStatusLabel(item.orderStatus)}`
+              : item.type === 'message'
+                ? ' · Chat'
+                : ''}
+            {item.orderNumber ? ` · ${item.orderNumber}` : ''}
+          </Text>
         </View>
       </TouchableOpacity>
     </Swipeable>
@@ -164,6 +113,7 @@ function NotificationsScreenContent() {
   } = useNotifications();
   const [permissionSubmitting, setPermissionSubmitting] = useState(false);
   const [deleteAllSubmitting, setDeleteAllSubmitting] = useState(false);
+  const copy = useAppCopy();
 
   useEffect(() => {
     if (!loading && unreadCount > 0) {
@@ -229,132 +179,96 @@ function NotificationsScreenContent() {
     ]);
   };
 
-  const permissionTitle =
-    pushPermissionStatus === 'granted'
-      ? 'Push alerts are on'
-      : pushPermissionStatus === 'unavailable'
-        ? 'Push alerts unavailable'
-        : 'Allow push alerts';
-  const permissionText =
-    pushPermissionStatus === 'granted'
-      ? 'This device can receive order, ETA and driver message alerts.'
-      : pushPermissionStatus === 'unavailable'
-        ? 'This build is missing Android FCM configuration. In-app notifications will still appear here.'
-      : pushPermissionStatus === 'denied'
-        ? 'Notifications are blocked in device settings. Enable them to receive live DoorDrop updates.'
-        : 'Turn on notifications so DoorDrop can alert you when drivers and dispatch update an order.';
+  const showPermissionPrompt =
+    pushPermissionStatus !== 'granted' && pushPermissionStatus !== 'unavailable';
 
   return (
     <GestureHandlerRootView style={styles.gestureRoot}>
-      <CargoScreen contentContainerStyle={styles.content}>
-        <CargoHeader
-          title="Notifications"
-          subtitle="Delivery updates, dispatch alerts and account activity."
-          onLeftPress={() => router.back()}
-        />
+      <CargoScreen backgroundColor="#FFFFFF" contentContainerStyle={styles.content}>
+        <CargoHeader title={copy.notifications.title} onLeftPress={() => router.back()} />
 
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryTitle}>{unreadCount > 0 ? `${unreadCount} new update${unreadCount === 1 ? '' : 's'}` : 'Stay in sync'}</Text>
-          <Text style={styles.summaryText}>
-            {unreadCount > 0
-              ? 'Your latest order activity is ready below and will keep updating automatically.'
-              : 'Important delivery activity, driver messages, ETA updates and support messages appear here.'}
-          </Text>
-          <Text style={styles.summaryHint}>Swipe right once to delete instantly.</Text>
-          <View style={styles.permissionPanel}>
-            <View style={styles.permissionCopy}>
-              <MaterialCommunityIcons
-                name={pushPermissionStatus === 'granted' ? 'bell-check-outline' : 'bell-alert-outline'}
-                size={19}
-                color="#FFFFFF"
-              />
-              <View style={styles.permissionTextWrap}>
-                <Text style={styles.permissionTitle}>{permissionTitle}</Text>
-                <Text style={styles.permissionText}>{permissionText}</Text>
-              </View>
-            </View>
-            {pushPermissionStatus !== 'granted' && pushPermissionStatus !== 'unavailable' ? (
-              <TouchableOpacity
-                activeOpacity={0.88}
-                disabled={permissionSubmitting}
-                style={[styles.permissionButton, permissionSubmitting && styles.actionButtonDisabled]}
-                onPress={() => {
-                  void handleRequestPermission();
-                }}>
-                <Text style={styles.permissionButtonText}>{permissionSubmitting ? 'Opening...' : 'Allow'}</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
+        {showPermissionPrompt ? (
+          <TouchableOpacity
+            activeOpacity={0.88}
+            disabled={permissionSubmitting}
+            style={styles.permissionRow}
+            onPress={() => void handleRequestPermission()}>
+            <MaterialCommunityIcons name="bell-outline" size={18} color={cargoTheme.colors.primaryDark} />
+            <Text style={styles.permissionText}>
+              {permissionSubmitting ? copy.notifications.opening : copy.notifications.enable}
+            </Text>
+            <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
+          </TouchableOpacity>
+        ) : null}
 
         {loading ? (
           <View style={styles.emptyState}>
             <ActivityIndicator color={cargoTheme.colors.primary} />
-            <Text style={styles.emptyTitle}>Loading notifications</Text>
-            <Text style={styles.emptyText}>We are pulling your latest order alerts from Firestore.</Text>
+            <Text style={styles.emptyText}>{copy.common.loading}</Text>
           </View>
         ) : null}
 
         {!loading && !notifications.length ? (
           <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="bell-outline" size={30} color="#94A3B8" />
-            <Text style={styles.emptyTitle}>No notifications yet</Text>
-            <Text style={styles.emptyText}>When dispatch updates your order, it will appear here automatically.</Text>
+            <MaterialCommunityIcons name="bell-outline" size={28} color="#94A3B8" />
+            <Text style={styles.emptyTitle}>{copy.notifications.emptyTitle}</Text>
+            <Text style={styles.emptyText}>{copy.notifications.emptyText}</Text>
           </View>
         ) : null}
 
         {!loading && notifications.length ? (
-          <View style={styles.listHeader}>
-            <Text style={styles.listHeaderText}>{notifications.length} notification{notifications.length === 1 ? '' : 's'}</Text>
-            <TouchableOpacity
-              activeOpacity={0.88}
-              disabled={deleteAllSubmitting}
-              style={[styles.deleteAllButton, deleteAllSubmitting && styles.actionButtonDisabled]}
-              onPress={handleDeleteAll}>
-              <MaterialCommunityIcons name="trash-can-outline" size={16} color="#DC2626" />
-              <Text style={styles.deleteAllText}>{deleteAllSubmitting ? 'Deleting...' : 'Delete all'}</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
+          <>
+            <View style={styles.listHeader}>
+              <Text style={styles.listHeaderText}>
+                {notifications.length}{' '}
+                {notifications.length === 1 ? copy.notifications.update : copy.notifications.updates}
+              </Text>
+              <TouchableOpacity
+                activeOpacity={0.88}
+                disabled={deleteAllSubmitting}
+                onPress={handleDeleteAll}>
+                <Text style={[styles.deleteAllText, deleteAllSubmitting && styles.actionDisabled]}>
+                  {deleteAllSubmitting ? copy.notifications.deleting : copy.notifications.clearAll}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.listCard}>
+              {notifications.map((item, index) => (
+                <NotificationRow
+                  key={item.id}
+                  isLast={index === notifications.length - 1}
+                  item={item}
+                  onDelete={async (notificationId) => {
+                    logAsyncStart(screenScope, 'deleteNotification', { notificationId });
+                    try {
+                      await removeNotification(notificationId);
+                      logAsyncSuccess(screenScope, 'deleteNotification', { notificationId });
+                    } catch (error) {
+                      logAsyncFailure(screenScope, 'deleteNotification', error, { notificationId });
+                      throw error;
+                    }
+                  }}
+                  onPress={() => {
+                    logAsyncStart(screenScope, 'markRead', { notificationId: item.id });
+                    void markRead(item.id)
+                      .then(() => {
+                        logAsyncSuccess(screenScope, 'markRead', { notificationId: item.id });
+                      })
+                      .catch((error) => {
+                        logAsyncFailure(screenScope, 'markRead', error, { notificationId: item.id });
+                      });
 
-        {!loading && notifications.length ? (
-          <View style={styles.listCard}>
-            {notifications.map((item, index) => (
-              <NotificationRow
-                key={item.id}
-                index={index}
-                isLast={index === notifications.length - 1}
-                item={item}
-                onDelete={async (notificationId) => {
-                  logAsyncStart(screenScope, 'deleteNotification', { notificationId });
-                  try {
-                    await removeNotification(notificationId);
-                    logAsyncSuccess(screenScope, 'deleteNotification', { notificationId });
-                  } catch (error) {
-                    logAsyncFailure(screenScope, 'deleteNotification', error, { notificationId });
-                    throw error;
-                  }
-                }}
-                onPress={() => {
-                  logAsyncStart(screenScope, 'markRead', { notificationId: item.id });
-                  void markRead(item.id)
-                    .then(() => {
-                      logAsyncSuccess(screenScope, 'markRead', { notificationId: item.id });
-                    })
-                    .catch((error) => {
-                      logAsyncFailure(screenScope, 'markRead', error, { notificationId: item.id });
-                    });
-
-                  if (item.orderId) {
-                    router.push({
-                      pathname: '/track-order',
-                      params: { orderId: item.orderId },
-                    });
-                  }
-                }}
-              />
-            ))}
-          </View>
+                    if (item.orderId) {
+                      router.push({
+                        pathname: '/track-order',
+                        params: { orderId: item.orderId },
+                      });
+                    }
+                  }}
+                />
+              ))}
+            </View>
+          </>
         ) : null}
       </CargoScreen>
     </GestureHandlerRootView>
@@ -374,204 +288,136 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingBottom: 32,
+    paddingBottom: 40,
   },
-  summaryCard: {
-    backgroundColor: cargoTheme.colors.darkSurface,
-    borderRadius: 28,
-    padding: 20,
+  permissionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 18,
   },
-  summaryTitle: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  summaryText: {
-    color: '#D6E0EA',
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  summaryHint: {
-    marginTop: 10,
-    color: '#A7F3D0',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  permissionPanel: {
-    marginTop: 16,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    padding: 14,
-    gap: 12,
-  },
-  permissionCopy: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  permissionTextWrap: {
-    flex: 1,
-    gap: 4,
-  },
-  permissionTitle: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-  },
   permissionText: {
-    color: '#D6E0EA',
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  permissionButton: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  permissionButtonText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: typography.semibold,
     color: cargoTheme.colors.primaryDark,
-    fontSize: 12,
-    fontWeight: '800',
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 32,
+    paddingVertical: 48,
     paddingHorizontal: 24,
     gap: 8,
   },
   emptyTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    fontSize: 17,
+    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
   },
   emptyText: {
     textAlign: 'center',
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 20,
+    fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
-  },
-  listCard: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 18,
-    overflow: 'hidden',
   },
   listHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
     marginBottom: 10,
+    paddingHorizontal: 4,
   },
   listHeaderText: {
-    color: cargoTheme.colors.text,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  deleteAllButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    backgroundColor: '#FEF2F2',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  actionButtonDisabled: {
-    opacity: 0.62,
+    fontSize: 12,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   deleteAllText: {
+    fontSize: 13,
+    fontFamily: typography.bold,
     color: '#DC2626',
-    fontSize: 12,
-    fontWeight: '800',
+  },
+  actionDisabled: {
+    opacity: 0.55,
+  },
+  listCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+    overflow: 'hidden',
   },
   deleteActionWrap: {
     justifyContent: 'center',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
     backgroundColor: '#DC2626',
   },
-  deleteActionGapTop: {
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.12)',
-  },
-  deleteActionRoundedBottom: {
-    borderBottomLeftRadius: 24,
-  },
   deleteActionButton: {
-    minWidth: 112,
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    minWidth: 72,
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 6,
-  },
-  deleteActionText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '800',
   },
   itemRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
-    paddingVertical: 16,
-    backgroundColor: cargoTheme.colors.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#FFFFFF',
   },
   itemBorder: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#EDF2F7',
-  },
-  itemUnread: {
-    backgroundColor: '#F8FAFC',
-    marginHorizontal: -18,
-    paddingHorizontal: 18,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E8EEF4',
   },
   iconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   itemCopy: {
     flex: 1,
-    gap: 5,
+    minWidth: 0,
   },
   itemTop: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 10,
+    alignItems: 'center',
+    gap: 8,
   },
   itemTitle: {
     flex: 1,
-    color: cargoTheme.colors.text,
     fontSize: 15,
-    fontWeight: '800',
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.text,
   },
-  itemTime: {
-    color: cargoTheme.colors.subtext,
-    fontSize: 12,
-    fontWeight: '600',
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: cargoTheme.colors.primary,
   },
   itemMessage: {
-    color: cargoTheme.colors.subtext,
+    marginTop: 3,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
   },
-  itemMeta: {
-    color: cargoTheme.colors.primaryDark,
+  itemTime: {
+    marginTop: 6,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: typography.medium,
+    color: '#94A3B8',
   },
 });

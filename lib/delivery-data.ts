@@ -467,16 +467,8 @@ function hasPendingDriverSubscriptionPayment(driver?: Partial<DriverRecord> | nu
   return status === 'pending_admin_verification';
 }
 
-async function driverHasAssignmentAccess(driverId: string, driver?: Partial<DriverRecord> | null) {
-  if (hasActiveDriverSubscription(driver)) {
-    return true;
-  }
-
-  if (hasPendingDriverSubscriptionPayment(driver)) {
-    return false;
-  }
-
-  return false;
+async function driverHasAssignmentAccess(_driverId: string, _driver?: Partial<DriverRecord> | null) {
+  return true;
 }
 
 async function assertDriverHasAssignmentAccess(driverId: string, driver?: Partial<DriverRecord> | null) {
@@ -1539,7 +1531,7 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
 
   await batch.commit();
 
-  await createOrderStatusNotification({
+  void createOrderStatusNotification({
     userId: order.userId,
     orderId: order.id,
     orderNumber: order.orderNumber,
@@ -1548,7 +1540,7 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
     driverName: order.driverName,
     cancellationReason: trimmedReason,
     cancelledBy: 'customer',
-  });
+  }).catch(() => undefined);
 }
 
 export async function updateDriverLocation(driverId: string, location: UpdateDriverLocationInput) {

@@ -1,5 +1,4 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,26 +7,31 @@ import {
   Image,
   InteractionManager,
   Modal,
-  Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
-  useWindowDimensions,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BottomNav } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
 import {
   beginCargoDiagnosticAttempt,
   recordCargoDiagnostic,
 } from '@/lib/cargo-diagnostics';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { recordAppActivity } from '@/lib/app-analytics';
+import {
+  getDeliveryOrderStatusLabel,
+  subscribeToUserOrders,
+  type DeliveryOrder,
+} from '@/lib/delivery-data';
+import { getSavedPlaces, type SavedPlace } from '@/lib/saved-places';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useLanguage } from '@/providers/language-provider';
 import { useNotifications } from '@/providers/notification-provider';
@@ -36,14 +40,6 @@ const screenScope = 'HomeScreen';
 
 type AppRoute = '/send-parcel' | '/book-cargo' | '/track-order' | '/saved-places' | '/support-center';
 
-type ServiceCard = {
-  title: string;
-  subtitle: string;
-  image: number;
-  icon: keyof typeof MaterialCommunityIcons.glyphMap;
-  route: AppRoute;
-};
-
 type ScheduleOption = {
   title: string;
   subtitle: string;
@@ -51,23 +47,22 @@ type ScheduleOption = {
   route: AppRoute;
 };
 
-type ActivityItem = {
+type ServiceTile = {
+  key: string;
   title: string;
   subtitle: string;
+  image?: number;
+  imageScale?: number;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
-  route: AppRoute;
+  iconTone?: 'green' | 'slate';
+  action: 'route' | 'schedule';
+  route?: AppRoute;
 };
 
 type LiveLocationStatus = 'loading' | 'ready' | 'permission-denied' | 'unavailable';
 
 const HOME_PRESS_GUARD_MS = 650;
-const mapGridLines = Array.from({ length: 7 }, (_, index) => index);
-
-function getSheetTop(height: number) {
-  if (height < 700) return height * 0.35;
-  if (height < 820) return height * 0.39;
-  return height * 0.42;
-}
+const ACTIVE_ORDER_STATUSES = new Set(['pending_assignment', 'driver_assigned', 'driver_at_pickup', 'in_transit']);
 
 function cleanAddressPart(value: string | null | undefined) {
   return typeof value === 'string' ? value.trim() : '';
@@ -99,7 +94,7 @@ function formatNamedCurrentLocation(address: Location.LocationGeocodedAddress | 
         .map((part) => part.trim())
         .filter(Boolean)
     );
-    return formattedParts.slice(0, 4).join(', ');
+    return formattedParts.slice(0, 2).join(', ');
   }
 
   const addressParts = dedupeAddressParts(
@@ -116,31 +111,11 @@ function formatNamedCurrentLocation(address: Location.LocationGeocodedAddress | 
       .filter(Boolean)
   );
 
-  return addressParts.slice(0, 4).join(', ');
-}
-
-function MapBackground() {
-  return (
-    <View pointerEvents="none" style={styles.mapBackground}>
-      <View style={styles.mapGridLayer}>
-        {mapGridLines.map((line) => (
-          <React.Fragment key={line}>
-            <View style={[styles.mapGridLine, styles.mapGridHorizontal, { top: `${10 + line * 12}%` }]} />
-            <View style={[styles.mapGridLine, styles.mapGridVertical, { left: `${8 + line * 14}%` }]} />
-          </React.Fragment>
-        ))}
-      </View>
-      <LinearGradient
-        colors={['rgba(255,255,255,0.10)', 'rgba(255,255,255,0.42)', 'rgba(255,255,255,0.88)']}
-        style={StyleSheet.absoluteFillObject}
-      />
-    </View>
-  );
+  return addressParts.slice(0, 2).join(', ');
 }
 
 export default function HomePage() {
   const router = useRouter();
-  const { height, width } = useWindowDimensions();
   const { language } = useLanguage();
   const { unreadCount } = useNotifications();
   const { profile, user } = useAuthSession();
@@ -149,50 +124,69 @@ export default function HomePage() {
   const [liveLocationName, setLiveLocationName] = useState('');
   const [liveLocationStatus, setLiveLocationStatus] = useState<LiveLocationStatus>('loading');
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
+  const [activeOrder, setActiveOrder] = useState<DeliveryOrder | null>(null);
   const locationLookupIdRef = useRef(0);
   const routePressGuardRef = useRef(0);
   const utilityPressGuardRef = useRef(0);
 
-  const sheetTop = useMemo(() => getSheetTop(height), [height]);
-  const compact = height < 730 || width < 370;
   const copy = useMemo(
     () =>
       language === 'sw'
         ? {
-            locationLabel: 'Eneo la sasa',
-            locationLoading: 'Inatafuta eneo lako...',
-            locationPermissionDenied: 'Ruhusu location kuona ulipo',
+            locationLoading: 'Inatafuta eneo...',
+            locationPermissionDenied: 'Ruhusu location',
             locationUnavailable: 'Eneo halikupatikana',
-            heroTitle: 'Tuma chochote, safirisha mizigo haraka.',
-            heroSubtitle: 'Usafirishaji wa vifurushi na mizigo kwa hatua rahisi.',
+            greeting: 'Hujambo',
+            heroTitle: 'Tuma chochote leo.',
             searchTitle: 'Unataka kutuma wapi?',
-            searchSubtitle: 'Weka unakopeleka upate makadirio ya haraka',
-            servicesTitle: 'Huduma',
-            scheduleLink: 'Ratiba',
-            serviceMeta: 'Makadirio ya haraka yapo',
+            laterLabel: 'Ratiba',
             openingText: 'Inafunguka',
-            scheduleCardTitle: 'Panga usafirishaji',
-            scheduleCardSubtitle: 'Panga kuchukuliwa kwa kifurushi au mzigo baadaye.',
-            quickActionsTitle: 'Vitendo vya haraka',
             scheduleModalTitle: 'Panga usafirishaji',
             scheduleModalSubtitle: 'Chagua huduma na uweke muda unaopendelea wa kuchukuliwa.',
             cancel: 'Ghairi',
-            serviceCards: [
+            savedPlacesTitle: 'Maeneo yako',
+            savedPlacesEmpty: 'Hifadhi nyumbani, duka au ofisi',
+            activeOrderTitle: 'Usafirishaji unaoendelea',
+            tiles: [
               {
-                title: 'Tuma kifurushi',
-                subtitle: 'Nyaraka, chakula na vifurushi vidogo',
+                key: 'parcel',
+                title: 'Kifurushi',
+                subtitle: 'Nyaraka na vifurushi',
                 image: require('@/assets/images/home-send-parcel.png'),
+                imageScale: 1.22,
                 icon: 'package-variant-closed',
+                action: 'route',
                 route: '/send-parcel',
               },
               {
-                title: 'Omba msafirishaji wa mizigo',
-                subtitle: 'TOYO na Kirikuu kwa mizigo',
-                image: require('@/assets/images/vehicle-light-truck.png'),
+                key: 'cargo',
+                title: 'Mizigo',
+                subtitle: 'TOYO na Kirikuu',
+                image: require('@/assets/images/10.png'),
+                imageScale: 1.04,
                 icon: 'truck-fast-outline',
+                action: 'route',
                 route: '/book-cargo',
               },
-            ] satisfies ServiceCard[],
+              {
+                key: 'schedule',
+                title: 'Ratiba',
+                subtitle: 'Panga kuchukuliwa',
+                icon: 'calendar-month-outline',
+                iconTone: 'green',
+                action: 'schedule',
+              },
+              {
+                key: 'track',
+                title: 'Fuatilia',
+                subtitle: 'Oda zinazoendelea',
+                icon: 'map-marker-path',
+                iconTone: 'slate',
+                action: 'route',
+                route: '/track-order',
+              },
+            ] satisfies ServiceTile[],
             scheduleOptions: [
               {
                 title: 'Tuma kifurushi',
@@ -207,62 +201,61 @@ export default function HomePage() {
                 route: '/book-cargo',
               },
             ] satisfies ScheduleOption[],
-            activityItems: [
-              {
-                title: 'Fuatilia oda',
-                subtitle: 'Ona usafirishaji unaoendelea',
-                icon: 'crosshairs-gps',
-                route: '/track-order',
-              },
-              {
-                title: 'Maeneo yaliyohifadhiwa',
-                subtitle: 'Nyumbani, duka, ofisi',
-                icon: 'map-marker-radius-outline',
-                route: '/saved-places',
-              },
-              {
-                title: 'Msaada',
-                subtitle: 'Pata msaada wakati wowote',
-                icon: 'headset',
-                route: '/support-center',
-              },
-            ] satisfies ActivityItem[],
           }
         : {
-            locationLabel: 'Current location',
-            locationLoading: 'Finding your location...',
-            locationPermissionDenied: 'Allow location to show where you are',
-            locationUnavailable: 'Location name unavailable',
-            heroTitle: 'Send anything, move cargo faster.',
-            heroSubtitle: 'Parcel delivery and cargo transport in a simple guided flow.',
+            locationLoading: 'Finding location...',
+            locationPermissionDenied: 'Allow location',
+            locationUnavailable: 'Location unavailable',
+            greeting: 'Hello',
+            heroTitle: 'Send anything today.',
             searchTitle: 'Where do you want to send?',
-            searchSubtitle: 'Enter destination and get instant estimate',
-            servicesTitle: 'Services',
-            scheduleLink: 'Schedule',
-            serviceMeta: 'Instant estimate available',
+            laterLabel: 'Later',
             openingText: 'Opening',
-            scheduleCardTitle: 'Schedule a delivery',
-            scheduleCardSubtitle: 'Plan parcel or cargo pickup for later.',
-            quickActionsTitle: 'Quick actions',
             scheduleModalTitle: 'Schedule delivery',
             scheduleModalSubtitle: 'Choose a service and set your preferred pickup time.',
             cancel: 'Cancel',
-            serviceCards: [
+            savedPlacesTitle: 'Your places',
+            savedPlacesEmpty: 'Save home, shop or office',
+            activeOrderTitle: 'Delivery in progress',
+            tiles: [
               {
-                title: 'Send parcel',
-                subtitle: 'Documents, food and small packages',
+                key: 'parcel',
+                title: 'Parcel',
+                subtitle: 'Documents and packages',
                 image: require('@/assets/images/home-send-parcel.png'),
+                imageScale: 1.22,
                 icon: 'package-variant-closed',
+                action: 'route',
                 route: '/send-parcel',
               },
               {
-                title: 'Request cargo carrier',
-                subtitle: 'TOYO and Kirikuu cargo carriers',
-                image: require('@/assets/images/vehicle-light-truck.png'),
+                key: 'cargo',
+                title: 'Cargo',
+                subtitle: 'TOYO and Kirikuu',
+                image: require('@/assets/images/10.png'),
+                imageScale: 1.04,
                 icon: 'truck-fast-outline',
+                action: 'route',
                 route: '/book-cargo',
               },
-            ] satisfies ServiceCard[],
+              {
+                key: 'schedule',
+                title: 'Schedule',
+                subtitle: 'Plan a pickup',
+                icon: 'calendar-month-outline',
+                iconTone: 'green',
+                action: 'schedule',
+              },
+              {
+                key: 'track',
+                title: 'Track',
+                subtitle: 'Active deliveries',
+                icon: 'map-marker-path',
+                iconTone: 'slate',
+                action: 'route',
+                route: '/track-order',
+              },
+            ] satisfies ServiceTile[],
             scheduleOptions: [
               {
                 title: 'Send parcel',
@@ -277,29 +270,14 @@ export default function HomePage() {
                 route: '/book-cargo',
               },
             ] satisfies ScheduleOption[],
-            activityItems: [
-              {
-                title: 'Track order',
-                subtitle: 'View active deliveries',
-                icon: 'crosshairs-gps',
-                route: '/track-order',
-              },
-              {
-                title: 'Saved places',
-                subtitle: 'Home, shop, office',
-                icon: 'map-marker-radius-outline',
-                route: '/saved-places',
-              },
-              {
-                title: 'Support',
-                subtitle: 'Get help anytime',
-                icon: 'headset',
-                route: '/support-center',
-              },
-            ] satisfies ActivityItem[],
           },
     [language]
   );
+
+  const firstName = useMemo(() => {
+    const fullName = profile?.fullName?.trim() || user?.displayName?.trim() || '';
+    return fullName.split(/\s+/)[0] || '';
+  }, [profile?.fullName, user?.displayName]);
 
   const locationValue = useMemo(() => {
     if (liveLocationStatus === 'ready' && liveLocationName.trim()) {
@@ -415,6 +393,37 @@ export default function HomePage() {
   }, [refreshCurrentLocation]);
 
   useEffect(() => {
+    let isMounted = true;
+
+    void getSavedPlaces().then((places) => {
+      if (isMounted) {
+        setSavedPlaces(places.slice(0, 4));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setActiveOrder(null);
+      return;
+    }
+
+    return subscribeToUserOrders(
+      user.uid,
+      (orders) => {
+        setActiveOrder(orders.find((order) => ACTIVE_ORDER_STATUSES.has(order.status)) ?? null);
+      },
+      (error) => {
+        logError(screenScope, 'active order lookup failed', error);
+      }
+    );
+  }, [user?.uid]);
+
+  useEffect(() => {
     logInfo(screenScope, 'screen-mounted');
 
     return () => {
@@ -504,177 +513,212 @@ export default function HomePage() {
     }, 250);
   }, [profile?.fullName, user?.displayName, user?.email, user?.uid]);
 
+  const handleTilePress = useCallback(
+    (tile: ServiceTile) => {
+      if (tile.action === 'schedule') {
+        openScheduleSheet('home-service-tile');
+        return;
+      }
+
+      if (tile.route) {
+        handleServiceSelect(tile.route, 'home-service-tile');
+      }
+    },
+    [handleServiceSelect, openScheduleSheet]
+  );
+
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
-      <MapBackground />
-      <View style={[styles.topChrome, compact && styles.topChromeCompact]}>
+      <View style={styles.header}>
         <TouchableOpacity
-          style={styles.iconButton}
+          style={styles.headerButton}
           activeOpacity={0.86}
           accessibilityRole="button"
           accessibilityLabel="Open menu"
           onPress={() => handleUtilityRoutePress('/menu')}>
-          <MaterialCommunityIcons name="menu" size={23} color="#111827" />
+          <MaterialCommunityIcons name="menu" size={22} color="#111827" />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.locationButton}
+          style={styles.locationChip}
           activeOpacity={0.86}
           accessibilityRole="button"
-          accessibilityLabel={`${copy.locationLabel}: ${locationValue}`}
+          accessibilityLabel={locationValue}
           onPress={() => {
             void refreshCurrentLocation('tap');
           }}>
-          <View style={[styles.locationDot, liveLocationStatus !== 'ready' && styles.locationDotMuted]} />
-          <View style={styles.locationCopy}>
-            <Text style={styles.locationLabel}>{copy.locationLabel}</Text>
-            <Text numberOfLines={1} style={styles.locationValue}>{locationValue}</Text>
-          </View>
+          <MaterialCommunityIcons name="map-marker" size={15} color={cargoTheme.colors.primary} />
+          <Text numberOfLines={1} style={styles.locationText}>
+            {locationValue}
+          </Text>
           {isRefreshingLocation || liveLocationStatus === 'loading' ? (
-            <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
+            <ActivityIndicator size="small" color="#94A3B8" />
           ) : (
-            <MaterialCommunityIcons name="crosshairs-gps" size={19} color="#6B7280" />
+            <MaterialCommunityIcons name="chevron-down" size={16} color="#94A3B8" />
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.iconButton}
+          style={styles.headerButton}
           activeOpacity={0.86}
           accessibilityRole="button"
           accessibilityLabel={unreadCount > 0 ? `Open notifications, ${unreadCount} unread` : 'Open notifications'}
           onPress={() => handleUtilityRoutePress('/notifications')}>
           <MaterialCommunityIcons
             name={unreadCount > 0 ? 'bell-ring-outline' : 'bell-outline'}
-            size={22}
+            size={21}
             color="#111827"
           />
           {unreadCount > 0 ? (
-            <View style={styles.iconButtonBadge}>
-              <Text style={styles.iconButtonBadgeText}>{unreadCount > 9 ? '9+' : String(unreadCount)}</Text>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadCount > 9 ? '9+' : String(unreadCount)}</Text>
             </View>
           ) : null}
         </TouchableOpacity>
       </View>
 
-      <View style={[styles.heroPanel, compact && styles.heroPanelCompact]}>
-        <Text style={styles.heroEyebrow}>DoorDrop</Text>
-        <Text style={[styles.heroTitle, compact && styles.heroTitleCompact]}>{copy.heroTitle}</Text>
-        <Text style={[styles.heroSubtitle, compact && styles.heroSubtitleCompact]}>{copy.heroSubtitle}</Text>
-      </View>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
+        {firstName ? (
+          <Text style={styles.heroEyebrow}>
+            {copy.greeting}, {firstName}
+          </Text>
+        ) : null}
+        <Text style={styles.heroTitle}>{copy.heroTitle}</Text>
 
-      <View style={[styles.sheet, { top: sheetTop }]}>
-        <View style={styles.handleWrap}>
-          <View style={styles.handle} />
+        <View style={styles.tileGrid}>
+          {copy.tiles.map((tile) => {
+            const isBusy = Boolean(tile.route && busyRoute === tile.route);
+
+            return (
+              <TouchableOpacity
+                key={tile.key}
+                activeOpacity={0.88}
+                style={styles.tile}
+                accessibilityRole="button"
+                accessibilityLabel={tile.title}
+                onPress={() => handleTilePress(tile)}>
+                <View style={styles.tileArt}>
+                  {tile.image ? (
+                    <Image
+                      source={tile.image}
+                      style={[styles.tileImage, tile.imageScale ? { transform: [{ scale: tile.imageScale }] } : null]}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <View style={[styles.tileIconWrap, tile.iconTone === 'green' && styles.tileIconWrapGreen]}>
+                      <MaterialCommunityIcons
+                        name={tile.icon}
+                        size={22}
+                        color={tile.iconTone === 'green' ? cargoTheme.colors.primaryDark : '#111827'}
+                      />
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.tileTitle}>{tile.title}</Text>
+                <Text numberOfLines={1} style={styles.tileSubtitle}>
+                  {isBusy ? copy.openingText : tile.subtitle}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
-        <ScrollView
-          style={styles.sheetScroll}
-          contentContainerStyle={styles.sheetContent}
-          showsVerticalScrollIndicator={false}
-          bounces={false}>
+        <View style={styles.searchBar}>
           <TouchableOpacity
-            activeOpacity={0.9}
-            style={styles.destinationSearch}
+            style={styles.searchMain}
+            activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityLabel={copy.searchTitle}
             onPress={() => {
               void handleServiceSelect('/send-parcel', 'home-search-box');
             }}>
-            <View style={styles.searchIconWrap}>
-              <MaterialCommunityIcons name="magnify" size={22} color="#111827" />
-            </View>
-            <View style={styles.searchCopy}>
-              <Text style={styles.searchTitle}>{copy.searchTitle}</Text>
-              <Text style={styles.searchSubtitle}>{copy.searchSubtitle}</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={22} color="#9CA3AF" />
+            <MaterialCommunityIcons name="magnify" size={22} color="#111827" />
+            <Text numberOfLines={1} style={styles.searchTitle}>
+              {copy.searchTitle}
+            </Text>
           </TouchableOpacity>
-
-          <View style={styles.serviceHeaderRow}>
-            <Text style={styles.sectionTitle}>{copy.servicesTitle}</Text>
-            <TouchableOpacity activeOpacity={0.8} onPress={() => openScheduleSheet('home-schedule-link')}>
-              <Text style={styles.linkText}>{copy.scheduleLink}</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.serviceList}>
-            {copy.serviceCards.map((service) => {
-              const isBusy = busyRoute === service.route;
-
-              return (
-                <TouchableOpacity
-                  key={service.title}
-                  activeOpacity={0.9}
-                  style={styles.serviceRow}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open ${service.title}`}
-                  onPress={() => {
-                    void handleServiceSelect(service.route, 'home-service-row');
-                  }}>
-                  <View style={styles.serviceImageWrap}>
-                    <Image source={service.image} style={styles.serviceImage} resizeMode="cover" />
-                  </View>
-
-                  <View style={styles.serviceCopy}>
-                    <View style={styles.serviceTitleRow}>
-                      <Text style={styles.serviceTitle}>{service.title}</Text>
-                      {isBusy ? <Text style={styles.openingText}>{copy.openingText}</Text> : null}
-                    </View>
-                    <Text numberOfLines={2} style={styles.serviceSubtitle}>{service.subtitle}</Text>
-                    <View style={styles.serviceMetaRow}>
-                      <MaterialCommunityIcons name={service.icon} size={15} color={cargoTheme.colors.primaryDark} />
-                      <Text style={styles.serviceMeta}>{copy.serviceMeta}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.rowArrow}>
-                    <MaterialCommunityIcons name="chevron-right" size={22} color="#9CA3AF" />
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
+          <View style={styles.searchDivider} />
           <TouchableOpacity
-            style={styles.scheduleCard}
-            activeOpacity={0.9}
+            style={styles.laterButton}
+            activeOpacity={0.86}
             accessibilityRole="button"
-            accessibilityLabel="Schedule delivery"
-            onPress={() => openScheduleSheet('home-schedule-card')}>
-            <View style={styles.scheduleIconWrap}>
-              <MaterialCommunityIcons name="calendar-clock-outline" size={22} color="#111827" />
-            </View>
-            <View style={styles.scheduleCopy}>
-              <Text style={styles.scheduleTitle}>{copy.scheduleCardTitle}</Text>
-              <Text style={styles.scheduleSubtitle}>{copy.scheduleCardSubtitle}</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={22} color="#9CA3AF" />
+            accessibilityLabel={copy.laterLabel}
+            onPress={() => openScheduleSheet('home-search-later')}>
+            <MaterialCommunityIcons name="calendar-month-outline" size={16} color="#111827" />
+            <Text style={styles.laterLabel}>{copy.laterLabel}</Text>
           </TouchableOpacity>
+        </View>
 
-          <Text style={styles.sectionTitle}>{copy.quickActionsTitle}</Text>
-          <View style={styles.activityGrid}>
-            {copy.activityItems.map((item) => (
-              <TouchableOpacity
-                key={item.title}
-                activeOpacity={0.88}
-                style={styles.activityCard}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${item.title}`}
-                onPress={() => {
-                  void handleServiceSelect(item.route, 'home-quick-action');
-                }}>
-                <View style={styles.activityIconWrap}>
-                  <MaterialCommunityIcons name={item.icon} size={19} color="#111827" />
-                </View>
-                <Text numberOfLines={1} style={styles.activityTitle}>{item.title}</Text>
-                <Text numberOfLines={1} style={styles.activitySubtitle}>{item.subtitle}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </ScrollView>
+        {activeOrder ? (
+          <TouchableOpacity
+            style={styles.placeRow}
+            activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityLabel={copy.activeOrderTitle}
+            onPress={() => handleServiceSelect('/track-order', 'home-active-order')}>
+            <View style={styles.placeIconActive}>
+              <View style={styles.liveDot} />
+              <MaterialCommunityIcons name="package-variant-closed" size={18} color={cargoTheme.colors.primaryDark} />
+            </View>
+            <View style={styles.placeCopy}>
+              <Text numberOfLines={1} style={styles.placeTitle}>
+                {activeOrder.dropoffLabel || copy.activeOrderTitle}
+              </Text>
+              <Text numberOfLines={1} style={styles.placeSubtitleActive}>
+                {getDeliveryOrderStatusLabel(activeOrder.status)}
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#D1D5DB" />
+          </TouchableOpacity>
+        ) : null}
 
-        <BottomNav activeTab="home" />
-      </View>
+        {savedPlaces.length > 0 ? (
+          savedPlaces.map((place) => (
+            <TouchableOpacity
+              key={place.id}
+              style={styles.placeRow}
+              activeOpacity={0.88}
+              accessibilityRole="button"
+              accessibilityLabel={place.label}
+              onPress={() => handleServiceSelect('/send-parcel', 'home-saved-place')}>
+              <View style={styles.placeIcon}>
+                <MaterialCommunityIcons name={place.icon} size={20} color="#111827" />
+              </View>
+              <View style={styles.placeCopy}>
+                <Text numberOfLines={1} style={styles.placeTitle}>
+                  {place.label}
+                </Text>
+                <Text numberOfLines={1} style={styles.placeSubtitle}>
+                  {place.address}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ))
+        ) : (
+          <TouchableOpacity
+            style={styles.placeRow}
+            activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityLabel={copy.savedPlacesEmpty}
+            onPress={() => handleServiceSelect('/saved-places', 'home-saved-places-empty')}>
+            <View style={styles.placeIcon}>
+              <MaterialCommunityIcons name="map-marker-plus-outline" size={20} color="#111827" />
+            </View>
+            <View style={styles.placeCopy}>
+              <Text style={styles.placeTitle}>{copy.savedPlacesTitle}</Text>
+              <Text style={styles.placeSubtitle}>{copy.savedPlacesEmpty}</Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#D1D5DB" />
+          </TouchableOpacity>
+        )}
+      </ScrollView>
+
+      <BottomNav activeTab="home" />
 
       <Modal animationType="slide" transparent visible={scheduleOpen} onRequestClose={() => setScheduleOpen(false)}>
         <View style={styles.modalRoot}>
@@ -719,372 +763,236 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
-  mapBackground: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8FAFC',
-  },
-  mapGridLayer: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  mapGridLine: {
-    position: 'absolute',
-    backgroundColor: '#E2E8F0',
-    opacity: 0.72,
-  },
-  mapGridHorizontal: {
-    left: 0,
-    right: 0,
-    height: 1,
-  },
-  mapGridVertical: {
-    top: 0,
-    bottom: 0,
-    width: 1,
-  },
-  topChrome: {
-    position: 'absolute',
-    top: Platform.select({ ios: 58, android: 48, default: 52 }),
-    left: 16,
-    right: 16,
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 6,
   },
-  topChromeCompact: {
-    top: Platform.select({ ios: 48, android: 40, default: 44 }),
-  },
-  iconButton: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#FFFFFF',
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F4F5F7',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 7 },
-    elevation: 5,
   },
-  iconButtonBadge: {
+  locationChip: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 10,
+  },
+  locationText: {
+    flex: 1,
+    marginHorizontal: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: '#111827',
+    letterSpacing: -0.1,
+  },
+  badge: {
     position: 'absolute',
-    top: 6,
+    top: 4,
     right: 4,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 4,
+    minWidth: 15,
+    height: 15,
+    borderRadius: 8,
+    paddingHorizontal: 3,
     backgroundColor: '#DC2626',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconButtonBadgeText: {
+  badgeText: {
     color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
+    fontSize: 9,
+    fontFamily: typography.bold,
   },
-  locationButton: {
-    flex: 1,
-    minHeight: 52,
-    marginHorizontal: 10,
-    borderRadius: 26,
-    paddingHorizontal: 14,
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 7 },
-    elevation: 5,
-  },
-  locationDot: {
-    width: 11,
-    height: 11,
-    borderRadius: 5.5,
-    backgroundColor: cargoTheme.colors.primary,
-    marginRight: 11,
-  },
-  locationDotMuted: {
-    backgroundColor: '#CBD5E1',
-  },
-  locationCopy: {
+  scroll: {
     flex: 1,
   },
-  locationLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#6B7280',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  locationValue: {
-    marginTop: 2,
-    fontSize: 14,
-    fontWeight: '900',
-    color: '#111827',
-  },
-  heroPanel: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    top: Platform.select({ ios: 130, android: 122, default: 126 }),
-  },
-  heroPanelCompact: {
-    top: Platform.select({ ios: 108, android: 102, default: 106 }),
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 28,
   },
   heroEyebrow: {
     fontSize: 13,
-    fontWeight: '900',
-    color: '#111827',
-    marginBottom: 8,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: '#64748B',
+    marginBottom: 4,
   },
   heroTitle: {
-    fontSize: 34,
-    lineHeight: 39,
-    fontWeight: '900',
-    color: '#111827',
-    letterSpacing: 0,
-    maxWidth: 340,
+    fontSize: 30,
+    lineHeight: 36,
+    fontFamily: typography.extrabold,
+    color: '#0F172A',
+    letterSpacing: -0.7,
+    marginBottom: 14,
   },
-  heroTitleCompact: {
-    fontSize: 28,
-    lineHeight: 33,
-  },
-  heroSubtitle: {
-    marginTop: 10,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '600',
-    color: '#374151',
-    maxWidth: 320,
-  },
-  heroSubtitleCompact: {
-    fontSize: 13,
-    lineHeight: 19,
-    maxWidth: 280,
-  },
-  sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    overflow: 'hidden',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.16,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: -10 },
-    elevation: 14,
-  },
-  handleWrap: {
-    alignItems: 'center',
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  handle: {
-    width: 44,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: '#D1D5DB',
-  },
-  sheetScroll: {
-    flex: 1,
-  },
-  sheetContent: {
-    paddingHorizontal: 18,
-    paddingTop: 8,
-    paddingBottom: 32,
-  },
-  destinationSearch: {
-    minHeight: 72,
-    borderRadius: 20,
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 14,
+  tileGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 22,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 14,
   },
-  searchIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
+  tile: {
+    width: '48%',
+    backgroundColor: '#F4F5F7',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  tileArt: {
+    height: 52,
+    marginBottom: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
-  },
-  searchCopy: {
-    flex: 1,
-  },
-  searchTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: '#111827',
-    marginBottom: 3,
-  },
-  searchSubtitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6B7280',
-  },
-  serviceHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 21,
-    fontWeight: '900',
-    color: '#111827',
-    letterSpacing: 0,
-  },
-  linkText: {
-    fontSize: 14,
-    fontWeight: '900',
-    color: cargoTheme.colors.primaryDark,
-  },
-  serviceList: {
-    marginBottom: 16,
-  },
-  serviceRow: {
-    minHeight: 112,
-    borderRadius: 24,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    padding: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 2,
-  },
-  serviceImageWrap: {
-    width: 90,
-    height: 90,
-    borderRadius: 20,
     overflow: 'hidden',
-    backgroundColor: '#F3F4F6',
-    marginRight: 13,
   },
-  serviceImage: {
+  tileImage: {
     width: '100%',
     height: '100%',
   },
-  serviceCopy: {
-    flex: 1,
-  },
-  serviceTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  serviceTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '900',
-    color: '#111827',
-    letterSpacing: 0,
-  },
-  openingText: {
-    fontSize: 10,
-    fontWeight: '900',
-    color: cargoTheme.colors.primaryDark,
-    textTransform: 'uppercase',
-  },
-  serviceSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-    color: '#6B7280',
-    marginBottom: 9,
-  },
-  serviceMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  serviceMeta: {
-    marginLeft: 6,
-    fontSize: 12,
-    fontWeight: '800',
-    color: cargoTheme.colors.primaryDark,
-  },
-  rowArrow: {
-    width: 28,
-    alignItems: 'flex-end',
-  },
-  scheduleCard: {
-    minHeight: 74,
-    borderRadius: 22,
-    backgroundColor: '#111827',
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 22,
-  },
-  scheduleIconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+  tileIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileIconWrapGreen: {
+    backgroundColor: '#ECFDF3',
+  },
+  tileTitle: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: typography.extrabold,
+    color: '#0F172A',
+    letterSpacing: -0.2,
+  },
+  tileSubtitle: {
+    marginTop: 1,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: typography.body,
+    color: '#64748B',
+  },
+  searchBar: {
+    minHeight: 58,
+    borderRadius: 18,
+    backgroundColor: '#F4F5F7',
+    paddingLeft: 14,
+    paddingRight: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  searchMain: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchTitle: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
+    letterSpacing: -0.2,
+  },
+  searchDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 22,
+    backgroundColor: '#D1D5DB',
+    marginHorizontal: 8,
+  },
+  laterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E5E7EB',
+  },
+  laterLabel: {
+    marginLeft: 6,
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
+  },
+  placeRow: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#EEF2F6',
+  },
+  placeIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: '#F4F5F7',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
-  scheduleCopy: {
-    flex: 1,
-  },
-  scheduleTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: '#FFFFFF',
-    marginBottom: 3,
-  },
-  scheduleSubtitle: {
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '600',
-    color: '#D1D5DB',
-  },
-  activityGrid: {
-    flexDirection: 'row',
-    marginHorizontal: -4,
-    marginTop: 12,
-  },
-  activityCard: {
-    flex: 1,
-    marginHorizontal: 4,
-    borderRadius: 20,
-    backgroundColor: '#F9FAFB',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    padding: 11,
-  },
-  activityIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#FFFFFF',
+  placeIconActive: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: '#ECFDF3',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 10,
+    marginRight: 12,
   },
-  activityTitle: {
+  liveDot: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: cargoTheme.colors.primary,
+  },
+  placeCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  placeTitle: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: '#0F172A',
+    letterSpacing: -0.15,
+  },
+  placeSubtitle: {
+    marginTop: 2,
     fontSize: 12,
-    fontWeight: '900',
-    color: '#111827',
-    marginBottom: 3,
+    lineHeight: 16,
+    fontFamily: typography.body,
+    color: '#64748B',
   },
-  activitySubtitle: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#6B7280',
+  placeSubtitleActive: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.primaryDark,
   },
   modalRoot: {
     flex: 1,
@@ -1092,81 +1000,84 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(17,24,39,0.45)',
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
   },
   modalSheet: {
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 26,
+    paddingTop: 10,
+    paddingBottom: 32,
   },
   modalHandle: {
     alignSelf: 'center',
-    width: 44,
-    height: 5,
+    width: 40,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: '#D1D5DB',
+    backgroundColor: '#E5E7EB',
     marginBottom: 18,
   },
   modalTitle: {
-    fontSize: 25,
-    fontWeight: '900',
-    color: '#111827',
-    marginBottom: 6,
-    letterSpacing: 0,
+    fontSize: 22,
+    lineHeight: 28,
+    fontFamily: typography.extrabold,
+    color: '#0F172A',
+    letterSpacing: -0.4,
   },
   modalSubtitle: {
+    marginTop: 6,
+    marginBottom: 18,
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: '600',
-    color: '#6B7280',
-    marginBottom: 14,
+    fontFamily: typography.body,
+    color: '#64748B',
   },
   modalOption: {
-    minHeight: 76,
+    minHeight: 74,
+    borderRadius: 18,
+    backgroundColor: '#F4F5F7',
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+    marginBottom: 10,
   },
   modalOptionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#F3F4F6',
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
   modalOptionCopy: {
     flex: 1,
-    paddingRight: 12,
   },
   modalOptionTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: '#111827',
-    marginBottom: 4,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.extrabold,
+    color: '#0F172A',
+    letterSpacing: -0.2,
   },
   modalOptionSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-    color: '#6B7280',
+    marginTop: 3,
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: typography.body,
+    color: '#64748B',
   },
   closeButton: {
-    marginTop: 18,
-    minHeight: 54,
-    borderRadius: 18,
-    backgroundColor: '#111827',
+    marginTop: 6,
+    minHeight: 48,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
   closeButtonText: {
-    color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '900',
+    fontFamily: typography.semibold,
+    color: '#0F172A',
   },
 });

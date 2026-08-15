@@ -47,6 +47,8 @@ const googleMapsApiKey =
   process.env.GOOGLE_MAPS_ANDROID_API_KEY ||
   '';
 
+const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || '';
+
 const isAndroidBuildContext =
   process.env.EAS_BUILD_PLATFORM === 'android' ||
   process.argv.some((value) => /android|prebuild|run:android/i.test(value));
@@ -89,6 +91,7 @@ module.exports = {
     },
     plugins: [
       ...basePlugins,
+      'expo-font',
       [
         'expo-location',
         {
@@ -100,6 +103,7 @@ module.exports = {
       ...(expo.extra || {}),
       googleMapsApiKey,
       hasGoogleMapsApiKey: Boolean(googleMapsApiKey),
+      apiBaseUrl,
     },
   },
 };

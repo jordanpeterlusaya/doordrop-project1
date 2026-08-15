@@ -1,18 +1,19 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { FirebaseError } from 'firebase/app';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
-import { CargoHeader, CargoScreen, PrimaryButton, SummaryRow } from '@/components/cargo-ui';
+import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { doordropAdminHandoffLocation } from '@/constants/admin-location';
 import { cargoTheme, cargoVehicles, type FlowType, type ParcelScope } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
 import { recordAppActivity } from '@/lib/app-analytics';
 import { getFirebaseDataErrorMessage } from '@/lib/auth-errors';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { createDeliveryOrder } from '@/lib/delivery-data';
+import { isNotifiableRecipientPhone } from '@/lib/recipient-notify';
 import { useAuthSession } from '@/providers/auth-provider';
 
 export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
@@ -110,7 +111,9 @@ function OrderReviewScreenContent() {
     distanceMeters?: string;
     durationSeconds?: string;
     cargoSize?: string;
+    notifyRecipient?: string;
   }>();
+  const copy = useAppCopy();
   const [creatingOrder, setCreatingOrder] = useState(false);
   const [error, setError] = useState('');
   const reviewReturnTo = useMemo(() => buildOrderReviewReturnTo(params), [params]);
@@ -126,7 +129,7 @@ function OrderReviewScreenContent() {
       : 'Dispatch now';
 
   const serviceLabel =
-    flow === 'cargo' ? vehicle.title : scope === 'city' ? 'In-city parcel delivery' : 'Outside-city parcel delivery';
+    flow === 'cargo' ? vehicle.title : scope === 'city' ? 'In-city parcel delivery' : 'Other regions parcel delivery';
   const estimatedFare =
     flow === 'cargo' ? params.price ?? vehicle.price : params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 12,500');
   const eta = flow === 'cargo' ? params.duration ?? vehicle.eta : params.eta ?? (scope === 'city' ? '15-30 min' : '3-5 hrs');
@@ -273,10 +276,17 @@ function OrderReviewScreenContent() {
           estimatedFare,
         },
       });
+
+      const recipientPhone = params.recipientPhone?.trim() || '';
+      const shouldNotifyRecipient =
+        flow === 'parcel' && params.notifyRecipient !== '0' && isNotifiableRecipientPhone(recipientPhone);
+
       router.replace({
         pathname: '/track-order',
         params: {
           orderId: order.id,
+          placed: '1',
+          notifyRecipient: shouldNotifyRecipient ? '1' : '0',
         },
       });
     } catch (saveError) {
@@ -315,23 +325,23 @@ function OrderReviewScreenContent() {
   return (
     <CargoScreen
       contentContainerStyle={styles.content}
+      backgroundColor="#FFFFFF"
       footer={
         <View style={styles.footer}>
           {user ? (
             <PrimaryButton
-              label={creatingOrder ? 'Creating order...' : 'Create order'}
-              icon="check-circle-outline"
+              label={creatingOrder ? copy.confirm.creating : `${copy.confirm.confirm} · ${estimatedFare}`}
               onPress={handleCreateOrder}
               style={creatingOrder ? styles.buttonDisabled : undefined}
             />
           ) : (
             <View style={styles.authFooterActions}>
               <PrimaryButton
-                label="Login to complete"
+                label={copy.confirm.loginToComplete}
                 onPress={() => router.push({ pathname: '/login', params: { returnTo: reviewReturnTo } })}
               />
               <PrimaryButton
-                label="Register"
+                label={copy.common.register}
                 variant="secondary"
                 onPress={() => router.push({ pathname: '/register', params: { returnTo: reviewReturnTo } })}
               />
@@ -341,55 +351,56 @@ function OrderReviewScreenContent() {
           {error || authError ? <Text style={styles.errorText}>{error || authError}</Text> : null}
         </View>
       }>
-      <CargoHeader
-        title="Review order"
-        subtitle="Confirm payment before sending this request to dispatch."
-        onLeftPress={() => router.back()}
-        rightIcon="menu"
-        onRightPress={() => router.push('/menu')}
-      />
+      <CargoHeader title={copy.confirm.title} onLeftPress={() => router.back()} />
 
-      <View style={styles.highlightCard}>
-        <View style={styles.highlightBadge}>
-          <MaterialCommunityIcons
-            name={flow === 'cargo' ? 'truck-fast-outline' : 'package-variant-closed'}
-            size={16}
-            color="#FFFFFF"
-          />
-          <Text style={styles.highlightBadgeText}>{flow === 'cargo' ? 'Cargo request' : 'Parcel request'}</Text>
+      <View style={styles.routeCard}>
+        <View style={styles.routeTimeline}>
+          <View style={styles.routeSpineCol}>
+            <View style={styles.pickupDot} />
+            <View style={styles.routeSpine} />
+            <View style={styles.dropoffDot} />
+          </View>
+          <View style={styles.routeStops}>
+            <View style={styles.routeStop}>
+              <Text style={styles.routeLabel}>{copy.common.from}</Text>
+              <Text style={styles.routeValue}>{pickupValue}</Text>
+            </View>
+            <View style={styles.routeStop}>
+              <Text style={styles.routeLabel}>{copy.common.to}</Text>
+              <Text style={styles.routeValue}>{dropoffValue}</Text>
+            </View>
+          </View>
         </View>
-        <Text style={styles.highlightTitle}>{serviceLabel}</Text>
-        <Text style={styles.highlightText}>
-          Once you create the order it is sent into DoorDrop dispatch, where our team can assign the best driver in real time.
-        </Text>
+      </View>
+
+      <View style={styles.summaryCard}>
+        <View style={styles.summaryLine}>
+          <Text style={styles.summaryLabel}>{copy.confirm.service}</Text>
+          <Text style={styles.summaryValue}>
+            {flow === 'cargo'
+              ? [vehicle.title, cargoSizeLabel].filter(Boolean).join(' · ')
+              : [serviceLabel, parcelTypeLabel !== 'Parcel order' ? parcelTypeLabel : null].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+        <View style={styles.summaryLine}>
+          <Text style={styles.summaryLabel}>{copy.confirm.payment}</Text>
+          <Text style={styles.summaryValue}>{copy.confirm.cash}</Text>
+        </View>
+        {params.timing === 'later' ? (
+          <View style={styles.summaryLine}>
+            <Text style={styles.summaryLabel}>{copy.confirm.when}</Text>
+            <Text style={styles.summaryValue}>{timing}</Text>
+          </View>
+        ) : null}
+        <View style={[styles.summaryLine, styles.summaryLineLast]}>
+          <Text style={styles.summaryLabel}>{copy.confirm.fare}</Text>
+          <Text style={styles.fareValue}>{estimatedFare}</Text>
+        </View>
       </View>
 
       {!user ? (
-        <View style={styles.authGateCard}>
-          <View style={styles.authGateBadge}>
-            <MaterialCommunityIcons name="account-lock-outline" size={16} color="#FFFFFF" />
-            <Text style={styles.authGateBadgeText}>Final step</Text>
-          </View>
-          <Text style={styles.authGateTitle}>Login to complete this order</Text>
-          <Text style={styles.authGateText}>
-            If you already have a DoorDrop account, login with your email and password. If you do not have one yet, register first using your full name, phone number, email and password.
-          </Text>
-        </View>
+        <Text style={styles.authHint}>{copy.confirm.authHint}</Text>
       ) : null}
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Payment</Text>
-        <SummaryRow label="Method" value="Cash on delivery" />
-        <SummaryRow label="Service fare" value={estimatedFare} />
-        <SummaryRow label="Estimated total" value={estimatedTotal} emphasis />
-      </View>
-
-      <View style={styles.noticeCard}>
-        <MaterialCommunityIcons name="shield-check-outline" size={20} color={cargoTheme.colors.primaryDark} />
-        <Text style={styles.noticeText}>
-          After the order is created, DoorDrop dispatch receives it instantly and can assign a driver without calling you back.
-        </Text>
-      </View>
     </CargoScreen>
   );
 }
@@ -430,100 +441,115 @@ const styles = StyleSheet.create({
     color: '#DC2626',
     textAlign: 'center',
   },
-  highlightCard: {
-    backgroundColor: cargoTheme.colors.darkSurface,
-    borderRadius: 28,
-    padding: 18,
-    marginBottom: 22,
-  },
-  highlightBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    marginBottom: 12,
-  },
-  highlightBadgeText: {
-    fontSize: 12,
-    fontFamily: typography.bold,
-    color: '#FFFFFF',
-  },
-  highlightTitle: {
-    fontSize: 22,
-    lineHeight: 28,
-    fontFamily: typography.extrabold,
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  highlightText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: '#D7E1EA',
-  },
-  card: {
-    backgroundColor: cargoTheme.colors.surface,
+  routeCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: '#EDF2F7',
-    borderRadius: 24,
-    padding: 18,
-    marginBottom: 16,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontFamily: typography.extrabold,
-    color: cargoTheme.colors.text,
-    marginBottom: 14,
-  },
-  authGateCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 24,
-    padding: 18,
-    marginBottom: 18,
-  },
-  authGateBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.14)',
+    paddingHorizontal: 16,
+    paddingVertical: 18,
     marginBottom: 12,
   },
-  authGateBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: typography.bold,
-  },
-  authGateTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontFamily: typography.extrabold,
-    marginBottom: 8,
-  },
-  authGateText: {
-    color: '#D7E1EA',
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  noticeCard: {
+  routeTimeline: {
     flexDirection: 'row',
-    gap: 10,
-    backgroundColor: '#F0FDF4',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
-    padding: 16,
+    alignItems: 'stretch',
   },
-  noticeText: {
+  routeSpineCol: {
+    width: 16,
+    alignItems: 'center',
+    marginRight: 12,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  routeSpine: {
     flex: 1,
-    fontSize: 12,
+    width: 2,
+    marginVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#86EFAC',
+  },
+  pickupDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: cargoTheme.colors.primary,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  dropoffDot: {
+    width: 11,
+    height: 11,
+    borderRadius: 3,
+    backgroundColor: cargoTheme.colors.ink,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  routeStops: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'space-between',
+    gap: 22,
+  },
+  routeStop: {
+    minHeight: 40,
+  },
+  routeLabel: {
+    fontSize: 11,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  routeValue: {
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: typography.bold,
+    color: cargoTheme.colors.text,
+  },
+  summaryCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  summaryLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  summaryLineLast: {
+    borderBottomWidth: 0,
+  },
+  summaryLabel: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+  },
+  summaryValue: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: 14,
+    fontFamily: typography.bold,
+    color: cargoTheme.colors.text,
+  },
+  fareValue: {
+    fontSize: 16,
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.ink,
+  },
+  authHint: {
+    marginTop: 16,
+    fontSize: 13,
     lineHeight: 18,
-    color: cargoTheme.colors.primaryDark,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
   },
 });

@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Linking, Modal, Pressable, StyleSheet, Text, 
 
 import { BottomNav, CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
+import { useAppCopy } from '@/lib/app-copy';
 import {
   cancelDeliveryOrderByUser,
   formatDeliveryDateTime,
@@ -14,7 +15,9 @@ import {
   subscribeToOrder,
   type DeliveryOrder,
 } from '@/lib/delivery-data';
+import { buildRecipientSmsBody, isNotifiableRecipientPhone, openRecipientSms } from '@/lib/recipient-notify';
 import { useAuthSession } from '@/providers/auth-provider';
+import { useLanguage } from '@/providers/language-provider';
 
 const cancellationReasons = [
   'I entered the wrong pickup or drop-off details',
@@ -52,19 +55,31 @@ function shouldHideOrderOnTrack(order: DeliveryOrder | null) {
 
 export default function TrackOrderWebScreen() {
   const router = useRouter();
-  const { user } = useAuthSession();
-  const params = useLocalSearchParams<{ orderId?: string }>();
+  const { profile, user } = useAuthSession();
+  const copy = useAppCopy();
+  const { language } = useLanguage();
+  const params = useLocalSearchParams<{ orderId?: string; placed?: string; notifyRecipient?: string }>();
   const orderId = getParamValue(params.orderId);
+  const placedParam = getParamValue(params.placed);
+  const notifyRecipientParam = getParamValue(params.notifyRecipient);
   const [order, setOrder] = useState<DeliveryOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCancelPanel, setShowCancelPanel] = useState(false);
   const [cancelReason, setCancelReason] = useState<(typeof cancellationReasons)[number] | ''>('');
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [showRatingPanel, setShowRatingPanel] = useState(false);
+  const [showPlacedSheet, setShowPlacedSheet] = useState(false);
+  const [smsOpening, setSmsOpening] = useState(false);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingReview, setRatingReview] = useState('');
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [ratingPromptDismissedOrderId, setRatingPromptDismissedOrderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (placedParam === '1') {
+      setShowPlacedSheet(true);
+    }
+  }, [orderId, placedParam]);
 
   useEffect(() => {
     if (!orderId) {
@@ -215,6 +230,37 @@ export default function TrackOrderWebScreen() {
     setShowRatingPanel(false);
   };
 
+  const dismissPlacedSheet = () => {
+    setShowPlacedSheet(false);
+    router.setParams({ placed: '', notifyRecipient: '' });
+  };
+
+  const handlePlacedNotifySms = async () => {
+    if (!order || !isNotifiableRecipientPhone(order.recipientPhone)) {
+      dismissPlacedSheet();
+      return;
+    }
+
+    setSmsOpening(true);
+    try {
+      await openRecipientSms(
+        order.recipientPhone,
+        buildRecipientSmsBody({
+          isSw: language === 'sw',
+          senderName: order.customerName || profile?.fullName || 'DoorDrop',
+          orderNumber: order.orderNumber,
+          pickup: order.pickupLabel,
+          dropoff: order.dropoffLabel,
+        })
+      );
+    } catch {
+      Alert.alert(copy.help.callFailed, copy.track.smsRecipient);
+    } finally {
+      setSmsOpening(false);
+      dismissPlacedSheet();
+    }
+  };
+
   const handleSubmitRating = async () => {
     if (!order || !user?.uid || user.uid !== order.userId) {
       Alert.alert('Rating unavailable', 'Please sign in with the account that placed this order to rate it.');
@@ -246,8 +292,7 @@ export default function TrackOrderWebScreen() {
   return (
     <CargoScreen contentContainerStyle={styles.content} footer={<BottomNav activeTab="track" />}>
       <CargoHeader
-        title="Track order"
-        subtitle="Web-friendly tracking view powered by the same Firestore order document."
+        title="Track"
         leftAction="menu"
         onLeftPress={() => router.push('/menu')}
       />
@@ -275,9 +320,7 @@ export default function TrackOrderWebScreen() {
             </View>
             <Text style={styles.statusTitle}>{order.serviceLabel}</Text>
             <Text style={styles.statusText}>
-              {order.driverName
-                ? `${order.driverName} is linked to this order${order.driverLocationUpdatedAt ? ` and live location was updated ${formatDeliveryDateTime(order.driverLocationUpdatedAt)}` : ' and any dispatch update will refresh here automatically'}.`
-                : 'The order is waiting for driver assignment from the DoorDrop dispatch team.'}
+              {order.driverName ? `${order.driverName} · ${getDeliveryOrderStatusLabel(order.status)}` : getDeliveryOrderStatusLabel(order.status)}
             </Text>
           </View>
 
@@ -503,6 +546,46 @@ export default function TrackOrderWebScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal animationType="fade" transparent visible={showPlacedSheet} onRequestClose={dismissPlacedSheet}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={dismissPlacedSheet} />
+          <View style={styles.placedModalCard}>
+            <View style={styles.placedIconWrap}>
+              <MaterialCommunityIcons name="check" size={28} color="#166534" />
+            </View>
+            <Text style={styles.placedTitle}>{copy.track.orderPlaced}</Text>
+            {order?.orderNumber ? <Text style={styles.placedOrderNumber}>{order.orderNumber}</Text> : null}
+            <Text style={styles.placedBody}>{copy.track.lookingDriver}</Text>
+            {notifyRecipientParam === '1' && (!order || isNotifiableRecipientPhone(order.recipientPhone)) ? (
+              <>
+                <Text style={styles.placedNotify}>
+                  {copy.track.notifyPrompt.replace('{phone}', order?.recipientPhone || '')}
+                </Text>
+                <View style={styles.actionsRow}>
+                  <PrimaryButton
+                    label={copy.common.notNow}
+                    variant="secondary"
+                    style={styles.actionButton}
+                    onPress={dismissPlacedSheet}
+                  />
+                  <PrimaryButton
+                    label={smsOpening ? copy.common.loading : copy.track.sendSms}
+                    icon="message-text-outline"
+                    style={styles.actionButton}
+                    disabled={!order || smsOpening}
+                    onPress={() => {
+                      void handlePlacedNotifySms();
+                    }}
+                  />
+                </View>
+              </>
+            ) : (
+              <PrimaryButton label={copy.common.gotIt} onPress={dismissPlacedSheet} />
+            )}
+          </View>
+        </View>
+      </Modal>
     </CargoScreen>
   );
 }
@@ -701,6 +784,50 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
     gap: 14,
+  },
+  placedModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 28,
+    padding: 24,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    gap: 8,
+  },
+  placedIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#ECFDF3',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  placedTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: cargoTheme.colors.text,
+    textAlign: 'center',
+  },
+  placedOrderNumber: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: cargoTheme.colors.subtext,
+  },
+  placedBody: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
+  },
+  placedNotify: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 20,
+    color: cargoTheme.colors.text,
+    textAlign: 'center',
   },
   modalHeader: {
     flexDirection: 'row',

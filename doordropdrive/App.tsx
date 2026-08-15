@@ -1,6 +1,12 @@
 import ErrorBoundary from './components/ErrorBoundary';
 import { tryRequire } from './lib/safety';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import {
+  Manrope_400Regular,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+} from '@expo-google-fonts/manrope';
+import { useFonts } from 'expo-font';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
@@ -24,6 +30,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     AppState,
     type AppStateStatus,
     Image,
@@ -34,6 +41,7 @@ import {
     SafeAreaView,
     ScrollView,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     Vibration,
@@ -47,7 +55,6 @@ import {
     getDeliveryOrderStatusLabel,
     acceptDriverOrder,
     declineDriverOrder,
-    markDriverCommissionPaid,
     recordDriverAppOpen,
     registerDriver,
     rateDeliveryCustomer,
@@ -62,7 +69,18 @@ import {
     type DriverRecord,
     type DriverVehicleType,
 } from './lib/driver-data';
+import {
+    fetchDriverPaymentStatus,
+    initiateDriverAccessPayment,
+    verifyDriverAccessPayment,
+    type DriverPaymentNetwork,
+    type DriverPaymentNetworkKey,
+    type DriverPaymentRecord,
+    type DriverPaymentStatusResponse,
+} from './lib/driver-payments';
 import { auth, db, storage } from './lib/firebase';
+import { getDriverCopy } from './lib/driver-copy';
+import { loadDriverSettings, saveDriverSettings, type DriverLang } from './lib/driver-settings';
 import { sendOrderMessage, subscribeToOrderMessages, type OrderMessage } from './lib/order-messages';
 import { normalizePhoneNumber } from './lib/phone-auth';
 
@@ -122,16 +140,16 @@ type ProfileSetupState = {
 
 const ACTIVE_ORDER_STATUSES: DeliveryOrderStatus[] = ['driver_assigned', 'driver_at_pickup', 'in_transit'];
 const vehicleTypeOptions: { key: DriverVehicleType; label: string; icon: IconName }[] = [
-  { key: 'bodaboda', label: 'Bodaboda / Motorcycle', icon: 'motorbike' },
+  { key: 'bodaboda', label: 'Bike', icon: 'motorbike' },
   { key: 'toyo', label: 'TOYO', icon: 'car-pickup' },
   { key: 'kirikuu', label: 'Kirikuu', icon: 'truck-fast-outline' },
 ];
-const tabs: { key: DriverTab; label: string; icon: IconName }[] = [
-  { key: 'home', label: 'Home', icon: 'view-dashboard-outline' },
-  { key: 'trip', label: 'Navigate', icon: 'navigation-variant-outline' },
-  { key: 'history', label: 'History', icon: 'history' },
-  { key: 'notifications', label: 'Alerts', icon: 'bell-outline' },
-  { key: 'account', label: 'Account', icon: 'account-circle-outline' },
+const tabs: { key: DriverTab; icon: IconName }[] = [
+  { key: 'home', icon: 'home-outline' },
+  { key: 'trip', icon: 'navigation-variant-outline' },
+  { key: 'history', icon: 'clock-outline' },
+  { key: 'notifications', icon: 'bell-outline' },
+  { key: 'account', icon: 'account-outline' },
 ];
 const setupSteps: { key: SetupStep; label: string; icon: IconName }[] = [
   { key: 'profile', label: 'Profile', icon: 'account' },
@@ -159,8 +177,46 @@ const vehicleColorOptions: { label: string; swatch: string }[] = [
   { label: 'Blue', swatch: '#2563EB' },
   { label: 'Red', swatch: '#DC2626' },
 ];
-const manualCommissionPaymentPhone = '0796904849';
-const manualCommissionPaymentMethod = 'DoorDrive legacy access review';
+const defaultMongikePaymentNetworks: DriverPaymentNetwork[] = [
+  {
+    key: 'mpesa',
+    label: 'M-Pesa',
+    provider: 'Vodacom',
+    color: '#16A34A',
+    logoUrl: 'https://images.seeklogo.com/logo-png/62/2/m-pesa-logo-png_seeklogo-622552.png',
+    enabled: true,
+    comingSoon: false,
+    recipientPhone: '0750355402',
+  },
+  {
+    key: 'mixx',
+    label: 'Mixx by Yas',
+    provider: 'Yas / Tigo Pesa',
+    color: '#155EEF',
+    logoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f2/Yas_Tanzania.svg/512px-Yas_Tanzania.svg.png',
+    enabled: false,
+    comingSoon: true,
+  },
+  {
+    key: 'airtel',
+    label: 'Airtel Money',
+    provider: 'Airtel',
+    color: '#DC2626',
+    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTweT0_EszZrApI-MHVpPBZueAISnt5GXJNnw&s',
+    enabled: false,
+    comingSoon: true,
+  },
+  {
+    key: 'halopesa',
+    label: 'HaloPesa',
+    provider: 'Halotel',
+    color: '#7C3AED',
+    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSbuLQMvrrg2lEeCHcKj_5qd7fTXGC3akQx0Q&s',
+    enabled: false,
+    comingSoon: true,
+  },
+];
+const driverAccessFallbackDailyFeeTzs = 3000;
 const dayMs = 24 * 60 * 60 * 1000;
 const tanzaniaUtcOffsetMs = 3 * 60 * 60 * 1000;
 const assignedOrderVibrationPattern = [0, 900, 450, 900, 450, 1400, 700];
@@ -174,8 +230,8 @@ const PRIVACY_URL = 'https://efootball-app-9d175.web.app/privacy';
 const DOORDRIVE_TERMS_VERSION = 'doordrive-driver-terms-2026-06-04';
 const driveTheme = {
   colors: {
-    primary: '#0F9D58',
-    primaryDark: '#0B5A34',
+    primary: '#16A34A',
+    primaryDark: '#14532D',
     primarySoft: '#DCFCE7',
     accent: '#F97316',
     canvas: '#F5F7F6',
@@ -194,6 +250,11 @@ const driveTheme = {
     pill: 999,
   },
 };
+const driveType = {
+  regular: 'Manrope_400Regular',
+  semibold: 'Manrope_600SemiBold',
+  bold: 'Manrope_700Bold',
+} as const;
 
 function getInitialRegisterForm(): RegisterFormState {
   return {
@@ -205,7 +266,7 @@ function getInitialRegisterForm(): RegisterFormState {
     confirmPassword: '',
     vehicleType: 'bodaboda',
     vehicleLabel: '',
-    vehicleColor: '',
+    vehicleColor: 'White',
     plateNumber: '',
   };
 }
@@ -710,7 +771,7 @@ function SetupField({
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="#7B8B8D"
+        placeholderTextColor="#94A3B8"
         keyboardType={keyboardType}
         autoCapitalize={autoCapitalize}
         autoCorrect={false}
@@ -1037,6 +1098,7 @@ interface DriverExtraFields {
   lastCommissionPaidAt?: unknown;
   lastCommissionPaymentStatus?: string;
   lastSubscriptionPaymentStatus?: string;
+  lastSubscriptionPaymentExpiresAt?: unknown;
   subscriptionPaidUntil?: unknown;
   subscriptionTrialStartedAt?: unknown;
   subscriptionTrialEndsAt?: unknown;
@@ -1123,6 +1185,11 @@ function getDriverSubscriptionBillingCycleStartMillis() {
 // ──────────────────────────────────────────────
 
 export default function DoorDriveApp() {
+  useFonts({
+    Manrope_400Regular,
+    Manrope_600SemiBold,
+    Manrope_700Bold,
+  });
   // ─── Original state ───────────────────────
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -1148,10 +1215,15 @@ export default function DoorDriveApp() {
   const [customerRatingScore, setCustomerRatingScore] = useState(5);
   const [customerRatingComment, setCustomerRatingComment] = useState('');
   const [customerRatingSaving, setCustomerRatingSaving] = useState(false);
+  const [language, setLanguage] = useState<DriverLang>('en');
+  const [autoConfirm, setAutoConfirm] = useState(false);
+  const autoAcceptedOrderIdRef = useRef<string | null>(null);
+  const settingsReadyRef = useRef(false);
+  const splashProgress = useRef(new Animated.Value(0)).current;
+  const copy = getDriverCopy(language);
 
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [loginTermsAccepted, setLoginTermsAccepted] = useState(false);
   const [registerForm, setRegisterForm] = useState<RegisterFormState>(getInitialRegisterForm());
   const [registerStep, setRegisterStep] = useState<SetupStep>('profile');
   const [registerDocuments, setRegisterDocuments] = useState<DriverDocumentUploads>(getInitialDocumentUploads());
@@ -1168,19 +1240,49 @@ export default function DoorDriveApp() {
   const [totalEarnings, setTotalEarnings] = useState(0);
   const [showPaymentNotice, setShowPaymentNotice] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState(0);
-  const [commissionPayerPhone, setCommissionPayerPhone] = useState('');
-  const [commissionTransactionReference, setCommissionTransactionReference] = useState('');
+  const [paymentPhoneNumber, setPaymentPhoneNumber] = useState('');
+  const [selectedPaymentNetwork, setSelectedPaymentNetwork] = useState<DriverPaymentNetworkKey>('mpesa');
+  const [driverPaymentStatus, setDriverPaymentStatus] = useState<DriverPaymentStatusResponse | null>(null);
+  const [driverPaymentHistory, setDriverPaymentHistory] = useState<DriverPaymentRecord[]>([]);
+  const [paymentRefreshing, setPaymentRefreshing] = useState(false);
+  const [nowMillis, setNowMillis] = useState(Date.now());
   const sessionAccumulatorRef = useRef<number>(0);
   const knownTripMessageIdsRef = useRef<Set<string>>(new Set());
   const tripMessagesHydratedRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const vibratingAssignedOrderRef = useRef<string | null>(null);
   const openedAssignedOrderIdsRef = useRef<Set<string>>(new Set());
-  const weeklySubscriptionFeeTzs = 0;
+  const driverAccessDailyFeeTzs = driverPaymentStatus?.subscription?.dailyFee || driverAccessFallbackDailyFeeTzs;
+  const weeklySubscriptionFeeTzs = driverAccessDailyFeeTzs;
 
   useEffect(() => {
+    Animated.timing(splashProgress, {
+      toValue: 1,
+      duration: 4000,
+      useNativeDriver: false,
+    }).start();
     const splashTimer = setTimeout(() => setShowStartupSplash(false), 4000);
     return () => clearTimeout(splashTimer);
+  }, [splashProgress]);
+
+  useEffect(() => {
+    void loadDriverSettings().then((settings) => {
+      setLanguage(settings.language);
+      setAutoConfirm(settings.autoConfirm);
+      settingsReadyRef.current = true;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!settingsReadyRef.current) {
+      return;
+    }
+    void saveDriverSettings({ language, autoConfirm });
+  }, [autoConfirm, language]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMillis(Date.now()), 30 * 1000);
+    return () => clearInterval(timer);
   }, []);
 
   // Guarded maps import to avoid crashing the app if the native maps module is unavailable.
@@ -1255,28 +1357,45 @@ export default function DoorDriveApp() {
     (sum, order) => sum + parseAmountFromLabel(order.totalLabel || order.fareLabel),
     0
   );
-  const subscriptionCycleStartMillis = getDriverSubscriptionBillingCycleStartMillis();
-  const subscriptionActive = true;
-  const commissionOrders = useMemo(
-    () => driverOrders.filter((order) => order.status === 'delivered' && getDeliveredOrderMillis(order) >= subscriptionCycleStartMillis),
-    [driverOrders, subscriptionCycleStartMillis]
-  );
-  const weeklyDeliveredOrderCount = commissionOrders.length;
-  const subscriptionPaymentPending = false;
-  const commissionDateKey = toTanzaniaDateKey(subscriptionCycleStartMillis);
-  const dailyGrossEarnings = commissionOrders.reduce((sum, order) => sum + parseAmountFromLabel(order.totalLabel || order.fareLabel), 0);
-  const dailyCommissionDue = 0;
-  const hasCommissionDue = false;
-  const subscriptionCountdownLabel = hasReadyDriverProfile ? 'Free driver access' : 'Access starts after verification';
-  const subscriptionCountdownShortLabel = hasReadyDriverProfile ? 'Free' : 'Pending';
-  const subscriptionCountdownCaption = 'DoorDrive is free to use for drivers.';
-  const commissionPaymentOverdue = false;
-  const subscriptionStatusMessage = 'Free driver access';
-  const commissionPaidForDate = false;
   const driverVerificationStatus = driverProfile?.verificationStatus || 'verified';
   const driverVerificationPending = driverVerificationStatus === 'pending_admin_verification';
   const driverVerificationRejected = driverVerificationStatus === 'rejected';
-  const driverCanReceiveDispatch = !driverVerificationPending && !driverVerificationRejected;
+  const subscriptionPaidUntilMillis = getOrderTimestampMillis(driverPaymentStatus?.subscription?.paidUntil || driverProfile?.subscriptionPaidUntil);
+  const subscriptionActive = hasReadyDriverProfile;
+  const latestPayment = driverPaymentStatus?.latestPayment || null;
+  const latestPaymentStatus = (latestPayment?.status || driverProfile?.lastSubscriptionPaymentStatus || '').toLowerCase();
+  const latestPaymentExpiresMillis = getOrderTimestampMillis(latestPayment?.expiresAt || driverProfile?.lastSubscriptionPaymentExpiresAt);
+  const subscriptionPaymentPending =
+    !subscriptionActive &&
+    ['creating', 'pending', 'initiated', 'processing'].includes(latestPaymentStatus) &&
+    (!latestPaymentExpiresMillis || latestPaymentExpiresMillis > nowMillis);
+  const commissionOrders = useMemo(
+    () => driverOrders.filter((order) => order.status === 'delivered' && getDeliveredOrderMillis(order) >= getTanzaniaDayStartMillis()),
+    [driverOrders, todayDateKey]
+  );
+  const weeklyDeliveredOrderCount = commissionOrders.length;
+  const commissionDateKey = toTanzaniaDateKey(nowMillis);
+  const dailyGrossEarnings = todayEarnings;
+  const dailyCommissionDue = driverAccessDailyFeeTzs;
+  const hasCommissionDue = hasReadyDriverProfile && !driverVerificationPending && !driverVerificationRejected && !subscriptionActive;
+  const subscriptionCountdownLabel = !hasReadyDriverProfile
+    ? 'Access starts after verification'
+    : 'Free to use';
+  const subscriptionCountdownShortLabel = !hasReadyDriverProfile ? 'Pending' : 'Free';
+  const subscriptionCountdownCaption = !hasReadyDriverProfile
+    ? 'Complete verification first.'
+    : 'You can receive and manage DoorDrop orders.';
+  const commissionPaymentOverdue = hasCommissionDue && !subscriptionPaymentPending;
+  const subscriptionStatusMessage = subscriptionActive ? 'Active' : subscriptionPaymentPending ? 'Pending payment' : 'Renew access';
+  const commissionPaidForDate = subscriptionPaymentPending;
+  const driverCanReceiveDispatch = !driverVerificationPending && !driverVerificationRejected && subscriptionActive;
+  const driverAccessBlocked = hasReadyDriverProfile && !driverVerificationPending && !driverVerificationRejected && !subscriptionActive;
+  const paymentNetworks = driverPaymentStatus?.networks?.length ? driverPaymentStatus.networks : defaultMongikePaymentNetworks;
+  const selectedNetworkMeta =
+    paymentNetworks.find((item) => item.key === selectedPaymentNetwork) ||
+    paymentNetworks.find((item) => item.enabled) ||
+    defaultMongikePaymentNetworks[0];
+  const paymentRecipientPhone = selectedNetworkMeta?.recipientPhone || '0750355402';
   const availabilityLabel = activeOrder
     ? 'Busy on active trip'
     : driverVerificationPending
@@ -1284,7 +1403,7 @@ export default function DoorDriveApp() {
       : driverVerificationRejected
         ? 'Verification needs correction'
         : hasCommissionDue
-            ? subscriptionPaymentPending ? 'Access pending' : 'Access required'
+            ? subscriptionPaymentPending ? 'Payment pending' : 'Payment required'
             : driverProfile?.isAvailable
               ? 'Online for dispatch'
               : 'Offline from dispatch';
@@ -1296,11 +1415,11 @@ export default function DoorDriveApp() {
         ? 'Your verification was rejected. Contact admin or update your profile details.'
         : hasCommissionDue
             ? subscriptionPaymentPending
-              ? 'Your access update is waiting for admin verification.'
-              : 'Driver access is free. Go online to receive new orders.'
+              ? 'Approve the mobile money prompt or refresh status after paying.'
+              : `Pay TZS ${driverAccessDailyFeeTzs.toLocaleString()} daily to receive and manage orders.`
             : driverProfile?.isAvailable
-              ? 'Admin can assign work to you now. Driver access is free.'
-              : 'Admin will not assign new work until you go online. Driver access is free.';
+              ? 'Admin can assign work to you now.'
+              : 'Admin will not assign new work until you go online.';
   const commissionPaymentReference = useMemo(() => {
     const plateReference = driverProfile?.plateNumber?.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
     const driverReference = authUser?.uid ? authUser.uid.slice(0, 6).toUpperCase() : 'DRIVER';
@@ -1343,8 +1462,8 @@ export default function DoorDriveApp() {
         id: 'payment-due',
         title: subscriptionPaymentPending ? 'Access pending' : 'Driver access',
         message: subscriptionPaymentPending
-          ? 'Admin is reviewing your driver access.'
-          : 'DoorDrive is free to use for drivers.',
+          ? 'Payment is pending. Approve the mobile money prompt.'
+          : `Renew daily access with TZS ${driverAccessDailyFeeTzs.toLocaleString()}.`,
         icon: 'cash-clock',
         tone: 'warning',
         time: subscriptionStatusMessage,
@@ -1398,6 +1517,53 @@ export default function DoorDriveApp() {
     return items;
   }, [activeOrder, driverCanReceiveDispatch, driverProfile?.isAvailable, driverVerificationPending, driverVerificationRejected, hasCommissionDue, locationPermission, paymentAmount, subscriptionPaymentPending, subscriptionStatusMessage, tripMessages, weeklySubscriptionFeeTzs]);
   const unreadNotificationCount = notificationItems.filter((item) => item.tone !== 'success').length;
+
+  async function refreshDriverPayments(showSpinner = true) {
+    if (!authUser?.uid) {
+      return;
+    }
+
+    if (showSpinner) {
+      setPaymentRefreshing(true);
+    }
+
+    try {
+      const status = await fetchDriverPaymentStatus();
+      setDriverPaymentStatus(status);
+      setDriverPaymentHistory(status.history || []);
+    } catch (error) {
+      if (showSpinner) {
+        setFeedback({
+          tone: 'error',
+          message: error instanceof Error ? error.message : 'Could not refresh payment status right now.',
+        });
+      }
+    } finally {
+      if (showSpinner) {
+        setPaymentRefreshing(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    setDriverPaymentStatus(null);
+    setDriverPaymentHistory([]);
+  }, [authUser?.uid]);
+
+  useEffect(() => {
+    if (!authUser?.uid || !subscriptionPaymentPending) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      void verifyDriverAccessPayment(latestPayment?.id).then((status) => {
+        setDriverPaymentStatus(status);
+        setDriverPaymentHistory(status.history || []);
+      }).catch(() => null);
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [authUser?.uid, latestPayment?.id, subscriptionPaymentPending]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -1815,7 +1981,7 @@ export default function DoorDriveApp() {
   }, [driverOrders]);
 
   // ──────────────────────────────────────────────
-  // Driver access is free; keep the legacy payment state cleared.
+  // Keep the renewal banner in sync with the daily Mongike payment state.
   // ──────────────────────────────────────────────
   useEffect(() => {
     setPaymentAmount(dailyCommissionDue);
@@ -1845,12 +2011,7 @@ export default function DoorDriveApp() {
     }
 
     if (!/\S+@\S+\.\S+/.test(normalizedEmail) || loginPassword.trim().length < 6) {
-      setFeedback({ tone: 'error', message: 'Enter your DoorDrive email and password to continue.' });
-      return;
-    }
-
-    if (!loginTermsAccepted) {
-      setFeedback({ tone: 'error', message: 'Accept the DoorDrive terms and conditions before logging in.' });
+      setFeedback({ tone: 'error', message: 'Enter your email and password to continue.' });
       return;
     }
 
@@ -1877,8 +2038,10 @@ export default function DoorDriveApp() {
     const normalizedEmail = registerForm.email.trim().toLowerCase();
     const fullName = getRegisterFullName(registerForm);
     const vehicleLabel = getRegisterVehicleLabel(registerForm);
-    const passwordMatches =
-      registerForm.password.trim().length >= 6 && registerForm.password.trim() === registerForm.confirmPassword.trim();
+    const password = registerForm.password.trim();
+    const confirm = registerForm.confirmPassword.trim();
+    const passwordMatches = password.length >= 6 && (!confirm || confirm === password);
+    const vehicleColor = registerForm.vehicleColor.trim() || 'White';
 
     if (
       registering ||
@@ -1887,13 +2050,12 @@ export default function DoorDriveApp() {
       !normalizedRegisterPhone ||
       !passwordMatches ||
       !vehicleLabel ||
-      !registerForm.vehicleColor ||
       !registerForm.plateNumber.trim() ||
       !registerTermsAccepted
     ) {
       setFeedback({
         tone: 'error',
-        message: 'Complete profile, vehicle, email, password, phone, color, plate details, and accept the DoorDrive terms.',
+        message: 'Add your name, phone, email, password, plate number, and agree to the terms.',
       });
       return;
     }
@@ -1917,7 +2079,7 @@ export default function DoorDriveApp() {
         phoneNumber: normalizedRegisterPhone,
         vehicleType: registerForm.vehicleType,
         vehicleLabel,
-        vehicleColor: registerForm.vehicleColor.trim(),
+        vehicleColor,
         plateNumber: registerForm.plateNumber.trim(),
         verificationStatus: 'pending_admin_verification',
         verificationDocuments,
@@ -2013,6 +2175,11 @@ export default function DoorDriveApp() {
       return;
     }
 
+    if (!subscriptionActive) {
+      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before managing this trip.' });
+      return;
+    }
+
     setBusyAction(`trip-${nextStatus}`);
     setFeedback(null);
 
@@ -2090,7 +2257,9 @@ export default function DoorDriveApp() {
         tone: 'error',
         message: driverVerificationRejected
           ? 'Verification yako inahitaji kurekebishwa kabla ya kupokea orders.'
-          : 'Account yako bado inasubiri admin verification.',
+          : driverVerificationPending
+            ? 'Account yako bado inasubiri admin verification.'
+            : `Lipa TZS ${driverAccessDailyFeeTzs.toLocaleString()} daily access kabla ya kwenda online.`,
       });
       return;
     }
@@ -2125,6 +2294,11 @@ export default function DoorDriveApp() {
 
   const handleManualLocationRefresh = async () => {
     if (!authUser || !driverProfile || busyAction) {
+      return;
+    }
+
+    if (!subscriptionActive) {
+      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before refreshing live location.' });
       return;
     }
 
@@ -2330,32 +2504,16 @@ export default function DoorDriveApp() {
 
     if (subscriptionPaymentPending) {
       setPaymentCheckoutStep('submitted');
-      setFeedback({ tone: 'info', message: 'Malipo yako tayari yametumwa na yanasubiri admin verification.' });
+      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Approve prompt ya mobile money kisha refresh status.' });
       return;
     }
 
     setFeedback(null);
-    setCommissionPayerPhone((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
+    setPaymentPhoneNumber((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
     setPaymentCheckoutStep('proof');
   };
 
-  const handleCopyManualPaymentNumber = async () => {
-    try {
-      const clipboard = (globalThis as any).navigator?.clipboard;
-      if (clipboard?.writeText) {
-        await clipboard.writeText(manualCommissionPaymentPhone);
-        setFeedback({ tone: 'success', message: `Namba ${manualCommissionPaymentPhone} imecopywa.` });
-        return;
-      }
-    } catch {
-      // Fall back to showing the number clearly below.
-    }
-
-    Alert.alert('Vodacom M-Pesa number', manualCommissionPaymentPhone);
-    setFeedback({ tone: 'info', message: `Copy namba hii: ${manualCommissionPaymentPhone}` });
-  };
-
-  const handleMarkPaymentPaid = async () => {
+  const handleInitiateMongikePayment = async () => {
     if (!authUser?.uid || busyAction === 'commission-payment') {
       return;
     }
@@ -2371,20 +2529,20 @@ export default function DoorDriveApp() {
     }
 
     if (subscriptionPaymentPending) {
-      setFeedback({ tone: 'info', message: 'Malipo yako yanasubiri admin verification.' });
+      setPaymentCheckoutStep('submitted');
+      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Angalia prompt kwenye simu yako.' });
       return;
     }
 
-    const normalizedPaymentPhone = normalizePhoneNumber(commissionPayerPhone || driverProfile?.phoneNumber || '');
-    const paymentReference = commissionTransactionReference.trim();
+    const normalizedPaymentPhone = normalizePhoneNumber(paymentPhoneNumber || driverProfile?.phoneNumber || '');
+
+    if (!selectedNetworkMeta?.enabled) {
+      setFeedback({ tone: 'info', message: `${selectedNetworkMeta?.label || 'Network hii'} bado haijafunguliwa. Tumia Vodacom M-Pesa kwa sasa.` });
+      return;
+    }
 
     if (!normalizedPaymentPhone) {
-      setFeedback({ tone: 'error', message: 'Weka namba iliyotumika kufanya malipo.' });
-      return;
-    }
-
-    if (paymentReference.length < 4) {
-      setFeedback({ tone: 'error', message: 'Weka transaction ID au confirmation code ya M-Pesa.' });
+      setFeedback({ tone: 'error', message: 'Weka namba ya mobile money itakayopokea payment prompt.' });
       return;
     }
 
@@ -2392,26 +2550,24 @@ export default function DoorDriveApp() {
     setFeedback(null);
 
     try {
-      await markDriverCommissionPaid(authUser.uid, {
-        dateKey: commissionDateKey,
-        grossAmount: dailyGrossEarnings,
-        commissionAmount: dailyCommissionDue,
-        orderIds: commissionOrders.map((order) => order.id),
-        method: manualCommissionPaymentMethod,
-        payerPhone: normalizedPaymentPhone,
-        transactionReference: paymentReference,
+      const status = await initiateDriverAccessPayment({
+        phoneNumber: normalizedPaymentPhone,
+        network: selectedPaymentNetwork,
       });
+      setDriverPaymentStatus(status);
+      setDriverPaymentHistory(status.history || []);
       trackDriverActivity('driver_subscription_payment_submitted', 'driver_payments', {
         dateKey: commissionDateKey,
         grossAmount: dailyGrossEarnings,
         commissionAmount: dailyCommissionDue,
         subscriptionFee: dailyCommissionDue,
         weeklyDeliveredOrderCount,
-        method: manualCommissionPaymentMethod,
+        method: 'mongike_mobile_money',
+        network: selectedPaymentNetwork,
       });
       setPaymentCheckoutStep('submitted');
-      setFeedback({ tone: 'success', message: 'Uthibitisho umetumwa kwa admin kwa verification.' });
-      Alert.alert('Uthibitisho umetumwa', 'Admin atakagua taarifa hii na kufungua access yako.');
+      setFeedback({ tone: 'success', message: 'Payment prompt imetumwa. Thibitisha kwenye simu yako.' });
+      Alert.alert('Payment prompt imetumwa', 'Thibitisha malipo kwenye simu yako. Access itafunguka automatic baada ya Mongike kuthibitisha.');
     } catch (error) {
       setFeedback({
         tone: 'error',
@@ -2427,8 +2583,43 @@ export default function DoorDriveApp() {
     }
   };
 
+  const handleRefreshPaymentStatus = async () => {
+    if (!authUser?.uid || paymentRefreshing) {
+      return;
+    }
+
+    setPaymentRefreshing(true);
+    setFeedback(null);
+
+    try {
+      const status = await verifyDriverAccessPayment(latestPayment?.id);
+      setDriverPaymentStatus(status);
+      setDriverPaymentHistory(status.history || []);
+      setFeedback({
+        tone: status.subscription.active ? 'success' : 'info',
+        message: status.subscription.active
+          ? 'Payment imethibitishwa. DoorDrive access imefunguka.'
+          : status.subscription.pending
+            ? 'Bado pending. Hakikisha ume-approve prompt ya mobile money.'
+            : 'Payment haijakamilika bado.',
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Could not verify the payment right now.',
+      });
+    } finally {
+      setPaymentRefreshing(false);
+    }
+  };
+
   const handleAcceptOrder = async () => {
     if (!authUser?.uid || !activeOrder || busyAction) {
+      return;
+    }
+
+    if (!subscriptionActive) {
+      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before accepting orders.' });
       return;
     }
 
@@ -2459,8 +2650,27 @@ export default function DoorDriveApp() {
     }
   };
 
+  useEffect(() => {
+    if (!autoConfirm || !activeOrder || busyAction) {
+      return;
+    }
+    if (activeOrder.status !== 'driver_assigned' || activeOrder.acceptedByDriverAt) {
+      return;
+    }
+    if (autoAcceptedOrderIdRef.current === activeOrder.id) {
+      return;
+    }
+    autoAcceptedOrderIdRef.current = activeOrder.id;
+    void handleAcceptOrder();
+  }, [activeOrder, autoConfirm, busyAction]);
+
   const performDeclineOrder = async () => {
     if (!authUser?.uid || !activeOrder || busyAction) {
+      return;
+    }
+
+    if (!subscriptionActive) {
+      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before changing order status.' });
       return;
     }
 
@@ -2597,54 +2807,34 @@ export default function DoorDriveApp() {
 
   const handleRegisterBack = () => {
     setFeedback(null);
-
-    if (registerStep === 'profile') {
-      setAuthMode('signin');
-      return;
-    }
-
-    setRegisterStep((current) => getPreviousSetupStep(current));
+    setAuthMode('signin');
   };
 
   const handleRegisterContinue = () => {
     const normalizedEmail = registerForm.email.trim().toLowerCase();
     const fullName = getRegisterFullName(registerForm);
-    const passwordMatches =
-      registerForm.password.trim().length >= 6 && registerForm.password.trim() === registerForm.confirmPassword.trim();
 
     setFeedback(null);
 
-    if (registerStep === 'profile') {
-      if (fullName.length < 2 || !/\S+@\S+\.\S+/.test(normalizedEmail) || !normalizedRegisterPhone || !passwordMatches) {
-        setFeedback({
-          tone: 'error',
-          message: 'Add your name, email, phone number, and matching password before continuing.',
-        });
-        return;
-      }
-
-      setRegisterStep((current) => getNextSetupStep(current));
+    if (
+      fullName.length < 2 ||
+      !/\S+@\S+\.\S+/.test(normalizedEmail) ||
+      !normalizedRegisterPhone ||
+      registerForm.password.trim().length < 6 ||
+      !registerForm.plateNumber.trim()
+    ) {
+      setFeedback({
+        tone: 'error',
+        message: 'Add your name, phone, email, password, and plate number.',
+      });
       return;
     }
 
-    if (registerStep === 'vehicle') {
-      if (!registerForm.vehicleType || !registerForm.vehicleColor || !registerForm.plateNumber.trim()) {
-        setFeedback({
-          tone: 'error',
-          message: 'Choose vehicle type, color, and enter the plate number before continuing.',
-        });
-        return;
-      }
-
-      if (!registerTermsAccepted) {
-        setFeedback({
-          tone: 'error',
-          message: 'Accept the DoorDrive driver terms and conditions before creating the account.',
-        });
-        return;
-      }
-
-      void handleRegister();
+    if (!registerTermsAccepted) {
+      setFeedback({
+        tone: 'error',
+        message: 'Please agree to the terms to continue.',
+      });
       return;
     }
 
@@ -2693,200 +2883,91 @@ export default function DoorDriveApp() {
   // ──────────────────────────────────────────────
 
   const renderAuthScreen = () => {
-    const registerPasswordsMatch =
-      registerForm.password.trim().length >= 6 &&
-      registerForm.password.trim() === registerForm.confirmPassword.trim();
+    if (authMode === 'register') {
+      return (
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.authCanvas}>
+            <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Pressable onPress={handleRegisterBack} style={({ pressed }) => [styles.authBackButton, pressed && styles.buttonPressed]}>
+                <MaterialCommunityIcons name="arrow-left" size={22} color={driveTheme.colors.ink} />
+              </Pressable>
 
-    const renderRegisterStepContent = () => {
-      if (registerStep === 'profile') {
-        return (
-          <View style={styles.setupFormStack}>
-            <SetupField
-              value={registerForm.firstName}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, firstName: value }))}
-              placeholder="First Name"
-            />
-            <SetupField
-              value={registerForm.lastName}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, lastName: value }))}
-              placeholder="Last Name"
-            />
-            <View style={styles.setupPhoneRow}>
-              <View style={styles.setupCountryCode}>
-                <Text style={styles.setupFlagText}>TZ</Text>
-                <MaterialCommunityIcons name="menu-down" size={24} color="#7B8B8D" />
-              </View>
-              <View style={styles.setupPhoneInput}>
-                <SetupField
-                  value={registerForm.phoneNumber}
-                  onChangeText={(value) => setRegisterForm((current) => ({ ...current, phoneNumber: value }))}
-                  placeholder="+255"
-                  keyboardType="phone-pad"
-                  autoCapitalize="none"
-                />
-              </View>
-            </View>
-            <SetupField
-              value={registerForm.email}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, email: value }))}
-              placeholder="Email address"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <SetupField
-              value={registerForm.password}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, password: value }))}
-              placeholder="Create password"
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <SetupField
-              value={registerForm.confirmPassword}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, confirmPassword: value }))}
-              placeholder="Confirm password"
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            {!registerPasswordsMatch && registerForm.confirmPassword ? (
-              <Text style={styles.setupHintText}>Passwords must match and be at least 6 characters long.</Text>
-            ) : null}
-          </View>
-        );
-      }
+              <Text style={styles.authPageTitle}>Register</Text>
 
-      if (registerStep === 'vehicle') {
-        return (
-          <View style={styles.setupFormStack}>
-            <View style={styles.setupVehiclePickerWrap}>
-              <Text style={styles.setupMiniLabel}>Vehicle type</Text>
+              {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+              <SetupField
+                value={registerForm.firstName}
+                onChangeText={(value) => setRegisterForm((current) => ({ ...current, firstName: value, lastName: '', confirmPassword: current.password }))}
+                placeholder="Full name"
+              />
+              <SetupField
+                value={registerForm.phoneNumber}
+                onChangeText={(value) => setRegisterForm((current) => ({ ...current, phoneNumber: value }))}
+                placeholder="Phone number"
+                keyboardType="phone-pad"
+                autoCapitalize="none"
+              />
+              <SetupField
+                value={registerForm.email}
+                onChangeText={(value) => setRegisterForm((current) => ({ ...current, email: value }))}
+                placeholder="Email"
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+              <SetupField
+                value={registerForm.password}
+                onChangeText={(value) => setRegisterForm((current) => ({ ...current, password: value, confirmPassword: value }))}
+                placeholder="Password"
+                secureTextEntry
+                autoCapitalize="none"
+              />
+
+              <Text style={styles.authFieldHint}>Vehicle</Text>
               <VehicleTypePicker
                 value={registerForm.vehicleType}
                 onChange={(vehicleType) => setRegisterForm((current) => ({ ...current, vehicleType }))}
               />
-            </View>
-            <View style={styles.setupVehiclePickerWrap}>
-              <Text style={styles.setupMiniLabel}>Vehicle color</Text>
-              <VehicleColorPicker
-                value={registerForm.vehicleColor}
-                onChange={(vehicleColor) => setRegisterForm((current) => ({ ...current, vehicleColor }))}
+              <SetupField
+                value={registerForm.plateNumber}
+                onChangeText={(value) => setRegisterForm((current) => ({ ...current, plateNumber: value }))}
+                placeholder="Plate number"
+                autoCapitalize="characters"
               />
-            </View>
-            <SetupField
-              value={registerForm.plateNumber}
-              onChangeText={(value) => setRegisterForm((current) => ({ ...current, plateNumber: value }))}
-              placeholder="Plate number"
-              autoCapitalize="characters"
-            />
-            <View style={styles.termsPanel}>
-              <View style={styles.termsPanelHeader}>
-                <MaterialCommunityIcons name="file-document-check-outline" size={22} color={driveTheme.colors.primaryDark} />
-                <Text style={styles.termsPanelTitle}>Terms & Privacy</Text>
-              </View>
-              <Text style={styles.termsFinePrint}>
-                DoorDrive is free to use for drivers. Please review and accept the legal terms before creating your account.
-              </Text>
+
               <Pressable
                 onPress={() => setRegisterTermsAccepted((current) => !current)}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: registerTermsAccepted }}
-                style={({ pressed }) => [
-                  styles.termsAgreeRow,
-                  registerTermsAccepted && styles.termsAgreeRowActive,
-                  pressed && styles.buttonPressed,
-                ]}>
+                style={({ pressed }) => [styles.authTermsRow, pressed && styles.buttonPressed]}>
                 <View style={[styles.termsCheckbox, registerTermsAccepted && styles.termsCheckboxActive]}>
-                  {registerTermsAccepted ? <MaterialCommunityIcons name="check" size={17} color="#FFFFFF" /> : null}
+                  {registerTermsAccepted ? <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" /> : null}
                 </View>
-                <Text style={styles.termsAgreeText}>
-                  I have read and agree to the{' '}
-                <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
-                    Terms & Conditions
-                </Text>
-                {' '}and{' '}
-                <Text style={styles.authLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
-                  Privacy Policy
-                </Text>
-                .
+                <Text style={styles.authTermsText}>
+                  I agree to the{' '}
+                  <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
+                    Terms
+                  </Text>
+                  {' '}and{' '}
+                  <Text style={styles.authLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
+                    Privacy Policy
+                  </Text>
                 </Text>
               </Pressable>
-            </View>
-          </View>
-        );
-      }
 
-      return (
-        <View style={styles.setupFormStack}>
-          <View style={styles.setupNotice}>
-            <MaterialCommunityIcons name="shield-check-outline" size={20} color={driveTheme.colors.primaryDark} />
-            <Text style={styles.setupNoticeText}>
-              Your account is ready to submit. Admin will verify your driver details after signup.
-            </Text>
-          </View>
-        </View>
-      );
-    };
-
-    const registerStepCopy: Record<SetupStep, { title: string; subtitle: string }> = {
-      profile: {
-        title: 'Create your driver account',
-        subtitle: 'Your name, phone, email, and password are enough to start.',
-      },
-      vehicle: {
-        title: 'Add your vehicle',
-        subtitle: 'Keep it accurate so dispatch and admin can approve you quickly.',
-      },
-      documents: {
-        title: 'Finish setup',
-        subtitle: 'Submit your account so admin can verify the driver details.',
-      },
-    };
-
-    if (authMode === 'register') {
-      const currentStepCopy = registerStepCopy[registerStep];
-
-      return (
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.authCanvas}>
-            <ScrollView contentContainerStyle={styles.registerScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <View style={styles.registerTopBar}>
-                <Pressable onPress={handleRegisterBack} style={({ pressed }) => [styles.registerBackButton, pressed && styles.buttonPressed]}>
-                  <MaterialCommunityIcons name="arrow-left" size={22} color={driveTheme.colors.primaryDark} />
-                </Pressable>
-                <View style={styles.registerBrandLockup}>
-                  <View style={styles.registerLogoShell}>
-                    <Image source={appLogoImage} style={styles.registerLogoImage} resizeMode="contain" />
-                  </View>
-                  <Text style={styles.registerBrandName}>DoorDrive</Text>
-                </View>
-                <View style={styles.registerHeaderSpacer} />
-              </View>
-
-              <View style={styles.registerHero}>
-                <Text style={styles.authHeadline}>{currentStepCopy.title}</Text>
-                <Text style={styles.authSubcopy}>{currentStepCopy.subtitle}</Text>
-              </View>
-
-              <SetupProgress activeStep={registerStep} />
-
-              {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-              <View style={styles.authFormPanel}>{renderRegisterStepContent()}</View>
-            </ScrollView>
-
-            <View style={styles.registerFooter}>
               <AppButton
-                label={
-                  registerStep === 'vehicle'
-                    ? registering
-                      ? 'Creating account...'
-                      : 'Create account'
-                    : 'Continue'
-                }
-                icon={registerStep === 'vehicle' ? 'check' : 'arrow-right'}
+                label={registering ? 'Creating account...' : 'Create account'}
                 onPress={handleRegisterContinue}
-                disabled={registering || (registerStep === 'vehicle' && !registerTermsAccepted)}
+                disabled={registering}
               />
-            </View>
+
+              <Pressable
+                onPress={handleRegisterBack}
+                style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+                <Text style={styles.loginSecondaryActionMuted}>Have an account?</Text>
+                <Text style={styles.loginSecondaryActionText}>Login</Text>
+              </Pressable>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       );
@@ -2895,88 +2976,49 @@ export default function DoorDriveApp() {
     return (
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.authCanvas}>
-          <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <View style={styles.loginBrandHeader}>
-              <View style={styles.loginLogoShell}>
-                <Image source={appLogoImage} style={styles.loginLogoImage} resizeMode="contain" />
-              </View>
-              <Text style={styles.loginBrandName}>DoorDrive</Text>
-            </View>
-
-            <View style={styles.loginIntro}>
-              <Text style={styles.loginTitle}>Welcome Back!</Text>
-              <Text style={styles.loginSubtitle}>Ready to receive orders? Log in now.</Text>
-            </View>
+          <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <Text style={styles.authPageTitle}>Login</Text>
 
             {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-            <View style={styles.loginPanel}>
-              <Field
-                label="Email"
-                value={loginEmail}
-                onChangeText={setLoginEmail}
-                placeholder="Enter your email"
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-              <Field
-                label="Password"
-                value={loginPassword}
-                onChangeText={setLoginPassword}
-                placeholder="Enter your password"
-                secureTextEntry
-                autoCapitalize="none"
-              />
-              <Pressable
-                onPress={() => setLoginTermsAccepted((current) => !current)}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: loginTermsAccepted }}
-                style={({ pressed }) => [
-                  styles.termsAgreeRow,
-                  styles.loginTermsAgreeRow,
-                  loginTermsAccepted && styles.termsAgreeRowActive,
-                  pressed && styles.buttonPressed,
-                ]}>
-                <View style={[styles.termsCheckbox, loginTermsAccepted && styles.termsCheckboxActive]}>
-                  {loginTermsAccepted ? <MaterialCommunityIcons name="check" size={17} color="#FFFFFF" /> : null}
-                </View>
-                <Text style={styles.termsAgreeText}>
-                  I have read and agree to the{' '}
-                  <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
-                    Terms & Conditions
-                  </Text>
-                  .
-                </Text>
-              </Pressable>
-              <AppButton
-                label={signingIn ? 'Signing in...' : 'Login'}
-                onPress={() => void handleSignIn()}
-                disabled={signingIn || !loginTermsAccepted}
-              />
-            </View>
+            <SetupField
+              value={loginEmail}
+              onChangeText={setLoginEmail}
+              placeholder="Email"
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <SetupField
+              value={loginPassword}
+              onChangeText={setLoginPassword}
+              placeholder="Password"
+              secureTextEntry
+              autoCapitalize="none"
+            />
+
+            <AppButton
+              label={signingIn ? 'Logging in...' : 'Login'}
+              onPress={() => void handleSignIn()}
+              disabled={signingIn}
+            />
 
             <Pressable
               onPress={() => {
                 setFeedback(null);
                 setRegisterStep('profile');
                 setRegisterTermsAccepted(false);
-                setLoginTermsAccepted(false);
                 setAuthMode('register');
               }}
               style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
-              <Text style={styles.loginSecondaryActionMuted}>New driver?</Text>
-              <Text style={styles.loginSecondaryActionText}>Create account</Text>
+              <Text style={styles.loginSecondaryActionMuted}>No account?</Text>
+              <Text style={styles.loginSecondaryActionText}>Register</Text>
             </Pressable>
 
             <View style={styles.authFooter}>
               <Text style={styles.authFooterText}>
-                By continuing you agree to {"DoorDrop's"}{' '}
+                By continuing, you agree to the{' '}
                 <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
                   Terms
-                </Text>
-                {' '}and{' '}
-                <Text style={styles.authLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
-                  Privacy Policy
                 </Text>
                 .
               </Text>
@@ -3143,6 +3185,64 @@ export default function DoorDriveApp() {
     );
   };
 
+  const renderAccessRenewalScreen = () => (
+    <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
+      {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+      <View style={[styles.paymentDebtCard, styles.paymentDebtCardDue]}>
+        <View style={styles.paymentDebtTop}>
+          <View style={styles.paymentDebtIcon}>
+            <MaterialCommunityIcons name={subscriptionPaymentPending ? 'clock-outline' : 'cash-fast'} size={26} color="#FFFFFF" />
+          </View>
+          <View style={styles.paymentDebtCopy}>
+            <Text style={styles.paymentDebtLabel}>DoorDrive access required</Text>
+            <Text style={styles.paymentDebtAmount}>TZS {driverAccessDailyFeeTzs.toLocaleString()} / day</Text>
+            <Text style={styles.paymentDebtMeta}>
+              {subscriptionPaymentPending
+                ? 'Payment iko pending. Thibitisha prompt kwenye simu yako ili access ifunguke.'
+                : 'Access imeisha. Driver operations zimefungwa mpaka ufanye malipo.'}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.subscriptionCountdownCard}>
+          <View style={styles.subscriptionCountdownIcon}>
+            <MaterialCommunityIcons name="shield-lock-outline" size={22} color={driveTheme.colors.primaryDark} />
+          </View>
+          <View style={styles.subscriptionCountdownCopy}>
+            <Text style={styles.subscriptionCountdownLabel}>Blocked operations</Text>
+            <Text style={styles.subscriptionCountdownValue}>{subscriptionCountdownLabel}</Text>
+            <Text style={styles.subscriptionCountdownCaption}>Go online, accept orders, location refresh, and trip controls require active access.</Text>
+          </View>
+        </View>
+
+        <AppButton
+          label={subscriptionPaymentPending ? 'Refresh payment status' : 'Renew with Mongike'}
+          icon={subscriptionPaymentPending ? 'refresh' : 'cash-fast'}
+          onPress={() => {
+            setSelectedTab('account');
+            setAccountView('payments');
+            setPaymentCheckoutStep(subscriptionPaymentPending ? 'submitted' : 'proof');
+            if (subscriptionPaymentPending) {
+              void handleRefreshPaymentStatus();
+            } else {
+              setPaymentPhoneNumber((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
+            }
+          }}
+          disabled={paymentRefreshing}
+        />
+      </View>
+
+      <SectionCard title="Why blocked?" subtitle="DoorDrive daily access is required for driver operations.">
+        <View style={styles.stackMd}>
+          <Text style={styles.tripLine}>Mongike payment is initiated by the backend only. The API key is never sent to the app.</Text>
+          <Text style={styles.tripLine}>After confirmation, webhook updates your subscription and receipt automatically.</Text>
+          <Text style={styles.tripLine}>Active payment: Vodacom M-Pesa to {paymentRecipientPhone}. Other networks are coming soon.</Text>
+        </View>
+      </SectionCard>
+    </ScrollView>
+  );
+
   // ──────────────────────────────────────────────
   // Home tab (navigation-first driver dashboard)
   // ──────────────────────────────────────────────
@@ -3159,232 +3259,282 @@ export default function DoorDriveApp() {
     const dropoffPoint =
       driverDropoffPoint ?? pickupPoint;
     const canRenderMap = Platform.OS !== 'web' && MapView && Marker && Polyline;
+    const isOnline = Boolean(driverProfile?.isAvailable);
+    const awaitingAccept = Boolean(activeOrder && activeOrder.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt);
+    const todayAverage = todayCompletedCount > 0 ? Math.round(todayEarnings / todayCompletedCount) : 0;
+    const allTimeDeliveredCount = driverProfile?.completedOrderCount || driverOrders.filter((order) => order.status === 'delivered').length;
+    const homeAvailabilityNote = activeOrder
+      ? copy.orderInProgress
+      : driverVerificationPending
+        ? copy.verificationReview
+        : driverVerificationRejected
+          ? copy.verificationRejected
+          : hasCommissionDue
+            ? subscriptionPaymentPending
+              ? copy.paymentPending
+              : copy.payToReceive
+            : isOnline
+              ? copy.ordersWillAppear
+              : copy.tapGoToReceive;
+    const homeOrderStatusLabel =
+      activeOrder?.status === 'driver_assigned'
+        ? copy.newOrder
+        : activeOrder?.status === 'driver_at_pickup'
+          ? copy.atPickup
+          : activeOrder?.status === 'in_transit'
+            ? copy.onTrip
+            : activeOrder?.status === 'delivered'
+              ? copy.deliveredStatus
+              : copy.waitingOrder;
+    const pickupDistanceKm = currentDriverPoint ? haversineDistanceKm(currentDriverPoint, pickupPoint) : null;
+    const pickupEtaMin = pickupDistanceKm != null ? Math.max(1, Math.round(pickupDistanceKm / 0.35)) : null;
+    const requestCustomerName = activeOrder?.customerName || activeOrder?.recipientName || '';
+    const mapLatitude = activeOrder ? (pickupPoint.latitude + dropoffPoint.latitude) / 2 : pickupPoint.latitude;
+    const mapLongitude = activeOrder ? (pickupPoint.longitude + dropoffPoint.longitude) / 2 : pickupPoint.longitude;
+    const mapLatitudeDelta = activeOrder
+      ? Math.max(Math.abs(pickupPoint.latitude - dropoffPoint.latitude) * 2.3, 0.04)
+      : 0.02;
+    const mapLongitudeDelta = activeOrder
+      ? Math.max(Math.abs(pickupPoint.longitude - dropoffPoint.longitude) * 2.3, 0.04)
+      : 0.02;
+
     return (
-      <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.homeHeader}>
-          <View style={styles.homeIdentity}>
-            <View style={styles.driverAvatarSmall}>
-              <Text style={styles.driverAvatarSmallText}>
-                {(driverProfile?.fullName || authUser?.displayName || 'DD')
-                  .split(' ')
-                  .map((part) => part[0])
-                  .join('')
-                  .slice(0, 2)
-                  .toUpperCase()}
+      <View style={styles.homeScreen}>
+        {awaitingAccept ? null : (
+        <View style={styles.homeTopPanel}>
+          <View style={styles.homeTopRow}>
+            <View style={[styles.homeStatusPill, isOnline ? styles.homeStatusPillOnline : styles.homeStatusPillOffline]}>
+              <View style={[styles.homeStatusDot, isOnline ? styles.homeStatusDotOnline : styles.homeStatusDotOffline]} />
+              <Text style={[styles.homeStatusPillText, isOnline ? styles.homeStatusPillTextOnline : styles.homeStatusPillTextOffline]}>
+                {isOnline ? copy.online : copy.offline}
               </Text>
             </View>
-            <View style={styles.homeIdentityText}>
-              <Text style={styles.homeGreeting}>Karibu, {driverProfile?.fullName?.split(' ')[0] || 'Driver'}</Text>
-              <Text style={styles.homeSubGreeting}>{availabilityLabel}</Text>
-            </View>
+            <Pressable
+              onPress={() => setSelectedTab('notifications')}
+              style={({ pressed }) => [styles.homeIconChip, pressed && styles.buttonPressed]}>
+              <MaterialCommunityIcons name="bell-outline" size={22} color="#0F172A" />
+              {unreadNotificationCount > 0 ? (
+                <View style={styles.notificationDot}>
+                  <Text style={styles.notificationDotText}>{Math.min(unreadNotificationCount, 9)}</Text>
+                </View>
+              ) : null}
+            </Pressable>
           </View>
+
           <Pressable
-            onPress={() => setSelectedTab('notifications')}
-            style={({ pressed }) => [styles.homeNotificationButton, pressed && styles.buttonPressed]}>
-            <MaterialCommunityIcons name="bell-outline" size={22} color={driveTheme.colors.ink} />
-            {unreadNotificationCount > 0 ? (
-              <View style={styles.notificationDot}>
-                <Text style={styles.notificationDotText}>{Math.min(unreadNotificationCount, 9)}</Text>
+            onPress={() => setSelectedTab(activeOrder ? 'trip' : 'history')}
+            style={({ pressed }) => [styles.homeEarningsCard, pressed && styles.buttonPressed]}>
+            <View style={styles.homeEarningsHead}>
+              <Text style={styles.homeEarningsKicker}>{copy.todayEarnings}</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
+            </View>
+            <Text style={styles.homeEarningsValue}>TZS {todayEarnings.toLocaleString()}</Text>
+            <View style={styles.homeEarningsStats}>
+              <View style={styles.homeEarningsStat}>
+                <Text style={styles.homeEarningsStatValue}>{todayCompletedCount}</Text>
+                <Text style={styles.homeEarningsStatLabel}>{copy.delivered}</Text>
               </View>
-            ) : null}
+              <View style={styles.homeEarningsStatDivider} />
+              <View style={styles.homeEarningsStat}>
+                <Text style={styles.homeEarningsStatValue}>{todayActiveCount}</Text>
+                <Text style={styles.homeEarningsStatLabel}>{copy.active}</Text>
+              </View>
+              <View style={styles.homeEarningsStatDivider} />
+              <View style={styles.homeEarningsStat}>
+                <Text style={styles.homeEarningsStatValue}>TZS {todayAverage.toLocaleString()}</Text>
+                <Text style={styles.homeEarningsStatLabel}>{copy.avgPerOrder}</Text>
+              </View>
+            </View>
+            <View style={styles.homeEarningsFooter}>
+              <Text style={styles.homeEarningsFooterText}>
+                {copy.allTime} · TZS {totalEarnings.toLocaleString()}
+              </Text>
+              <Text style={styles.homeEarningsFooterMeta}>{allTimeDeliveredCount} {copy.orders}</Text>
+            </View>
           </Pressable>
+
+          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+          {hasCommissionDue ? (
+            <Pressable
+              onPress={() => {
+                setPaymentCheckoutStep('debt');
+                setAccountView('payments');
+                setSelectedTab('account');
+              }}
+              style={({ pressed }) => [
+                styles.homeDueBanner,
+                commissionPaymentOverdue ? styles.homeDueBannerOverdue : styles.homeDueBannerPending,
+                pressed && styles.buttonPressed,
+              ]}>
+              <Text style={styles.homeDueBannerText} numberOfLines={1}>
+                {subscriptionPaymentPending ? copy.paymentPending : copy.payNow} · TZS {weeklySubscriptionFeeTzs.toLocaleString()}
+              </Text>
+              <Text style={styles.homeDueBannerMeta}>{subscriptionCountdownShortLabel}</Text>
+            </Pressable>
+          ) : null}
         </View>
+        )}
 
-        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-        <Pressable
-          onPress={() => setSelectedTab(activeOrder ? 'trip' : 'history')}
-          style={({ pressed }) => [styles.homeTodayCard, pressed && styles.buttonPressed]}>
-          <View style={styles.homeTodayHeader}>
-            <View style={styles.homeTodayIcon}>
-              <MaterialCommunityIcons name="calendar-check-outline" size={22} color={driveTheme.colors.primaryDark} />
+        <View style={styles.homeMapWrap}>
+        {canRenderMap ? (
+          <MapView
+            provider={undefined}
+            style={styles.homeMapFill}
+            mapType="standard"
+            showsCompass={false}
+            showsTraffic={false}
+            toolbarEnabled={false}
+            showsUserLocation={false}
+            loadingEnabled
+            initialRegion={{
+              latitude: mapLatitude,
+              longitude: mapLongitude,
+              latitudeDelta: mapLatitudeDelta,
+              longitudeDelta: mapLongitudeDelta,
+            }}>
+            {currentDriverPoint ? (
+              <Marker coordinate={currentDriverPoint} title="You" pinColor="#14532D" />
+            ) : null}
+            {activeOrder ? (
+              <Marker coordinate={pickupPoint} title="Pickup" description={activeOrder.pickupLabel} pinColor="#16A34A" />
+            ) : null}
+            {activeOrder && driverDropoffPoint ? (
+              <Marker coordinate={dropoffPoint} title="Drop-off" description={driverDropoffLabel} pinColor="#2563EB" />
+            ) : null}
+            {activeOrder && driverDropoffPoint ? (
+              <Polyline coordinates={[pickupPoint, dropoffPoint]} strokeColor="#2563EB" strokeWidth={5} />
+            ) : currentDriverPoint && activeOrder ? (
+              <Polyline coordinates={[currentDriverPoint, pickupPoint]} strokeColor="#2563EB" strokeWidth={5} />
+            ) : null}
+          </MapView>
+        ) : (
+          <View style={[styles.homeMapFill, styles.homeMapFallback]}>
+            <View style={styles.homeMapGridLineA} />
+            <View style={styles.homeMapGridLineB} />
+            <View style={styles.homeMapRoutePreview} />
+            <View style={[styles.homeMapPin, styles.homeMapPinPickup]}>
+              <MaterialCommunityIcons name="map-marker" size={18} color="#FFFFFF" />
             </View>
-            <View style={styles.homeTodayCopy}>
-              <Text style={styles.homeTodayKicker}>{"Today's work"}</Text>
-              <Text style={styles.homeTodayTitle}>
-                {activeOrder ? 'Active trip in progress' : driverProfile?.isAvailable ? 'Online for dispatch' : 'Ready when you go online'}
+            <View style={[styles.homeMapPin, styles.homeMapPinDropoff]}>
+              <MaterialCommunityIcons name="flag-checkered" size={16} color="#FFFFFF" />
+            </View>
+            <View style={styles.homeMapVehicle}>
+              <MaterialCommunityIcons name="car" size={18} color="#FFFFFF" />
+            </View>
+          </View>
+        )}
+
+        {awaitingAccept ? (
+          <Pressable
+            onPress={() => void performDeclineOrder()}
+            disabled={busyAction === 'decline-order'}
+            style={({ pressed }) => [styles.homeDeclinePill, pressed && styles.buttonPressed]}>
+            <MaterialCommunityIcons name="close" size={16} color="#FFFFFF" />
+            <Text style={styles.homeDeclinePillText}>
+              {busyAction === 'decline-order' ? copy.declining : copy.decline}
+            </Text>
+          </Pressable>
+        ) : null}
+
+        <View pointerEvents="box-none" style={styles.homeBottomOverlay}>
+          {awaitingAccept && activeOrder ? (
+            <Pressable
+              onPress={() => void handleAcceptOrder()}
+              disabled={busyAction === 'accept-order'}
+              style={({ pressed }) => [styles.homeBoltCard, busyAction === 'accept-order' && styles.buttonDisabled, pressed && styles.buttonPressed]}>
+              <Text style={styles.homeBoltStats}>
+                {pickupEtaMin != null && pickupDistanceKm != null
+                  ? `${pickupEtaMin} min  •  ${pickupDistanceKm.toFixed(1)} km`
+                  : activeOrder.totalLabel}
               </Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={24} color={driveTheme.colors.primaryDark} />
-          </View>
-          <View style={styles.homeTodayMetricRow}>
-            <View style={styles.homeTodayMetric}>
-              <Text style={styles.homeTodayMetricValue}>{todayCompletedCount}</Text>
-              <Text style={styles.homeTodayMetricLabel}>Delivered</Text>
-            </View>
-            <View style={styles.homeTodayMetric}>
-              <Text style={styles.homeTodayMetricValue}>{todayActiveCount}</Text>
-              <Text style={styles.homeTodayMetricLabel}>Active</Text>
-            </View>
-            <View style={styles.homeTodayMetricWide}>
-              <Text style={styles.homeTodayMetricValue}>TZS {todayEarnings.toLocaleString()}</Text>
-              <Text style={styles.homeTodayMetricLabel}>Today earnings</Text>
-            </View>
-          </View>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setPaymentCheckoutStep('debt');
-            setAccountView('payments');
-            setSelectedTab('account');
-          }}
-          style={({ pressed }) => [
-            styles.homePaymentCard,
-            commissionPaymentOverdue ? styles.homePaymentCardDue : hasCommissionDue ? styles.homePaymentCardPending : styles.homePaymentCardClear,
-            pressed && styles.buttonPressed,
-          ]}>
-          <View style={styles.homePaymentTop}>
-            <View style={styles.homePaymentIcon}>
-              <MaterialCommunityIcons name={hasCommissionDue ? 'cash-clock' : 'shield-check-outline'} size={21} color="#FFFFFF" />
-            </View>
-            <View style={styles.homePaymentCopy}>
-              <Text style={styles.homePaymentKicker}>DoorDrive access</Text>
-              <Text style={styles.homePaymentTitle}>
-                {hasCommissionDue
-                  ? `${subscriptionPaymentPending ? 'Pending review' : 'Una deni'}: TZS ${weeklySubscriptionFeeTzs.toLocaleString()}`
-                  : subscriptionActive
-                    ? 'Free driver access'
-                    : 'Free to use'}
+              <Text style={styles.homeBoltPlace} numberOfLines={2}>{activeOrder.pickupLabel}</Text>
+              {requestCustomerName ? (
+                <Text style={styles.homeBoltCustomer} numberOfLines={1}>{requestCustomerName}</Text>
+              ) : null}
+              <Text style={styles.homeBoltFare}>{activeOrder.totalLabel}</Text>
+              <Text style={styles.homeBoltAcceptText}>
+                {busyAction === 'accept-order' ? copy.accepting : copy.accept}
               </Text>
+            </Pressable>
+          ) : activeOrder ? (
+            <View style={styles.homeSheet}>
+              <View style={styles.homeSheetHandle} />
+              <Text style={styles.homeSheetKicker}>{homeOrderStatusLabel}</Text>
+              <Text style={styles.homeSheetTitle} numberOfLines={1}>{activeOrder.pickupLabel}</Text>
+              <Text style={styles.homeSheetSubtitle} numberOfLines={1}>{driverDropoffLabel}</Text>
+              <View style={styles.homeTripActions}>
+                <Pressable
+                  onPress={() => void handleOpenNavigation()}
+                  style={({ pressed }) => [styles.homeAcceptButton, styles.homeTripActionGrow, pressed && styles.buttonPressed]}>
+                  <MaterialCommunityIcons name="navigation-variant" size={18} color="#FFFFFF" />
+                  <Text style={styles.homeAcceptButtonText}>{copy.navigate}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void handleCallCustomer()}
+                  style={({ pressed }) => [styles.homeIconAction, pressed && styles.buttonPressed]}>
+                  <MaterialCommunityIcons name="phone" size={20} color="#14532D" />
+                </Pressable>
+                <Pressable
+                  onPress={() => setSelectedTab('trip')}
+                  style={({ pressed }) => [styles.homeIconAction, pressed && styles.buttonPressed]}>
+                  <MaterialCommunityIcons name="chevron-right" size={22} color="#14532D" />
+                </Pressable>
+              </View>
+              <Pressable
+                onPress={handleCancelActiveTrip}
+                disabled={busyAction === 'trip-cancelled'}
+                style={({ pressed }) => [styles.homeGhostButton, pressed && styles.buttonPressed]}>
+                <Text style={styles.homeGhostButtonText}>
+                  {busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
+                </Text>
+              </Pressable>
             </View>
-            <View style={styles.homePaymentTimer}>
-              <Text style={styles.homePaymentTimerText}>{subscriptionCountdownShortLabel}</Text>
-            </View>
-          </View>
-          <View style={styles.homePaymentMetaRow}>
-            <Text style={styles.homePaymentMeta}>{subscriptionCountdownCaption}</Text>
-            {hasCommissionDue ? (
-              <Text style={styles.homePaymentMeta}>Go online to receive orders</Text>
-            ) : subscriptionActive ? (
-              <Text style={styles.homePaymentMeta}>Free to use</Text>
-            ) : (
-              <Text style={styles.homePaymentMeta}>Service access clear</Text>
-            )}
-            <Text style={styles.homePaymentMeta}>{driverProfile?.isAvailable ? 'Visible to dispatch' : 'Offline from dispatch'}</Text>
-          </View>
-          <View style={styles.homePaymentButton}>
-            <Text style={styles.homePaymentButtonText}>{hasCommissionDue ? 'Open access' : 'View access'}</Text>
-            <MaterialCommunityIcons name="arrow-right" size={17} color="#FFFFFF" />
-          </View>
-        </Pressable>
-
-        <View style={styles.homeMapCard}>
-          <View style={styles.homeMapStage}>
-            {canRenderMap ? (
-              <MapView
-                provider={undefined}
-                style={styles.homeMapView}
-                mapType="standard"
-                showsCompass
-                showsTraffic={false}
-                toolbarEnabled={false}
-                showsUserLocation={false}
-                loadingEnabled
-                initialRegion={{
-                  latitude: (pickupPoint.latitude + dropoffPoint.latitude) / 2,
-                  longitude: (pickupPoint.longitude + dropoffPoint.longitude) / 2,
-                  latitudeDelta: Math.max(Math.abs(pickupPoint.latitude - dropoffPoint.latitude) * 2.3, 0.04),
-                  longitudeDelta: Math.max(Math.abs(pickupPoint.longitude - dropoffPoint.longitude) * 2.3, 0.04),
-                }}>
-                <Marker coordinate={pickupPoint} title="Pickup" description={activeOrder?.pickupLabel || 'Current area'} pinColor="#16A34A" />
-                {activeOrder && driverDropoffPoint ? <Marker coordinate={dropoffPoint} title="Drop-off" description={driverDropoffLabel} pinColor="#EA580C" /> : null}
-                {activeOrder && driverDropoffPoint ? <Polyline coordinates={[pickupPoint, dropoffPoint]} strokeColor="#991B1B" strokeWidth={4} /> : null}
-              </MapView>
-            ) : (
-              <View style={styles.homeMapFallback}>
-                <View style={styles.homeMapGridLineA} />
-                <View style={styles.homeMapGridLineB} />
-                <View style={styles.homeMapRoutePreview} />
-                <View style={[styles.homeMapPin, styles.homeMapPinPickup]}>
-                  <MaterialCommunityIcons name="map-marker" size={18} color="#FFFFFF" />
-                </View>
-                <View style={[styles.homeMapPin, styles.homeMapPinDropoff]}>
-                  <MaterialCommunityIcons name="flag-checkered" size={16} color="#FFFFFF" />
-                </View>
-                <View style={styles.homeMapVehicle}>
-                  <MaterialCommunityIcons name="car" size={18} color="#FFFFFF" />
+          ) : isOnline ? (
+            <View style={styles.homeIdleCard}>
+              <View style={styles.homeSearchRow}>
+                <View style={styles.homeLiveDot} />
+                <View style={styles.homeIdleCopy}>
+                  <Text style={styles.homeIdleTitle}>{copy.lookingForOrders}</Text>
+                  <Text style={styles.homeIdleSubtitle} numberOfLines={2}>{homeAvailabilityNote}</Text>
                 </View>
               </View>
-            )}
-            <View style={styles.homeMapTopBadge}>
-              <MaterialCommunityIcons name="navigation-variant-outline" size={15} color="#FFFFFF" />
-              <Text style={styles.homeMapTopBadgeText}>Navigate</Text>
+              <Pressable
+                onPress={() => void handleToggleAvailability()}
+                disabled={busyAction === 'availability'}
+                style={({ pressed }) => [styles.homeGhostButton, pressed && styles.buttonPressed]}>
+                <Text style={styles.homeGhostButtonText}>
+                  {busyAction === 'availability' ? copy.updating : copy.goOffline}
+                </Text>
+              </Pressable>
             </View>
-          </View>
-
-          <View style={styles.homeOrderPanel}>
-            {activeOrder ? (
-              <>
-                <Text style={styles.homeOrderEyebrow}>Pokea kutoka kwa</Text>
-                <Text style={styles.homeOrderTitle}>{activeOrder.pickupLabel}</Text>
-                <Text style={styles.homeOrderSubtitle}>{driverDropoffLabel}</Text>
-                <View style={styles.homeActionRow}>
-                  <Pressable onPress={() => void handleOpenNavigation()} style={({ pressed }) => [styles.homePrimaryMiniButton, pressed && styles.buttonPressed]}>
-                    <MaterialCommunityIcons name="directions" size={18} color="#FFFFFF" />
-                    <Text style={styles.homePrimaryMiniButtonText}>Ramani</Text>
-                  </Pressable>
-                  <Pressable onPress={() => void handleCallCustomer()} style={({ pressed }) => [styles.homeSecondaryMiniButton, pressed && styles.buttonPressed]}>
-                    <MaterialCommunityIcons name="phone-outline" size={18} color={driveTheme.colors.primaryDark} />
-                    <Text style={styles.homeSecondaryMiniButtonText}>Piga Simu</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.homeOrderDivider} />
-                <Text style={styles.homeOrderDetail}>Namba ya oda: {activeOrder.orderNumber}</Text>
-                <Text style={styles.homeOrderDetail}>Status: {getDeliveryOrderStatusLabel(activeOrder.status)}</Text>
-                <Text style={styles.homeOrderDetail}>Malipo: {activeOrder.totalLabel}</Text>
-                {activeOrder.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt ? (
-                  <View style={styles.homePanelButtonGrid}>
-                    <AppButton
-                      label={busyAction === 'accept-order' ? 'Accepting...' : 'Accept'}
-                      icon="check-circle-outline"
-                      onPress={() => void handleAcceptOrder()}
-                      disabled={busyAction === 'accept-order'}
-                    />
-                    <AppButton
-                      label="Reject"
-                      icon="close-circle-outline"
-                      variant="dark"
-                      onPress={handleDeclineOrder}
-                      disabled={busyAction === 'decline-order'}
-                    />
-                  </View>
-                ) : (
-                  <View style={styles.homePanelButtonGrid}>
-                    <AppButton label="Fungua safari" icon="chevron-right" onPress={() => setSelectedTab('trip')} />
-                    <AppButton
-                      label={busyAction === 'trip-cancelled' ? 'Cancelling...' : 'Cancel'}
-                      icon="close-circle-outline"
-                      variant="dark"
-                      onPress={handleCancelActiveTrip}
-                      disabled={busyAction === 'trip-cancelled'}
-                    />
-                  </View>
-                )}
-              </>
-            ) : (
-              <>
-                <Text style={styles.homeOrderEyebrow}>DoorDrop dispatch</Text>
-                <Text style={styles.homeOrderTitle}>Waiting for your next order</Text>
-                <Text style={styles.homeOrderSubtitle}>{availabilityNote}</Text>
-                <AppButton
-                  label={
-                    busyAction === 'availability'
-                      ? 'Updating...'
-                      : driverProfile?.isAvailable
-                        ? 'Go offline'
-                        : 'Go online'
-                  }
-                  icon={driverProfile?.isAvailable ? 'pause-circle-outline' : 'check-circle-outline'}
+          ) : (
+            <View style={styles.homeOfflineDock}>
+              <View style={styles.homeGoHalo}>
+                <Pressable
                   onPress={() => void handleToggleAvailability()}
                   disabled={busyAction === 'availability'}
-                />
-              </>
-            )}
-          </View>
+                  style={({ pressed }) => [
+                    styles.homeGoButton,
+                    busyAction === 'availability' && styles.buttonDisabled,
+                    pressed && styles.buttonPressed,
+                  ]}>
+                  {busyAction === 'availability' ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.homeGoText}>{copy.start}</Text>
+                  )}
+                </Pressable>
+              </View>
+              <View style={styles.homeGoCopyCard}>
+                <Text style={styles.homeGoCaption}>{copy.youAreOffline}</Text>
+                <Text style={styles.homeGoHint} numberOfLines={2}>{homeAvailabilityNote}</Text>
+              </View>
+            </View>
+          )}
         </View>
-
-      </ScrollView>
+        </View>
+      </View>
     );
   };
 
@@ -3416,8 +3566,8 @@ export default function DoorDriveApp() {
         {!activeOrder ? (
           <View style={styles.emptyStateLarge}>
             <MaterialCommunityIcons name="map-marker-path" size={34} color={driveTheme.colors.primary} />
-            <Text style={styles.emptyTitle}>No active trip right now</Text>
-            <Text style={styles.emptyText}>Wait for dispatch to assign an order and your live trip controls will appear here.</Text>
+            <Text style={styles.emptyTitle}>{copy.noActiveTrip}</Text>
+            <Text style={styles.emptyText}>{copy.noActiveTripHint}</Text>
           </View>
         ) : (
           <>
@@ -3437,7 +3587,7 @@ export default function DoorDriveApp() {
             <View style={styles.tripBottomSheet}>
               <View style={styles.tripSheetHandle} />
               <View style={styles.tripHero}>
-                <Text style={styles.heroKicker}>Active delivery</Text>
+                <Text style={styles.heroKicker}>{copy.activeDelivery}</Text>
                 <Text style={styles.tripHeroTitle}>{activeOrder.serviceLabel}</Text>
                 <Text style={styles.tripHeroText}>{getDeliveryOrderStatusLabel(activeOrder.status)}</Text>
                 <View style={styles.tripMetricRow}>
@@ -3451,11 +3601,11 @@ export default function DoorDriveApp() {
               </View>
 
               <View style={styles.tripSheetCard}>
-                <Text style={styles.tripSheetTitle}>Trip route</Text>
+                <Text style={styles.tripSheetTitle}>{copy.tripRoute}</Text>
                 <Text style={styles.tripSheetSubtitle}>Navigation stops for this active job.</Text>
                 <View style={styles.stackMd}>
-                  <TripStopRow tone="pickup" title="Pickup" label={activeOrder.pickupLabel} />
-                  <TripStopRow tone="dropoff" title="Drop-off" label={driverDropoffLabel} />
+                  <TripStopRow tone="pickup" title={copy.pickup} label={activeOrder.pickupLabel} />
+                  <TripStopRow tone="dropoff" title={copy.dropoff} label={driverDropoffLabel} />
                   <View style={styles.tripDivider} />
                   <Text style={styles.tripLine}>Recipient: {activeOrder.recipientName} • {activeOrder.recipientPhone}</Text>
                   <Text style={styles.tripLine}>Customer: {activeOrder.customerName} • {activeOrder.customerPhone || activeOrder.customerEmail}</Text>
@@ -3464,7 +3614,7 @@ export default function DoorDriveApp() {
               </View>
 
               <View style={styles.tripSheetCard}>
-                <Text style={styles.tripSheetTitle}>Customer chat</Text>
+                <Text style={styles.tripSheetTitle}>{copy.customerChat}</Text>
                 <Text style={styles.tripSheetSubtitle}>
                   Send pickup updates or ask for delivery instructions without leaving the active trip.
                 </Text>
@@ -3528,7 +3678,7 @@ export default function DoorDriveApp() {
                     editable={!tripMessageSending}
                     multiline
                     maxLength={240}
-                    placeholder="Message the customer"
+                    placeholder={copy.messageCustomer}
                     placeholderTextColor="#94A3B8"
                     style={styles.tripMessageInput}
                     textAlignVertical="top"
@@ -3542,7 +3692,7 @@ export default function DoorDriveApp() {
                       pressed && tripMessageDraft.trim() && !tripMessageSending && styles.buttonPressed,
                     ]}>
                     <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
-                    <Text style={styles.tripMessageSendText}>{tripMessageSending ? 'Sending...' : 'Send'}</Text>
+                    <Text style={styles.tripMessageSendText}>{tripMessageSending ? copy.sending : copy.send}</Text>
                   </Pressable>
                 </View>
               </View>
@@ -3550,7 +3700,7 @@ export default function DoorDriveApp() {
               <View style={styles.tripActionSheet}>
                 {activeOrder.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt ? (
                   <AppButton
-                    label={busyAction === 'accept-order' ? 'Accepting order...' : 'Accept order'}
+                    label={busyAction === 'accept-order' ? copy.accepting : copy.accept}
                     icon="check-circle-outline"
                     onPress={() => void handleAcceptOrder()}
                     disabled={busyAction === 'accept-order'}
@@ -3566,13 +3716,13 @@ export default function DoorDriveApp() {
                 ) : null}
                 <View style={styles.tripActionGrid}>
                   <AppButton
-                    label="Open navigation"
+                    label={copy.openNavigation}
                     icon="navigation-variant-outline"
                     variant="secondary"
                     onPress={() => void handleOpenNavigation()}
                   />
                   <AppButton
-                    label="Call customer"
+                    label={copy.callCustomer}
                     icon="phone-outline"
                     variant="secondary"
                     onPress={() => void handleCallCustomer()}
@@ -3580,7 +3730,7 @@ export default function DoorDriveApp() {
                 </View>
                 <View style={styles.tripActionGrid}>
                   <AppButton
-                    label={busyAction === 'location-refresh' ? 'Refreshing location...' : 'Refresh live location'}
+                    label={busyAction === 'location-refresh' ? copy.updating : copy.refreshLocation}
                     icon="crosshairs-gps"
                     variant="secondary"
                     onPress={() => void handleManualLocationRefresh()}
@@ -3588,7 +3738,7 @@ export default function DoorDriveApp() {
                   />
                   {activeOrder.status === 'driver_assigned' ? (
                     <AppButton
-                      label={busyAction === 'decline-order' ? 'Rejecting...' : 'Reject order'}
+                      label={busyAction === 'decline-order' ? copy.declining : copy.rejectOrder}
                       icon="close-circle-outline"
                       variant="dark"
                       onPress={handleDeclineOrder}
@@ -3596,7 +3746,7 @@ export default function DoorDriveApp() {
                     />
                   ) : (
                     <AppButton
-                      label={busyAction === 'trip-cancelled' ? 'Cancelling...' : 'Cancel active trip'}
+                      label={busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
                       icon="close-circle-outline"
                       variant="dark"
                       onPress={handleCancelActiveTrip}
@@ -3620,22 +3770,21 @@ export default function DoorDriveApp() {
     <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
       {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-      <View style={styles.heroCard}>
-        <Text style={styles.heroKicker}>Delivery history</Text>
-        <Text style={styles.heroTitle}>{driverOrders.length} driver jobs</Text>
-        <Text style={styles.heroText}>Review assigned trips, delivery status, earnings, and completed work from this driver account.</Text>
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageTitle}>{copy.historyTitle}</Text>
+        <Text style={styles.pageSubtitle}>{copy.historySubtitle}</Text>
       </View>
 
       <View style={styles.metricTileRow}>
-        <MetricTile icon="check-decagram-outline" value={String(driverOrders.filter((order) => order.status === 'delivered').length)} label="delivered" />
-        <MetricTile icon="truck-delivery-outline" value={String(driverOrders.filter((order) => isActiveOrderStatus(order.status)).length)} label="active" />
-        <MetricTile icon="cash-multiple" value={`TZS ${totalEarnings.toLocaleString()}`} label="earnings" />
+        <MetricTile icon="check-decagram-outline" value={String(driverOrders.filter((order) => order.status === 'delivered').length)} label={copy.delivered} />
+        <MetricTile icon="truck-delivery-outline" value={String(driverOrders.filter((order) => isActiveOrderStatus(order.status)).length)} label={copy.active} />
+        <MetricTile icon="cash-multiple" value={`TZS ${totalEarnings.toLocaleString()}`} label={copy.earnings} />
       </View>
 
       {pendingCustomerRatingOrder ? (
         <SectionCard
-          title="Rate customer"
-          subtitle={`Delivery ${pendingCustomerRatingOrder.orderNumber} is complete. Rate the customer before moving on.`}>
+          title={copy.rateCustomer}
+          subtitle={`${pendingCustomerRatingOrder.orderNumber}`}>
           <View style={styles.customerRatingCard}>
             <View style={styles.ratingStarRow}>
               {[1, 2, 3, 4, 5].map((rating) => (
@@ -3662,7 +3811,7 @@ export default function DoorDriveApp() {
               textAlignVertical="top"
             />
             <AppButton
-              label={customerRatingSaving ? 'Saving rating...' : 'Save customer rating'}
+              label={customerRatingSaving ? copy.savingRating : copy.saveRating}
               icon="star-check-outline"
               onPress={() => void handleRateCustomer()}
               disabled={customerRatingSaving}
@@ -3671,14 +3820,14 @@ export default function DoorDriveApp() {
         </SectionCard>
       ) : null}
 
-      <SectionCard title="Trip records" subtitle="Orders assigned to this driver from DoorDrop dispatch.">
+      <SectionCard title={copy.tripRecords} subtitle={copy.historySubtitle}>
         <View style={styles.stackMd}>
           {driverOrdersLoading ? <ActivityIndicator color={driveTheme.colors.primary} /> : null}
 
           {!driverOrdersLoading && !driverOrders.length ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>No delivery history yet</Text>
-              <Text style={styles.emptyText}>Trips assigned by dispatch will appear here after you complete your first job.</Text>
+              <Text style={styles.emptyTitle}>{copy.noHistory}</Text>
+              <Text style={styles.emptyText}>{copy.noHistoryHint}</Text>
             </View>
           ) : null}
 
@@ -3708,19 +3857,20 @@ export default function DoorDriveApp() {
     <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
       {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-      <View style={styles.heroCard}>
-        <Text style={styles.heroKicker}>Notifications</Text>
-        <Text style={styles.heroTitle}>{notificationItems.length ? `${notificationItems.length} live alerts` : 'All clear'}</Text>
-        <Text style={styles.heroText}>Trip messages, payment reminders, location notices, and dispatch status updates appear here.</Text>
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageTitle}>{copy.alertsTitle}</Text>
+        <Text style={styles.pageSubtitle}>
+          {notificationItems.length ? `${notificationItems.length} ${copy.alertsLive}` : copy.alertsClear}
+        </Text>
       </View>
 
-      <SectionCard title="Notification center" subtitle="Pulled from your active trip, messages, payment state, and tracking status.">
+      <SectionCard title={copy.alertsTitle} subtitle={copy.alertsSubtitle}>
         <View style={styles.stackMd}>
           {!notificationItems.length ? (
             <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="bell-check-outline" size={28} color={driveTheme.colors.primary} />
-              <Text style={styles.emptyTitle}>No notifications right now</Text>
-              <Text style={styles.emptyText}>You will see dispatch, trip, and customer updates here.</Text>
+              <MaterialCommunityIcons name="bell-outline" size={28} color={driveTheme.colors.primary} />
+              <Text style={styles.emptyTitle}>{copy.noAlerts}</Text>
+              <Text style={styles.emptyText}>{copy.noAlertsHint}</Text>
             </View>
           ) : null}
 
@@ -3786,24 +3936,20 @@ export default function DoorDriveApp() {
   // ──────────────────────────────────────────────
 
   const renderPaymentAccountPage = () => {
-    const paymentStatusLabel = commissionPaidForDate
-      ? 'Pending admin'
+    const paymentStatusLabel = subscriptionPaymentPending
+      ? 'Pending'
       : hasCommissionDue
-        ? commissionPaymentOverdue
-          ? 'Pay now'
-          : subscriptionStatusMessage
+        ? 'Pay now'
         : subscriptionActive
           ? 'Active'
-          : 'Clear';
-    const paymentStatusIcon: IconName = commissionPaidForDate
-      ? 'check-decagram-outline'
+          : 'Expired';
+    const paymentStatusIcon: IconName = subscriptionPaymentPending
+      ? 'clock-outline'
       : hasCommissionDue
-        ? commissionPaymentOverdue
-          ? 'clock-alert-outline'
-          : 'clock-outline'
+        ? 'clock-alert-outline'
         : subscriptionActive
           ? 'check-circle-outline'
-          : 'gift-outline';
+          : 'cash-fast';
     const paymentStatusColor = commissionPaymentOverdue ? '#92400E' : hasCommissionDue ? driveTheme.colors.info : driveTheme.colors.primaryDark;
     return (
       <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
@@ -3817,7 +3963,7 @@ export default function DoorDriveApp() {
           </Pressable>
           <View style={styles.paymentPageTitleWrap}>
             <Text style={styles.paymentPageKicker}>Driver account</Text>
-            <Text style={styles.paymentPageTitle}>Free access</Text>
+            <Text style={styles.paymentPageTitle}>Mongike payments</Text>
           </View>
         </View>
 
@@ -3828,13 +3974,15 @@ export default function DoorDriveApp() {
             </View>
             <View style={styles.paymentDebtCopy}>
               <Text style={styles.paymentDebtLabel}>DoorDrive access</Text>
-              <Text style={styles.paymentDebtAmount}>Free for drivers</Text>
+              <Text style={styles.paymentDebtAmount}>TZS {driverAccessDailyFeeTzs.toLocaleString()} / day</Text>
               <Text style={styles.paymentDebtMeta}>
                 {hasCommissionDue
-                  ? 'Una deni. Hautaweza kupokea oda mpya mpaka ulipie.'
+                  ? subscriptionPaymentPending
+                    ? 'Malipo yako yako pending. Access itafunguka automatic yakikamilika.'
+                    : 'Access imeisha. Hautaweza kupokea au ku-manage oda mpaka ulipe.'
                   : subscriptionActive
-                    ? 'Driver access is active.'
-                    : 'Driver access iko clear kwa sasa.'}
+                    ? 'Driver access is active for dispatch operations.'
+                    : 'Renew daily access to continue.'}
               </Text>
             </View>
             <View style={styles.paymentStatusPill}>
@@ -3857,21 +4005,21 @@ export default function DoorDriveApp() {
           <View style={styles.subscriptionFeatureList}>
             <View style={styles.subscriptionFeatureRow}>
               <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Free app access for DoorDrive driver tools</Text>
+              <Text style={styles.subscriptionFeatureText}>Secure Mongike mobile money prompt from backend</Text>
             </View>
             <View style={styles.subscriptionFeatureRow}>
               <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Dispatch visibility without access payments</Text>
+              <Text style={styles.subscriptionFeatureText}>Vodacom M-Pesa is active now; other networks are coming soon</Text>
             </View>
             <View style={styles.subscriptionFeatureRow}>
               <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Trip management, navigation, and payment review support</Text>
+              <Text style={styles.subscriptionFeatureText}>Receipts and expiry update automatically after webhook confirmation</Text>
             </View>
           </View>
 
           {hasCommissionDue ? (
             <AppButton
-              label={subscriptionPaymentPending ? 'Waiting for admin' : paymentCheckoutStep === 'debt' ? 'Open access' : paymentCheckoutStep === 'submitted' ? 'Edit details' : 'Continue'}
+              label={subscriptionPaymentPending ? 'View pending payment' : paymentCheckoutStep === 'debt' ? 'Renew with Mongike' : paymentCheckoutStep === 'submitted' ? 'View status' : 'Continue'}
               icon="cash-fast"
               onPress={handleStartPaymentCheckout}
             />
@@ -3882,8 +4030,8 @@ export default function DoorDriveApp() {
                 <Text style={styles.paymentClearTitle}>Account iko clear</Text>
                 <Text style={styles.paymentClearText}>
                   {subscriptionActive
-                    ? 'Driver access iko active na dereva anaweza kupokea oda.'
-                    : 'Hakuna malipo yanayohitajika sasa hivi.'}
+                    ? 'Driver access iko active na unaweza kupokea oda.'
+                    : 'Renew access ikiwa expiry imefika.'}
                 </Text>
               </View>
             </View>
@@ -3893,35 +4041,79 @@ export default function DoorDriveApp() {
         {paymentCheckoutStep === 'proof' && hasCommissionDue ? (
           <View style={styles.paymentCheckoutPanel}>
             <View style={styles.paymentChosenNetwork}>
-              <View style={[styles.paymentProviderIcon, { backgroundColor: '#16A34A' }]}>
-                <MaterialCommunityIcons name="cellphone-check" size={20} color="#FFFFFF" />
+              <View style={[styles.paymentProviderIcon, { backgroundColor: selectedNetworkMeta?.color || '#16A34A' }]}>
+                {selectedNetworkMeta?.logoUrl ? (
+                  <Image source={{ uri: selectedNetworkMeta.logoUrl }} style={styles.paymentProviderLogo} resizeMode="contain" />
+                ) : (
+                  <MaterialCommunityIcons name="cellphone-check" size={20} color="#FFFFFF" />
+                )}
               </View>
               <View style={styles.paymentChosenCopy}>
                 <Text style={styles.paymentCheckoutTitle}>Vodacom M-Pesa</Text>
-                <Text style={styles.paymentChosenMeta}>Driver access is free</Text>
+                <Text style={styles.paymentChosenMeta}>Active now • TZS {driverAccessDailyFeeTzs.toLocaleString()} daily DoorDrive access</Text>
               </View>
+            </View>
+
+            <View style={styles.paymentProviderGrid}>
+              {paymentNetworks.map((network) => {
+                const selected = selectedPaymentNetwork === network.key;
+                return (
+                  <Pressable
+                    key={network.key}
+                    disabled={!network.enabled}
+                    onPress={() => {
+                      if (network.enabled) {
+                        setSelectedPaymentNetwork(network.key as DriverPaymentNetworkKey);
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.paymentProviderCard,
+                      selected && styles.paymentMethodChipActive,
+                      !network.enabled && styles.paymentProviderCardDisabled,
+                      pressed && network.enabled && styles.buttonPressed,
+                    ]}>
+                    <View style={[styles.paymentProviderIcon, { backgroundColor: network.color }]}>
+                      {network.logoUrl ? (
+                        <Image source={{ uri: network.logoUrl }} style={styles.paymentProviderLogo} resizeMode="contain" />
+                      ) : (
+                        <MaterialCommunityIcons name="cellphone" size={18} color="#FFFFFF" />
+                      )}
+                    </View>
+                    <Text style={[styles.paymentProviderName, selected && styles.paymentMethodTextActive]}>{network.label}</Text>
+                    <Text style={styles.paymentChosenMeta}>{network.provider}</Text>
+                    <View style={[styles.paymentNetworkBadge, network.enabled ? styles.paymentNetworkBadgeActive : styles.paymentNetworkBadgeMuted]}>
+                      <Text style={[styles.paymentNetworkBadgeText, network.enabled && styles.paymentNetworkBadgeTextActive]}>
+                        {network.enabled ? 'Active' : 'Coming soon'}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
             </View>
 
             <View style={styles.manualPaymentNumberCard}>
               <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Namba ya kulipia</Text>
-                <Text selectable style={styles.manualPaymentNumber}>{manualCommissionPaymentPhone}</Text>
+                <Text style={styles.paymentReferenceLabel}>Mpokeaji / receiver</Text>
+                <Text style={styles.paymentReferenceValue}>Vodacom M-Pesa</Text>
               </View>
-              <Pressable onPress={() => void handleCopyManualPaymentNumber()} style={({ pressed }) => [styles.manualPaymentCopyButton, pressed && styles.buttonPressed]}>
-                <MaterialCommunityIcons name="content-copy" size={17} color="#FFFFFF" />
-                <Text style={styles.manualPaymentCopyText}>Copy number</Text>
-              </Pressable>
+              <View style={styles.paymentReferenceItem}>
+                <Text style={styles.paymentReferenceLabel}>Namba ya kupokea</Text>
+                <Text selectable style={styles.manualPaymentNumber}>{paymentRecipientPhone}</Text>
+              </View>
+              <Text style={styles.paymentSafetyNote}>
+                Kwa sasa malipo yanafanya kazi kwa Vodacom M-Pesa pekee. Mitandao mingine itaongezwa baadaye.
+              </Text>
             </View>
 
             <Text style={styles.paymentPushText}>
-              DoorDrive driver access is free. This panel is kept only for legacy access review records.
+              Mongike itatuma payment prompt kwenye namba yako ya Vodacom. Thibitisha prompt hiyo ili access ifunguke automatic.
             </Text>
 
             <View style={styles.paymentInputGroup}>
-              <Text style={styles.paymentInputLabel}>Namba iliyotumika kulipa</Text>
+              <Text style={styles.paymentInputLabel}>Namba ya mobile money</Text>
               <TextInput
-                value={commissionPayerPhone}
-                onChangeText={setCommissionPayerPhone}
+                value={paymentPhoneNumber}
+                onChangeText={setPaymentPhoneNumber}
                 keyboardType="phone-pad"
                 placeholder={driverProfile?.phoneNumber || '07XX XXX XXX'}
                 placeholderTextColor="#94A3B8"
@@ -3929,22 +4121,10 @@ export default function DoorDriveApp() {
               />
             </View>
 
-            <View style={styles.paymentInputGroup}>
-              <Text style={styles.paymentInputLabel}>Transaction ID</Text>
-              <TextInput
-                value={commissionTransactionReference}
-                onChangeText={setCommissionTransactionReference}
-                autoCapitalize="characters"
-                placeholder="Mfano: QAB12CDE34"
-                placeholderTextColor="#94A3B8"
-                style={styles.paymentInput}
-              />
-            </View>
-
             <AppButton
-              label={busyAction === 'commission-payment' ? 'Sending proof...' : 'Send proof to admin'}
+              label={busyAction === 'commission-payment' ? 'Sending prompt...' : `Pay TZS ${driverAccessDailyFeeTzs.toLocaleString()}`}
               icon="send-check-outline"
-              onPress={() => void handleMarkPaymentPaid()}
+              onPress={() => void handleInitiateMongikePayment()}
               disabled={busyAction === 'commission-payment'}
             />
           </View>
@@ -3953,30 +4133,98 @@ export default function DoorDriveApp() {
         {paymentCheckoutStep === 'submitted' && hasCommissionDue ? (
           <View style={styles.paymentCheckoutPanel}>
             <View style={styles.paymentPushIcon}>
-              <MaterialCommunityIcons name="clipboard-check-outline" size={30} color={driveTheme.colors.primaryDark} />
+              <MaterialCommunityIcons
+                name={subscriptionPaymentPending ? 'clock-outline' : subscriptionActive ? 'check-circle-outline' : 'clipboard-clock-outline'}
+                size={30}
+                color={driveTheme.colors.primaryDark}
+              />
             </View>
-            <Text style={styles.paymentPushTitle}>Inasubiri admin</Text>
+            <Text style={styles.paymentPushTitle}>{subscriptionActive ? 'Payment confirmed' : 'Payment pending'}</Text>
             <Text style={styles.paymentPushText}>
-              Taarifa zimetumwa. Dereva atafunguliwa baada ya admin kuthibitisha access.
+              {subscriptionActive
+                ? 'Mongike imethibitisha malipo. Receipt na expiry ziko hapa chini.'
+                : 'Thibitisha prompt kwenye simu yako. Webhook ikifika, access itafunguka automatic.'}
             </Text>
             <View style={styles.paymentReferenceBox}>
               <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Paid to</Text>
-                <Text style={styles.paymentReferenceValue}>{manualCommissionPaymentPhone}</Text>
+                <Text style={styles.paymentReferenceLabel}>Order ID</Text>
+                <Text style={styles.paymentReferenceValue}>{latestPayment?.orderId || latestPayment?.id || 'Pending'}</Text>
               </View>
               <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Transaction ID</Text>
-                <Text style={styles.paymentReferenceValue}>{commissionTransactionReference || 'Submitted'}</Text>
+                <Text style={styles.paymentReferenceLabel}>Receipt</Text>
+                <Text style={styles.paymentReferenceValue}>{latestPayment?.receiptNumber || latestPayment?.gatewayRef || 'Waiting for confirmation'}</Text>
+              </View>
+              <View style={styles.paymentReferenceItem}>
+                <Text style={styles.paymentReferenceLabel}>Expires</Text>
+                <Text style={styles.paymentReferenceValue}>
+                  {subscriptionActive ? formatDeliveryDateTime(subscriptionPaidUntilMillis) : latestPayment?.expiresAt ? formatDeliveryDateTime(latestPayment.expiresAt) : 'Pending'}
+                </Text>
               </View>
             </View>
             <AppButton
-              label="Edit proof"
-              icon="pencil-outline"
+              label={paymentRefreshing ? 'Checking...' : 'Refresh payment status'}
+              icon="refresh"
               variant="secondary"
-              onPress={() => setPaymentCheckoutStep('proof')}
+              onPress={() => void handleRefreshPaymentStatus()}
+              disabled={paymentRefreshing}
             />
+            {!subscriptionPaymentPending && !subscriptionActive ? (
+              <AppButton
+                label="Try payment again"
+                icon="cash-fast"
+                onPress={() => setPaymentCheckoutStep('proof')}
+              />
+            ) : null}
           </View>
         ) : null}
+
+        <View style={styles.paymentCheckoutPanel}>
+          <View style={styles.paymentFormHeader}>
+            <View style={styles.paymentFormIcon}>
+              <MaterialCommunityIcons name="receipt-text-outline" size={20} color={driveTheme.colors.primaryDark} />
+            </View>
+            <View style={styles.paymentFormHeaderCopy}>
+              <Text style={styles.paymentFormTitle}>Payment history & receipts</Text>
+              <Text style={styles.paymentFormSubtitle}>Latest Mongike access payments for this driver account.</Text>
+            </View>
+          </View>
+
+          {paymentRefreshing ? <ActivityIndicator color={driveTheme.colors.primary} /> : null}
+
+          {!driverPaymentHistory.length ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>No payments yet</Text>
+              <Text style={styles.emptyText}>Your daily access receipts will appear here after the first Mongike payment.</Text>
+            </View>
+          ) : null}
+
+          {driverPaymentHistory.map((payment) => (
+            <View key={payment.id || payment.orderId} style={styles.paymentOrderRow}>
+              <View style={styles.paymentOrderIcon}>
+                <MaterialCommunityIcons
+                  name={payment.status === 'completed' ? 'check-circle-outline' : payment.status === 'failed' ? 'alert-circle-outline' : 'clock-outline'}
+                  size={18}
+                  color={driveTheme.colors.primaryDark}
+                />
+              </View>
+              <View style={styles.paymentOrderCopy}>
+                <Text style={styles.paymentOrderTitle}>
+                  TZS {Number(payment.amount || driverAccessDailyFeeTzs).toLocaleString()} • {payment.status}
+                </Text>
+                <Text style={styles.paymentOrderMeta}>
+                  {payment.receiptNumber || payment.gatewayRef || payment.orderId}
+                </Text>
+                <Text style={styles.paymentOrderMeta}>
+                  {payment.completedAt ? `Paid ${formatDeliveryDateTime(payment.completedAt)}` : payment.createdAt ? `Started ${formatDeliveryDateTime(payment.createdAt)}` : 'Pending'}
+                </Text>
+              </View>
+              <View style={styles.paymentOrderAmounts}>
+                <Text style={styles.paymentOrderGross}>{payment.network || 'Mongike'}</Text>
+                <Text style={styles.paymentOrderCommission}>{payment.subscriptionPaidUntil ? formatDeliveryDateTime(payment.subscriptionPaidUntil) : ''}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
       </ScrollView>
     );
   };
@@ -3994,24 +4242,18 @@ export default function DoorDriveApp() {
       .slice(0, 2)
       .toUpperCase();
     const vehicleLine = `${driverProfile?.vehicleLabel || getVehicleTypeLabel(driverProfile?.vehicleType)} • ${driverProfile?.plateNumber || 'Plate pending'}`;
-    const paymentStatusLabel = commissionPaidForDate
-      ? 'Pending admin'
+    const paymentStatusLabel = subscriptionPaymentPending
+      ? 'Pending'
       : hasCommissionDue
-          ? commissionPaymentOverdue
-            ? 'Pay now'
-            : subscriptionStatusMessage
-        : subscriptionActive
-          ? 'Active'
-          : 'Clear';
-    const paymentStatusIcon: IconName = commissionPaidForDate
-      ? 'check-decagram-outline'
+          ? 'Pay now'
+        : 'Free';
+    const paymentStatusIcon: IconName = subscriptionPaymentPending
+      ? 'clock-outline'
       : hasCommissionDue
-          ? commissionPaymentOverdue
-            ? 'clock-alert-outline'
-            : 'clock-outline'
+          ? 'clock-alert-outline'
         : subscriptionActive
           ? 'check-circle-outline'
-          : 'gift-outline';
+          : 'cash-fast';
     const paymentStatusColor = commissionPaymentOverdue ? '#92400E' : hasCommissionDue ? driveTheme.colors.info : driveTheme.colors.primaryDark;
 
     return (
@@ -4023,7 +4265,7 @@ export default function DoorDriveApp() {
             <Text style={styles.accountAvatarText}>{driverInitials || 'DD'}</Text>
           </View>
           <View style={styles.accountHeaderCopy}>
-            <Text style={styles.accountHeaderKicker}>Driver account</Text>
+            <Text style={styles.accountHeaderKicker}>{copy.driverAccount}</Text>
             <Text style={styles.accountHeaderName}>{driverName}</Text>
             <Text style={styles.accountHeaderMeta}>{vehicleLine}</Text>
           </View>
@@ -4034,7 +4276,7 @@ export default function DoorDriveApp() {
               color={driverProfile?.isAvailable ? driveTheme.colors.primaryDark : driveTheme.colors.subtext}
             />
             <Text style={[styles.accountStatusText, driverProfile?.isAvailable && styles.accountStatusTextOnline]}>
-              {driverProfile?.isAvailable ? 'Online' : 'Offline'}
+              {driverProfile?.isAvailable ? copy.online : copy.offline}
             </Text>
           </View>
         </View>
@@ -4043,54 +4285,84 @@ export default function DoorDriveApp() {
           <View style={styles.accountQuickItem}>
             <MaterialCommunityIcons name="history" size={18} color={driveTheme.colors.info} />
             <Text numberOfLines={1} style={styles.accountQuickValue}>{driverOrders.length}</Text>
-            <Text style={styles.accountQuickLabel}>Jobs</Text>
+            <Text style={styles.accountQuickLabel}>{copy.jobs}</Text>
           </View>
           <View style={styles.accountQuickItem}>
             <MaterialCommunityIcons name="access-point" size={18} color={driveTheme.colors.primaryDark} />
-            <Text numberOfLines={1} style={styles.accountQuickValue}>{driverProfile?.isAvailable ? 'Online' : 'Off'}</Text>
+            <Text numberOfLines={1} style={styles.accountQuickValue}>{driverProfile?.isAvailable ? copy.online : copy.offline}</Text>
             <Text style={styles.accountQuickLabel}>Dispatch</Text>
           </View>
           <View style={styles.accountQuickItem}>
             <MaterialCommunityIcons name="cash-multiple" size={18} color={driveTheme.colors.warning} />
             <Text numberOfLines={1} style={styles.accountQuickValue}>TZS {totalEarnings.toLocaleString()}</Text>
-            <Text style={styles.accountQuickLabel}>Earned</Text>
+            <Text style={styles.accountQuickLabel}>{copy.earnings}</Text>
           </View>
         </View>
 
-        <SectionCard title="Profile" subtitle="Dispatch identity and vehicle details.">
+        <SectionCard title={copy.profile} subtitle={copy.settingsSubtitle}>
           <View style={styles.accountInfoList}>
             <View style={styles.accountInfoRow}>
               <MaterialCommunityIcons name="cellphone" size={20} color={driveTheme.colors.primaryDark} />
               <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>Phone number</Text>
-                <Text style={styles.accountInfoValue}>{driverProfile?.phoneNumber || 'Not set'}</Text>
+                <Text style={styles.accountInfoLabel}>{copy.phoneNumber}</Text>
+                <Text style={styles.accountInfoValue}>{driverProfile?.phoneNumber || copy.notSet}</Text>
               </View>
             </View>
             <View style={styles.accountInfoRow}>
               <MaterialCommunityIcons name="car" size={20} color={driveTheme.colors.primaryDark} />
               <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>Vehicle</Text>
+                <Text style={styles.accountInfoLabel}>{copy.vehicle}</Text>
                 <Text style={styles.accountInfoValue}>{driverProfile?.vehicleLabel || getVehicleTypeLabel(driverProfile?.vehicleType)}</Text>
               </View>
             </View>
             <View style={styles.accountInfoRow}>
               <MaterialCommunityIcons name="card-account-details-outline" size={20} color={driveTheme.colors.primaryDark} />
               <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>Plate number</Text>
-                <Text style={styles.accountInfoValue}>{driverProfile?.plateNumber || 'Not set'}</Text>
+                <Text style={styles.accountInfoLabel}>{copy.plateNumber}</Text>
+                <Text style={styles.accountInfoValue}>{driverProfile?.plateNumber || copy.notSet}</Text>
               </View>
             </View>
             <View style={styles.accountInfoRow}>
               <MaterialCommunityIcons name="map-marker-outline" size={20} color={locationPermission === 'granted' ? driveTheme.colors.primaryDark : driveTheme.colors.warning} />
               <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>Live location</Text>
-                <Text style={styles.accountInfoValue}>{locationPermission === 'granted' ? 'Active' : 'Needs access'}</Text>
+                <Text style={styles.accountInfoLabel}>{copy.liveLocation}</Text>
+                <Text style={styles.accountInfoValue}>{locationPermission === 'granted' ? copy.locationActive : copy.locationNeedsAccess}</Text>
               </View>
             </View>
           </View>
         </SectionCard>
 
-        <SectionCard title="Driver access" subtitle="Free access for dispatch work.">
+        <SectionCard title={copy.settings} subtitle={copy.settingsSubtitle}>
+          <View style={styles.stackMd}>
+            <Text style={styles.settingLabel}>{copy.language}</Text>
+            <View style={styles.languageRow}>
+              <Pressable
+                onPress={() => setLanguage('en')}
+                style={({ pressed }) => [styles.languageChip, language === 'en' && styles.languageChipActive, pressed && styles.buttonPressed]}>
+                <Text style={[styles.languageChipText, language === 'en' && styles.languageChipTextActive]}>{copy.languageEnglish}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setLanguage('sw')}
+                style={({ pressed }) => [styles.languageChip, language === 'sw' && styles.languageChipActive, pressed && styles.buttonPressed]}>
+                <Text style={[styles.languageChipText, language === 'sw' && styles.languageChipTextActive]}>{copy.languageSwahili}</Text>
+              </Pressable>
+            </View>
+            <View style={styles.settingToggleRow}>
+              <View style={styles.settingToggleCopy}>
+                <Text style={styles.settingToggleTitle}>{copy.autoConfirm}</Text>
+                <Text style={styles.settingToggleHint}>{copy.autoConfirmHint}</Text>
+              </View>
+              <Switch
+                value={autoConfirm}
+                onValueChange={setAutoConfirm}
+                trackColor={{ false: '#E2E8F0', true: '#86EFAC' }}
+                thumbColor={autoConfirm ? '#16A34A' : '#F8FAFC'}
+              />
+            </View>
+          </View>
+        </SectionCard>
+
+        <SectionCard title="Driver access" subtitle="DoorDrive is free to use for dispatch work.">
           <View style={styles.stackMd}>
             <View style={styles.paymentSummaryBand}>
               <View style={styles.paymentSummaryMain}>
@@ -4098,10 +4370,10 @@ export default function DoorDriveApp() {
                 <Text style={styles.paymentHeroAmount}>Free</Text>
                 <Text style={styles.paymentSummaryCaption}>
                   {hasCommissionDue
-                    ? 'Una deni. Hautaweza kupokea oda mpya mpaka ulipie.'
-                    : subscriptionActive
-                      ? 'Driver access iko active.'
-                      : 'Driver access iko clear.'}
+                    ? subscriptionPaymentPending
+                      ? 'Payment pending. Approve prompt to unlock access.'
+                      : 'Access imeisha. Lipa ili kupokea na ku-manage oda.'
+                    : 'You can go online and receive orders without a daily fee.'}
                 </Text>
               </View>
               <View style={styles.paymentStatusPill}>
@@ -4121,14 +4393,16 @@ export default function DoorDriveApp() {
               </View>
             </View>
 
-	            <AppButton
-	              label={hasCommissionDue ? 'Open access' : 'View access'}
-	              icon={hasCommissionDue ? 'cash-fast' : subscriptionActive ? 'shield-check-outline' : 'gift-outline'}
-              onPress={() => {
-                setPaymentCheckoutStep('debt');
-                setAccountView('payments');
-              }}
-            />
+            {hasCommissionDue ? (
+              <AppButton
+                label="Open access"
+                icon="cash-fast"
+                onPress={() => {
+                  setPaymentCheckoutStep('debt');
+                  setAccountView('payments');
+                }}
+              />
+            ) : null}
           </View>
         </SectionCard>
 
@@ -4153,21 +4427,21 @@ export default function DoorDriveApp() {
               <Text style={styles.tripLine}>Last location write: {formatDeliveryDateTime(driverProfile.lastLocationUpdatedAt)}</Text>
             ) : null}
             <AppButton
-              label={busyAction === 'availability' ? 'Updating availability...' : driverProfile?.isAvailable ? 'Pause dispatch visibility' : 'Go visible to dispatch'}
+              label={busyAction === 'availability' ? copy.updating : driverProfile?.isAvailable ? copy.goOfflineLong : copy.goOnline}
               icon={driverProfile?.isAvailable ? 'pause-circle-outline' : 'check-circle-outline'}
               variant="secondary"
               onPress={() => void handleToggleAvailability()}
-              disabled={!!activeOrder || busyAction === 'availability'}
+              disabled={!!activeOrder || busyAction === 'availability' || (!driverProfile?.isAvailable && !driverCanReceiveDispatch)}
             />
             <AppButton
               label={busyAction === 'location-refresh' ? 'Refreshing location...' : 'Refresh live location'}
               icon="crosshairs-gps"
               variant="secondary"
               onPress={() => void handleManualLocationRefresh()}
-              disabled={busyAction === 'location-refresh'}
+              disabled={busyAction === 'location-refresh' || !subscriptionActive}
             />
             <AppButton
-              label={busyAction === 'sign-out' ? 'Signing out...' : 'Sign out'}
+              label={busyAction === 'sign-out' ? copy.signingOut : copy.signOut}
               icon="logout"
               variant="dark"
               onPress={() => void handleSignOut()}
@@ -4206,23 +4480,27 @@ export default function DoorDriveApp() {
   }
 
   if (showStartupSplash || authInitializing) {
+    const progressWidth = splashProgress.interpolate({
+      inputRange: [0, 1],
+      outputRange: ['16%', '100%'],
+    });
+
     return (
       <ErrorBoundary>
-        <SafeAreaView style={styles.splashSafeArea}>
+        <View style={styles.splashScreen}>
           <StatusBar style="light" backgroundColor={driveTheme.colors.primary} />
-          <View style={styles.splashScreen}>
-            <View style={styles.splashLogoShell}>
-              <Image source={appLogoImage} style={styles.splashLogo} resizeMode="contain" />
-            </View>
-            <Text style={styles.splashTitle}>DoorDrive</Text>
-            <Text style={styles.splashSubtitle}>
-              {authInitializing && !showStartupSplash ? 'Connecting securely...' : 'Driver dispatch is loading...'}
+          <View style={styles.splashCenter}>
+            <Image source={appLogoImage} style={styles.splashLogo} resizeMode="contain" />
+            <Text style={styles.splashTagline}>
+              {authInitializing && !showStartupSplash ? 'Connecting...' : 'Drive. Deliver. Earn.'}
             </Text>
+          </View>
+          <View style={styles.splashFooter}>
             <View style={styles.splashProgressTrack}>
-              <View style={styles.splashProgressFill} />
+              <Animated.View style={[styles.splashProgressFill, { width: progressWidth }]} />
             </View>
           </View>
-        </SafeAreaView>
+        </View>
       </ErrorBoundary>
     );
   }
@@ -4246,10 +4524,11 @@ export default function DoorDriveApp() {
         renderVerificationStatusScreen()
       ) : (
         <View style={styles.flex}>
-          {selectedTab === 'home' ? renderHomeTab() : null}
-          {selectedTab === 'trip' ? renderTripTab() : null}
-          {selectedTab === 'history' ? renderHistoryTab() : null}
-          {selectedTab === 'notifications' ? renderNotificationsTab() : null}
+          {driverAccessBlocked && selectedTab !== 'account' ? renderAccessRenewalScreen() : null}
+          {!driverAccessBlocked && selectedTab === 'home' ? renderHomeTab() : null}
+          {!driverAccessBlocked && selectedTab === 'trip' ? renderTripTab() : null}
+          {!driverAccessBlocked && selectedTab === 'history' ? renderHistoryTab() : null}
+          {!driverAccessBlocked && selectedTab === 'notifications' ? renderNotificationsTab() : null}
           {selectedTab === 'account' ? renderAccountTab() : null}
 
           <View style={styles.bottomNav}>
@@ -4268,14 +4547,24 @@ export default function DoorDriveApp() {
                   <MaterialCommunityIcons
                     name={tab.icon}
                     size={22}
-                    color={active ? driveTheme.colors.primaryDark : '#94A3B8'}
+                    color={active ? '#16A34A' : '#94A3B8'}
                   />
                   {tab.key === 'notifications' && unreadNotificationCount > 0 ? (
                     <View style={styles.bottomNavBadge}>
                       <Text style={styles.bottomNavBadgeText}>{Math.min(unreadNotificationCount, 9)}</Text>
                     </View>
                   ) : null}
-                  <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>{tab.label}</Text>
+                  <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>
+                    {tab.key === 'home'
+                      ? copy.tabHome
+                      : tab.key === 'trip'
+                        ? copy.tabTrip
+                        : tab.key === 'history'
+                          ? copy.tabHistory
+                          : tab.key === 'notifications'
+                            ? copy.tabAlerts
+                            : copy.tabAccount}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -4305,53 +4594,38 @@ const styles = StyleSheet.create({
   },
   splashScreen: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
     backgroundColor: driveTheme.colors.primary,
   },
-  splashLogoShell: {
-    width: 132,
-    height: 132,
-    borderRadius: 34,
+  splashCenter: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#064E3B',
-    shadowOpacity: 0.18,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 8,
+    paddingHorizontal: 32,
   },
   splashLogo: {
-    width: 96,
-    height: 96,
+    width: 128,
+    height: 128,
+    borderRadius: 32,
   },
-  splashTitle: {
-    marginTop: 24,
-    color: '#FFFFFF',
-    fontSize: 32,
-    lineHeight: 38,
-    fontWeight: '900',
-  },
-  splashSubtitle: {
-    marginTop: 8,
-    color: '#DCFCE7',
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '700',
+  splashTagline: {
+    marginTop: 20,
+    color: 'rgba(255, 255, 255, 0.92)',
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: driveType.semibold,
     textAlign: 'center',
   },
+  splashFooter: {
+    paddingHorizontal: 56,
+    paddingBottom: 40,
+  },
   splashProgressTrack: {
-    width: 164,
-    height: 5,
+    height: 3,
+    overflow: 'hidden',
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.28)',
-    marginTop: 24,
-    overflow: 'hidden',
   },
   splashProgressFill: {
-    width: '72%',
     height: '100%',
     borderRadius: 999,
     backgroundColor: '#FFFFFF',
@@ -4371,7 +4645,51 @@ const styles = StyleSheet.create({
   },
   authCanvas: {
     flex: 1,
-    backgroundColor: '#F7FCF8',
+    backgroundColor: '#FFFFFF',
+  },
+  authScroll: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingTop: 18,
+    paddingBottom: 40,
+    gap: 12,
+  },
+  authBackButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: driveTheme.colors.surface,
+    marginBottom: 8,
+  },
+  authPageTitle: {
+    color: driveTheme.colors.ink,
+    fontSize: 28,
+    lineHeight: 34,
+    fontFamily: driveType.bold,
+    marginBottom: 8,
+  },
+  authFieldHint: {
+    color: driveTheme.colors.ink,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: driveType.semibold,
+    marginTop: 4,
+  },
+  authTermsRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingVertical: 4,
+  },
+  authTermsText: {
+    flex: 1,
+    color: driveTheme.colors.subtext,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: driveType.regular,
   },
   loginScroll: {
     flexGrow: 1,
@@ -4680,16 +4998,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 5,
+    marginTop: 8,
   },
   loginSecondaryActionText: {
     color: driveTheme.colors.primaryDark,
     fontSize: 14,
-    fontWeight: '900',
+    fontFamily: driveType.bold,
   },
   loginSecondaryActionMuted: {
     color: driveTheme.colors.subtext,
     fontSize: 14,
-    fontWeight: '700',
+    fontFamily: driveType.regular,
   },
   setupScreen: {
     flex: 1,
@@ -4782,18 +5101,18 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   setupInputShell: {
-    minHeight: 56,
-    borderRadius: driveTheme.radius.pill,
+    minHeight: 54,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#CFE8D8',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
     paddingHorizontal: 16,
     justifyContent: 'center',
   },
   setupTextInput: {
     color: driveTheme.colors.ink,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontFamily: driveType.regular,
     minHeight: 44,
   },
   setupSelectShell: {
@@ -5139,10 +5458,45 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   dashboardContent: {
-    paddingHorizontal: 18,
-    paddingTop: 24,
+    paddingHorizontal: 16,
+    paddingTop: 16,
     paddingBottom: 110,
     gap: 14,
+  },
+  pageHeader: {
+    gap: 4,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  pageTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 28,
+    lineHeight: 34,
+  },
+  pageSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  homeTabContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 118,
+    gap: 12,
+  },
+  homeScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  homeMapFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  homeMapWrap: {
+    flex: 1,
+    backgroundColor: '#E7EEF0',
+    overflow: 'hidden',
   },
   tripScreenContent: {
     paddingBottom: 110,
@@ -5246,273 +5600,509 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  homeHeader: {
+  homeTopPanel: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEF2F6',
+  },
+  homeTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    minHeight: 54,
   },
-  homeIdentity: {
-    flex: 1,
+  homeStatusPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  driverAvatarSmall: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
-    backgroundColor: driveTheme.colors.primary,
+  homeStatusPillOnline: {
+    backgroundColor: '#DCFCE7',
+  },
+  homeStatusPillOffline: {
+    backgroundColor: '#F1F5F9',
+  },
+  homeStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  homeStatusDotOnline: {
+    backgroundColor: '#16A34A',
+  },
+  homeStatusDotOffline: {
+    backgroundColor: '#94A3B8',
+  },
+  homeStatusPillText: {
+    fontFamily: driveType.semibold,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  homeStatusPillTextOnline: {
+    color: '#14532D',
+  },
+  homeStatusPillTextOffline: {
+    color: '#475569',
+  },
+  homeEarningsCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E8EEF2',
+  },
+  homeEarningsHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  homeEarningsKicker: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  homeEarningsValue: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 30,
+    lineHeight: 36,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  homeEarningsStats: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  homeEarningsStat: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 6,
   },
-  driverAvatarSmallText: {
-    color: '#FFFFFF',
+  homeEarningsStatValue: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
     fontSize: 15,
-    fontWeight: '900',
+    lineHeight: 20,
+    textAlign: 'center',
   },
-  homeIdentityText: {
+  homeEarningsStatLabel: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  homeEarningsStatDivider: {
+    width: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 4,
+  },
+  homeEarningsFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 10,
+  },
+  homeEarningsFooterText: {
     flex: 1,
-  },
-  homeGreeting: {
-    color: driveTheme.colors.ink,
-    fontSize: 20,
-    lineHeight: 25,
-    fontWeight: '900',
-  },
-  homeSubGreeting: {
-    color: driveTheme.colors.subtext,
+    fontFamily: driveType.semibold,
+    color: '#334155',
     fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    lineHeight: 18,
   },
-  homeNotificationButton: {
+  homeEarningsFooterMeta: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 12,
+  },
+  homeIconChip: {
     width: 44,
     height: 44,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
+    borderRadius: 22,
+    backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   notificationDot: {
     position: 'absolute',
-    top: 5,
-    right: 5,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: driveTheme.colors.warning,
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#EA580C',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 4,
   },
   notificationDotText: {
+    fontFamily: driveType.bold,
     color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '900',
+    fontSize: 9,
   },
-  homeTodayCard: {
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    backgroundColor: '#FFFFFF',
-    padding: 14,
-    gap: 13,
-  },
-  homeTodayHeader: {
+  homeDueBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'space-between',
+    gap: 10,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-  homeTodayIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 15,
-    backgroundColor: '#E9FBEF',
-    alignItems: 'center',
-    justifyContent: 'center',
+  homeDueBannerOverdue: {
+    backgroundColor: '#FFF7ED',
   },
-  homeTodayCopy: {
+  homeDueBannerPending: {
+    backgroundColor: '#EFF6FF',
+  },
+  homeDueBannerText: {
     flex: 1,
-    minWidth: 0,
+    fontFamily: driveType.semibold,
+    color: '#0F172A',
+    fontSize: 13,
   },
-  homeTodayKicker: {
-    color: driveTheme.colors.subtext,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
-    textTransform: 'uppercase',
+  homeDueBannerMeta: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 12,
   },
-  homeTodayTitle: {
-    color: driveTheme.colors.ink,
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: '900',
+  homeBottomOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 3,
+    paddingHorizontal: 14,
+    paddingBottom: 92,
   },
-  homeTodayMetricRow: {
+  homeDeclinePill: {
+    position: 'absolute',
+    top: 16,
+    alignSelf: 'center',
+    zIndex: 5,
     flexDirection: 'row',
-    gap: 8,
-  },
-  homeTodayMetric: {
-    flex: 0.82,
-    minHeight: 70,
-    borderRadius: 16,
-    backgroundColor: '#F7FCF8',
-    borderWidth: 1,
-    borderColor: '#D8EFE0',
-    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0F172A',
+    borderRadius: 999,
+    paddingHorizontal: 14,
     paddingVertical: 10,
-    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 6,
   },
-  homeTodayMetricWide: {
-    flex: 1.36,
-    minHeight: 70,
-    borderRadius: 16,
-    backgroundColor: '#F7FCF8',
-    borderWidth: 1,
-    borderColor: '#D8EFE0',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    justifyContent: 'center',
+  homeDeclinePillText: {
+    fontFamily: driveType.semibold,
+    color: '#FFFFFF',
+    fontSize: 14,
   },
-  homeTodayMetricValue: {
-    color: driveTheme.colors.ink,
+  homeBoltCard: {
+    backgroundColor: '#16A34A',
+    borderRadius: 28,
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 20,
+    gap: 6,
+    shadowColor: '#14532D',
+    shadowOpacity: 0.24,
+    shadowOffset: { width: 0, height: -8 },
+    shadowRadius: 20,
+    elevation: 14,
+  },
+  homeBoltStats: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 26,
+    lineHeight: 32,
+  },
+  homeBoltPlace: {
+    fontFamily: driveType.semibold,
+    color: '#F0FDF4',
     fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
-  },
-  homeTodayMetricLabel: {
-    color: driveTheme.colors.subtext,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '800',
+    lineHeight: 22,
     marginTop: 2,
   },
-  homePaymentCard: {
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 14,
+  homeBoltCustomer: {
+    fontFamily: driveType.regular,
+    color: '#DCFCE7',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  homeBoltFare: {
+    fontFamily: driveType.semibold,
+    color: '#FFFFFF',
+    fontSize: 15,
+    marginTop: 8,
+  },
+  homeBoltAcceptText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 18,
+    letterSpacing: 1.2,
+    textAlign: 'center',
+    marginTop: 16,
+  },
+  homeSheet: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 16,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.16,
+    shadowOffset: { width: 0, height: -6 },
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  homeSheetHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E2E8F0',
+    marginBottom: 12,
+  },
+  homeSheetKicker: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  homeFare: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 32,
+    lineHeight: 38,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  homeSheetTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 18,
+    lineHeight: 24,
+    marginTop: 4,
+  },
+  homeSheetSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 2,
+    marginBottom: 14,
+  },
+  homeStopList: {
+    gap: 0,
+    marginBottom: 16,
+  },
+  homeStopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
+    minHeight: 44,
   },
-  homePaymentCardDue: {
-    backgroundColor: '#FFF7ED',
-    borderColor: '#FED7AA',
+  homeStopRail: {
+    width: 14,
+    alignItems: 'center',
+    paddingTop: 5,
   },
-  homePaymentCardPending: {
-    backgroundColor: '#EFF6FF',
-    borderColor: '#BFDBFE',
+  homeStopDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
-  homePaymentCardClear: {
-    backgroundColor: '#F0FDF4',
-    borderColor: '#BBF7D0',
+  homeStopDotPickup: {
+    backgroundColor: '#16A34A',
   },
-  homePaymentTop: {
+  homeStopDotDropoff: {
+    backgroundColor: '#0F172A',
+  },
+  homeStopLine: {
+    width: 2,
+    flex: 1,
+    minHeight: 22,
+    backgroundColor: '#E2E8F0',
+    marginTop: 4,
+  },
+  homeStopCopy: {
+    flex: 1,
+    paddingBottom: 12,
+  },
+  homeStopLabel: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  homeStopValue: {
+    fontFamily: driveType.semibold,
+    color: '#0F172A',
+    fontSize: 15,
+    lineHeight: 20,
+    marginTop: 2,
+  },
+  homeAcceptButton: {
+    minHeight: 52,
+    borderRadius: 16,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  homeTripActionGrow: {
+    flex: 1,
+  },
+  homeAcceptButtonText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 16,
+  },
+  homeGhostButton: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  homeGhostButtonText: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 15,
+  },
+  homeTripActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
-  homePaymentIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 15,
-    backgroundColor: driveTheme.colors.dark,
+  homeIconAction: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#F0FDF4',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  homePaymentCopy: {
-    flex: 1,
-  },
-  homePaymentKicker: {
-    color: driveTheme.colors.subtext,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-  },
-  homePaymentTitle: {
-    color: driveTheme.colors.ink,
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: '900',
-  },
-  homePaymentTimer: {
-    borderRadius: 999,
+  homeIdleCard: {
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.14,
+    shadowOffset: { width: 0, height: -4 },
+    shadowRadius: 20,
+    elevation: 10,
   },
-  homePaymentTimerText: {
-    color: driveTheme.colors.ink,
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  homePaymentMetaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  homePaymentMeta: {
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.72)',
-    color: driveTheme.colors.subtext,
-    fontSize: 11,
-    fontWeight: '800',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  homePaymentButton: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    backgroundColor: driveTheme.colors.dark,
-    paddingHorizontal: 13,
-    paddingVertical: 9,
+  homeSearchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 12,
+    marginBottom: 4,
   },
-  homePaymentButtonText: {
+  homeLiveDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#16A34A',
+  },
+  homeIdleCopy: {
+    flex: 1,
+  },
+  homeIdleTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 16,
+    lineHeight: 21,
+  },
+  homeIdleSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  homeOfflineDock: {
+    alignItems: 'center',
+    paddingBottom: 8,
+  },
+  homeGoHalo: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    backgroundColor: 'rgba(22, 163, 74, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeGoButton: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#14532D',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  homeGoText: {
+    fontFamily: driveType.bold,
     color: '#FFFFFF',
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 20,
+    letterSpacing: 0.8,
   },
-  homeMapCard: {
-    borderRadius: 24,
+  homeGoCopyCard: {
+    marginTop: 12,
     backgroundColor: '#FFFFFF',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 14 },
-    shadowRadius: 28,
-    elevation: 4,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    alignItems: 'center',
+    maxWidth: 320,
   },
-  homeMapStage: {
-    height: 250,
-    backgroundColor: '#E8F1EC',
-    overflow: 'hidden',
+  homeGoCaption: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 15,
   },
-  homeMapView: {
-    width: '100%',
-    height: '100%',
+  homeGoHint: {
+    fontFamily: driveType.regular,
+    marginTop: 4,
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
   },
   homeMapFallback: {
-    flex: 1,
-    backgroundColor: '#E8F1EC',
+    backgroundColor: '#E7EEF0',
     overflow: 'hidden',
   },
   homeMapGridLineA: {
     position: 'absolute',
     width: 460,
     height: 2,
-    backgroundColor: 'rgba(148, 163, 184, 0.36)',
-    top: 112,
+    backgroundColor: 'rgba(148, 163, 184, 0.28)',
+    top: '42%',
     left: -70,
     transform: [{ rotate: '-22deg' }],
   },
@@ -5520,107 +6110,54 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 430,
     height: 2,
-    backgroundColor: 'rgba(148, 163, 184, 0.28)',
-    top: 210,
+    backgroundColor: 'rgba(148, 163, 184, 0.22)',
+    top: '58%',
     left: -40,
     transform: [{ rotate: '28deg' }],
   },
   homeMapRoutePreview: {
     position: 'absolute',
-    width: 250,
-    height: 6,
+    width: 220,
+    height: 5,
     borderRadius: 999,
-    backgroundColor: '#991B1B',
-    top: 155,
+    backgroundColor: '#16A34A',
+    top: '48%',
     left: 54,
     transform: [{ rotate: '16deg' }],
   },
   homeMapPin: {
     position: 'absolute',
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
+    borderWidth: 2,
     borderColor: '#FFFFFF',
   },
   homeMapPinPickup: {
-    top: 128,
+    top: '44%',
     left: 44,
-    backgroundColor: driveTheme.colors.primary,
+    backgroundColor: '#16A34A',
   },
   homeMapPinDropoff: {
-    top: 178,
+    top: '56%',
     right: 48,
-    backgroundColor: driveTheme.colors.warning,
+    backgroundColor: '#2563EB',
   },
   homeMapVehicle: {
     position: 'absolute',
-    top: 146,
+    top: '49%',
     left: '52%',
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#B91C1C',
-    borderWidth: 3,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#14532D',
+    borderWidth: 2,
     borderColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     transform: [{ rotate: '-18deg' }],
-  },
-  homeMapTopBadge: {
-    position: 'absolute',
-    top: 16,
-    left: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: driveTheme.radius.pill,
-    backgroundColor: 'rgba(15, 23, 42, 0.82)',
-    paddingHorizontal: 13,
-    paddingVertical: 9,
-  },
-  homeMapTopBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  homeOrderPanel: {
-    marginTop: -20,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    backgroundColor: '#FFFFFF',
-    padding: 16,
-    gap: 10,
-  },
-  homeOrderEyebrow: {
-    color: driveTheme.colors.subtext,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '800',
-  },
-  homeOrderTitle: {
-    color: driveTheme.colors.ink,
-    fontSize: 20,
-    lineHeight: 25,
-    fontWeight: '900',
-  },
-  homeOrderSubtitle: {
-    color: driveTheme.colors.subtext,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
-  },
-  homeActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 4,
-  },
-  homePanelButtonGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'stretch',
   },
   customerRatingCard: {
     gap: 14,
@@ -5654,32 +6191,32 @@ const styles = StyleSheet.create({
   homePrimaryMiniButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     borderRadius: 999,
-    backgroundColor: '#991B1B',
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+    backgroundColor: '#16A34A',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   homePrimaryMiniButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '700',
   },
   homeSecondaryMiniButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     borderRadius: 999,
     backgroundColor: '#F0FDF4',
     borderWidth: 1,
     borderColor: '#BBF7D0',
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   homeSecondaryMiniButtonText: {
-    color: driveTheme.colors.primaryDark,
-    fontSize: 14,
-    fontWeight: '900',
+    color: '#14532D',
+    fontSize: 13,
+    fontWeight: '700',
   },
   homeOrderDivider: {
     height: 1,
@@ -5750,17 +6287,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metricTileValue: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 20,
     lineHeight: 24,
-    fontWeight: '900',
   },
   metricTileLabel: {
+    fontFamily: driveType.semibold,
     color: driveTheme.colors.subtext,
     fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
   },
   card: {
     borderRadius: driveTheme.radius.xl,
@@ -5779,11 +6314,12 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   cardTitle: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 18,
-    fontWeight: '800',
   },
   cardSubtitle: {
+    fontFamily: driveType.regular,
     color: driveTheme.colors.subtext,
     fontSize: 13,
     lineHeight: 20,
@@ -5902,15 +6438,15 @@ const styles = StyleSheet.create({
     opacity: 0.86,
   },
   buttonTextPrimary: {
+    fontFamily: driveType.bold,
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '800',
     textAlign: 'center',
   },
   buttonTextSecondary: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 15,
-    fontWeight: '800',
     textAlign: 'center',
   },
   vehiclePicker: {
@@ -6288,7 +6824,7 @@ const styles = StyleSheet.create({
   paymentProviderCard: {
     flexBasis: '47%',
     flexGrow: 1,
-    minHeight: 98,
+    minHeight: 124,
     borderRadius: 18,
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
@@ -6297,12 +6833,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 9,
   },
+  paymentProviderCardDisabled: {
+    opacity: 0.58,
+  },
   paymentProviderIcon: {
     width: 42,
     height: 42,
     borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  paymentProviderLogo: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
   },
   paymentProviderName: {
     color: driveTheme.colors.ink,
@@ -6325,6 +6871,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '800',
+  },
+  paymentNetworkBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  paymentNetworkBadgeActive: {
+    backgroundColor: '#DCFCE7',
+  },
+  paymentNetworkBadgeMuted: {
+    backgroundColor: '#E2E8F0',
+  },
+  paymentNetworkBadgeText: {
+    color: driveTheme.colors.subtext,
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  paymentNetworkBadgeTextActive: {
+    color: driveTheme.colors.primaryDark,
   },
   manualPaymentNumberCard: {
     borderRadius: 18,
@@ -6573,16 +7140,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   accountHeaderName: {
+    fontFamily: driveType.bold,
     color: '#FFFFFF',
     fontSize: 21,
     lineHeight: 27,
-    fontWeight: '900',
   },
   accountHeaderMeta: {
+    fontFamily: driveType.regular,
     color: '#D7E1EA',
     fontSize: 12,
     lineHeight: 17,
-    fontWeight: '700',
   },
   accountStatusBadge: {
     borderRadius: 999,
@@ -6656,16 +7223,68 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   accountInfoLabel: {
+    fontFamily: driveType.semibold,
     color: driveTheme.colors.subtext,
     fontSize: 12,
     lineHeight: 16,
-    fontWeight: '800',
   },
   accountInfoValue: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 15,
     lineHeight: 21,
-    fontWeight: '900',
+  },
+  settingLabel: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 13,
+  },
+  languageRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  languageChip: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  languageChipActive: {
+    backgroundColor: '#DCFCE7',
+    borderColor: '#16A34A',
+  },
+  languageChipText: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 14,
+  },
+  languageChipTextActive: {
+    color: '#14532D',
+  },
+  settingToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 8,
+  },
+  settingToggleCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  settingToggleTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 15,
+  },
+  settingToggleHint: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
   },
   paymentSummaryBand: {
     borderRadius: 20,
@@ -7010,12 +7629,13 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emptyTitle: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 18,
-    fontWeight: '800',
     textAlign: 'center',
   },
   emptyText: {
+    fontFamily: driveType.regular,
     color: driveTheme.colors.subtext,
     fontSize: 13,
     lineHeight: 20,
@@ -7488,12 +8108,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   historyTitle: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 14,
-    fontWeight: '800',
     marginBottom: 4,
   },
   historyMeta: {
+    fontFamily: driveType.regular,
     color: driveTheme.colors.subtext,
     fontSize: 12,
     lineHeight: 18,
@@ -7545,16 +8166,16 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   notificationTitle: {
+    fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 15,
     lineHeight: 20,
-    fontWeight: '900',
   },
   notificationMessage: {
+    fontFamily: driveType.regular,
     color: driveTheme.colors.subtext,
     fontSize: 13,
     lineHeight: 19,
-    fontWeight: '700',
   },
   notificationTime: {
     color: '#94A3B8',
@@ -7570,33 +8191,31 @@ const styles = StyleSheet.create({
   },
   bottomNav: {
     position: 'absolute',
-    left: 18,
-    right: 18,
-    bottom: 18,
+    left: 16,
+    right: 16,
+    bottom: 12,
     flexDirection: 'row',
-    borderRadius: 24,
+    borderRadius: 22,
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
     shadowColor: '#0F172A',
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 12 },
-    shadowRadius: 24,
-    elevation: 4,
+    shadowOpacity: 0.14,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 20,
+    elevation: 12,
   },
   bottomNavItem: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 2,
     paddingVertical: 6,
-    borderRadius: 18,
+    borderRadius: 16,
     position: 'relative',
   },
   bottomNavItemActive: {
-    backgroundColor: driveTheme.colors.primarySoft,
+    backgroundColor: 'transparent',
   },
   bottomNavBadge: {
     position: 'absolute',
@@ -7611,16 +8230,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   bottomNavBadgeText: {
+    fontFamily: driveType.bold,
     color: '#FFFFFF',
     fontSize: 9,
-    fontWeight: '900',
   },
   bottomNavLabel: {
+    fontFamily: driveType.semibold,
     color: '#94A3B8',
     fontSize: 10,
-    fontWeight: '700',
   },
   bottomNavLabelActive: {
-    color: driveTheme.colors.primaryDark,
+    color: '#16A34A',
   },
 });

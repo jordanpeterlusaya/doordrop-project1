@@ -5,8 +5,10 @@ import { Alert, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } fr
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
+import { PhoneInput } from '@/components/phone-input';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
+import { useAppCopy } from '@/lib/app-copy';
 import { upsertUserProfile } from '@/lib/user-profile';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useNotifications } from '@/providers/notification-provider';
@@ -17,6 +19,7 @@ const screenScope = 'ProfileEditScreen';
 
 function ProfileEditScreenContent() {
   const router = useRouter();
+  const copy = useAppCopy();
   const { profile, refreshProfile, user } = useAuthSession();
   const { pushPermissionStatus, requestNotificationPermission } = useNotifications();
   const [fullName, setFullName] = useState('');
@@ -118,8 +121,7 @@ function ProfileEditScreenContent() {
   return (
     <CargoScreen contentContainerStyle={styles.content}>
       <CargoHeader
-        title="Edit profile"
-        subtitle="Update your business details, contact info and notification preferences."
+        title={copy.profile.title}
         onLeftPress={() => router.back()}
       />
 
@@ -143,7 +145,7 @@ function ProfileEditScreenContent() {
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Phone number</Text>
-          <TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholder="+255 742 000 111" placeholderTextColor="#94A3B8" style={styles.input} />
+          <PhoneInput value={phone} onChangeText={setPhone} style={{ marginBottom: 0 }} />
         </View>
 
         <View style={styles.fieldGroup}>

@@ -1,7 +1,11 @@
 import { syncDoorDropApiRuntimeConfig } from '@/lib/api-debug';
-import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo } from '@/lib/debug-logger';
+import { logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import { getRuntimeEnvValue } from '@/lib/runtime-env';
 import Constants from 'expo-constants';
+
+const BACKEND_COOLDOWN_MS = 45000;
+const HEALTH_TIMEOUT_MS = 5000;
+let lastBackendFailureAt = 0;
 
 function getExpoExtra() {
   const manifestExtra = (Constants as any).manifest2?.extra?.expoClient?.extra;
@@ -61,6 +65,31 @@ export function maskConfigSecret(value: string) {
   return `${trimmed.slice(0, 4)}***${trimmed.slice(-4)}`;
 }
 
+export function isDoorDropBackendCoolingDown() {
+  return Date.now() - lastBackendFailureAt < BACKEND_COOLDOWN_MS;
+}
+
+export function markDoorDropBackendFailure() {
+  lastBackendFailureAt = Date.now();
+}
+
+export function markDoorDropBackendHealthy() {
+  lastBackendFailureAt = 0;
+}
+
+function parseJsonObject(rawText: string) {
+  const trimmed = rawText.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export async function checkDoorDropBackendHealth(scope: string) {
   const runtimeConfig = getDoorDropApiRuntimeConfig();
   syncDoorDropApiRuntimeConfig(runtimeConfig);
@@ -75,25 +104,48 @@ export async function checkDoorDropBackendHealth(scope: string) {
     return null;
   }
 
+  if (isDoorDropBackendCoolingDown()) {
+    logInfo(scope, 'backendHealth:skipped-cooldown', { apiBaseUrl: baseUrl });
+    return null;
+  }
+
   logAsyncStart(scope, 'backendHealth', { url: `${baseUrl}/health` });
+
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS) : null;
 
   try {
     const response = await fetch(`${baseUrl}/health`, {
       headers: {
         Accept: 'application/json',
       },
+      signal: controller?.signal,
     });
-    const payload = await response.json();
+    const payload = parseJsonObject(await response.text());
 
-    if (!response.ok) {
-      throw new Error(payload?.error || `Backend health failed with ${response.status}`);
+    if (!response.ok || !payload) {
+      markDoorDropBackendFailure();
+      logWarning(scope, 'backendHealth:unavailable', {
+        apiBaseUrl: baseUrl,
+        status: response.status,
+      });
+      return null;
     }
 
+    markDoorDropBackendHealthy();
     logAsyncSuccess(scope, 'backendHealth', payload);
     return payload;
   } catch (error) {
-    logAsyncFailure(scope, 'backendHealth', error, { apiBaseUrl: baseUrl });
+    markDoorDropBackendFailure();
+    logWarning(scope, 'backendHealth:unavailable', {
+      apiBaseUrl: baseUrl,
+      message: error instanceof Error ? error.message : 'unreachable',
+    });
     return null;
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
   }
 }
 

@@ -1,11 +1,13 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
 import { cargoTheme, type CargoIcon } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
+import { useAppCopy } from '@/lib/app-copy';
 import { getPersistedItem, setPersistedItem } from '@/lib/persistent-storage';
 import { type SavedPlace } from '@/lib/saved-places';
 
@@ -15,8 +17,8 @@ const SAVED_PLACES_KEY = 'doordrop.savedPlaces';
 const screenScope = 'SavedPlacesScreen';
 
 const placeTypeOptions: { label: string; icon: CargoIcon }[] = [
-  { label: 'Home', icon: 'home-map-marker' },
-  { label: 'Office', icon: 'office-building-marker-outline' },
+  { label: 'Home', icon: 'home-outline' },
+  { label: 'Office', icon: 'briefcase-outline' },
   { label: 'Shop', icon: 'storefront-outline' },
   { label: 'Other', icon: 'map-marker-outline' },
 ];
@@ -27,6 +29,7 @@ function buildId() {
 
 export default function SavedPlacesScreen() {
   const router = useRouter();
+  const copy = useAppCopy();
   const [selectedType, setSelectedType] = useState(placeTypeOptions[0]);
   const [customLabel, setCustomLabel] = useState('');
   const [address, setAddress] = useState('');
@@ -86,7 +89,7 @@ export default function SavedPlacesScreen() {
 
   const handleAddPlace = async () => {
     if (!formIsValid) {
-      Alert.alert('Incomplete details', 'Enter a place name and a clear address before saving.');
+      Alert.alert(copy.savedPlaces.incompleteTitle, copy.savedPlaces.incompleteText);
       return;
     }
 
@@ -104,15 +107,15 @@ export default function SavedPlacesScreen() {
       setSelectedType(placeTypeOptions[0]);
     } catch (error) {
       logAsyncFailure(screenScope, 'handleAddPlace', error, { label: nextPlace.label });
-      Alert.alert('Unable to save place', 'Please try saving this place again.');
+      Alert.alert(copy.savedPlaces.saveFailed, copy.savedPlaces.saveFailedText);
     }
   };
 
   const handleDeletePlace = (placeId: string) => {
-    Alert.alert('Remove saved place?', 'This place will no longer appear in your account shortcuts.', [
-      { text: 'Keep', style: 'cancel' },
+    Alert.alert(copy.savedPlaces.removeTitle, copy.savedPlaces.removeText, [
+      { text: copy.savedPlaces.keep, style: 'cancel' },
       {
-        text: 'Remove',
+        text: copy.savedPlaces.remove,
         style: 'destructive',
         onPress: () => {
           void persistPlaces(savedPlaces.filter((place) => place.id !== placeId));
@@ -122,233 +125,196 @@ export default function SavedPlacesScreen() {
   };
 
   return (
-    <CargoScreen contentContainerStyle={styles.content}>
-      <CargoHeader
-        title="Saved places"
-        subtitle="Add your own common pickup and drop-off locations."
-        onLeftPress={() => router.back()}
+    <CargoScreen backgroundColor="#FFFFFF" contentContainerStyle={styles.content}>
+      <CargoHeader title={copy.savedPlaces.title} onLeftPress={() => router.back()} />
+
+      <View style={styles.typeRow}>
+        {placeTypeOptions.map((option) => {
+          const isSelected = selectedType.label === option.label;
+          return (
+            <Pressable
+              key={option.label}
+              onPress={() => setSelectedType(option)}
+              style={[styles.typeChip, isSelected && styles.typeChipSelected]}>
+              <Text style={[styles.typeChipText, isSelected && styles.typeChipTextSelected]}>
+                {option.label === 'Home'
+                  ? copy.savedPlaces.home
+                  : option.label === 'Office'
+                    ? copy.savedPlaces.office
+                    : option.label === 'Shop'
+                      ? copy.savedPlaces.shop
+                      : copy.savedPlaces.other}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {selectedType.label === 'Other' ? (
+        <TextInput
+          value={customLabel}
+          onChangeText={setCustomLabel}
+          placeholder={copy.savedPlaces.placeName}
+          placeholderTextColor="#94A3B8"
+          style={styles.input}
+        />
+      ) : null}
+
+      <TextInput
+        value={address}
+        onChangeText={setAddress}
+        placeholder={copy.savedPlaces.address}
+        placeholderTextColor="#94A3B8"
+        style={styles.input}
       />
 
-      <View style={styles.heroCard}>
-        <Text style={styles.heroTitle}>Save your own places</Text>
-        <Text style={styles.heroText}>
-          Add places you use often so booking becomes faster each time you open DoorDrop.
-        </Text>
-      </View>
+      <PrimaryButton
+        label={copy.common.save}
+        onPress={() => void handleAddPlace()}
+        style={!formIsValid ? styles.saveDisabled : undefined}
+      />
 
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Add a place</Text>
-        <View style={styles.typeGrid}>
-          {placeTypeOptions.map((option) => {
-            const isSelected = selectedType.label === option.label;
+      <Text style={styles.sectionTitle}>{copy.savedPlaces.yourPlaces}</Text>
 
-            return (
-              <Pressable
-                key={option.label}
-                onPress={() => setSelectedType(option)}
-                style={[styles.typeChip, isSelected && styles.typeChipSelected]}>
-                <MaterialCommunityIcons
-                  name={option.icon}
-                  size={18}
-                  color={isSelected ? cargoTheme.colors.primaryDark : cargoTheme.colors.subtext}
-                />
-                <Text style={[styles.typeChipText, isSelected && styles.typeChipTextSelected]}>{option.label}</Text>
-              </Pressable>
-            );
-          })}
+      {loading ? <Text style={styles.emptyText}>{copy.common.loading}</Text> : null}
+
+      {!loading && savedPlaces.length === 0 ? (
+        <View style={styles.emptyState}>
+          <MaterialCommunityIcons name="map-marker-outline" size={28} color="#94A3B8" />
+          <Text style={styles.emptyText}>{copy.savedPlaces.empty}</Text>
         </View>
+      ) : null}
 
-        {selectedType.label === 'Other' ? (
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Place name</Text>
-            <TextInput
-              value={customLabel}
-              onChangeText={setCustomLabel}
-              placeholder="Warehouse, Auntie's home, Store..."
-              placeholderTextColor="#94A3B8"
-              style={styles.input}
-            />
-          </View>
-        ) : null}
-
-        <View style={styles.fieldGroup}>
-          <Text style={styles.label}>Address</Text>
-          <TextInput
-            value={address}
-            onChangeText={setAddress}
-            placeholder="Enter the full address or landmark"
-            placeholderTextColor="#94A3B8"
-            style={styles.input}
-          />
-        </View>
-
-        <PrimaryButton label="Save place" icon="content-save-outline" onPress={() => void handleAddPlace()} />
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Your places</Text>
-
-        {loading ? <Text style={styles.emptyText}>Loading your saved places...</Text> : null}
-
-        {!loading && savedPlaces.length === 0 ? (
-          <Text style={styles.emptyText}>No saved places yet. Add your first place above.</Text>
-        ) : null}
-
-        {!loading
-          ? savedPlaces.map((place, index) => (
-              <View key={place.id} style={[styles.placeRow, index !== savedPlaces.length - 1 && styles.rowBorder]}>
-                <View style={styles.placeLeading}>
-                  <View style={styles.placeIconWrap}>
-                    <MaterialCommunityIcons name={place.icon} size={20} color={cargoTheme.colors.primaryDark} />
-                  </View>
-                  <View style={styles.placeCopy}>
-                    <Text style={styles.placeTitle}>{place.label}</Text>
-                    <Text style={styles.placeSubtitle}>{place.address}</Text>
-                  </View>
-                </View>
-
-                <Pressable style={styles.deleteButton} onPress={() => handleDeletePlace(place.id)}>
-                  <MaterialCommunityIcons name="trash-can-outline" size={18} color="#DC2626" />
-                </Pressable>
+      {!loading && savedPlaces.length > 0 ? (
+        <View style={styles.listCard}>
+          {savedPlaces.map((place, index) => (
+            <View key={place.id} style={[styles.placeRow, index > 0 && styles.placeBorder]}>
+              <View style={styles.placeIcon}>
+                <MaterialCommunityIcons name={place.icon} size={20} color={cargoTheme.colors.text} />
               </View>
-            ))
-          : null}
-      </View>
+              <View style={styles.placeCopy}>
+                <Text numberOfLines={1} style={styles.placeTitle}>
+                  {place.label}
+                </Text>
+                <Text numberOfLines={2} style={styles.placeSubtitle}>
+                  {place.address}
+                </Text>
+              </View>
+              <TouchableOpacity hitSlop={10} onPress={() => handleDeletePlace(place.id)}>
+                <MaterialCommunityIcons name="close" size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      ) : null}
     </CargoScreen>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
-    paddingBottom: 32,
+    paddingBottom: 40,
   },
-  heroCard: {
-    backgroundColor: cargoTheme.colors.darkSurface,
-    borderRadius: 28,
-    padding: 20,
-    marginBottom: 18,
-  },
-  heroTitle: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  heroText: {
-    color: '#D6E0EA',
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  card: {
-    backgroundColor: cargoTheme.colors.surface,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    padding: 18,
-    marginBottom: 18,
-    gap: 14,
-  },
-  sectionTitle: {
-    color: cargoTheme.colors.text,
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  typeGrid: {
+  typeRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
+    marginBottom: 12,
   },
   typeChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: 18,
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    backgroundColor: cargoTheme.colors.card,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   typeChipSelected: {
-    borderColor: '#86EFAC',
-    backgroundColor: cargoTheme.colors.primarySoft,
+    borderColor: cargoTheme.colors.primary,
+    backgroundColor: '#F0FDF4',
   },
   typeChipText: {
-    color: cargoTheme.colors.text,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
   },
   typeChipTextSelected: {
     color: cargoTheme.colors.primaryDark,
   },
-  fieldGroup: {
-    gap: 8,
-  },
-  label: {
-    color: cargoTheme.colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-  },
   input: {
-    minHeight: 54,
-    borderRadius: 18,
+    minHeight: 52,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: cargoTheme.colors.line,
-    backgroundColor: cargoTheme.colors.card,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
     paddingHorizontal: 16,
     fontSize: 15,
+    fontFamily: typography.body,
     color: cargoTheme.colors.text,
+    marginBottom: 12,
+  },
+  saveDisabled: {
+    opacity: 0.55,
+  },
+  sectionTitle: {
+    marginTop: 28,
+    marginBottom: 10,
+    marginLeft: 4,
+    fontSize: 12,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 28,
+    gap: 8,
   },
   emptyText: {
-    color: cargoTheme.colors.subtext,
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
+  },
+  listCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+    overflow: 'hidden',
   },
   placeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     gap: 12,
-    paddingVertical: 12,
   },
-  rowBorder: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#EDF2F7',
+  placeBorder: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8EEF4',
   },
-  placeLeading: {
-    flexDirection: 'row',
+  placeIcon: {
+    width: 32,
     alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  placeIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: cargoTheme.colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   placeCopy: {
     flex: 1,
-    gap: 3,
+    minWidth: 0,
   },
   placeTitle: {
-    color: cargoTheme.colors.text,
     fontSize: 15,
-    fontWeight: '700',
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.text,
   },
   placeSubtitle: {
-    color: cargoTheme.colors.subtext,
+    marginTop: 2,
     fontSize: 13,
     lineHeight: 18,
-  },
-  deleteButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEF2F2',
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
   },
 });

@@ -147,3 +147,55 @@ export function getDistanceBetweenPoints(start: RoutePoint, end: RoutePoint) {
 
   return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+export function getPolylineDistanceMeters(coordinates: RoutePoint[]) {
+  let total = 0;
+  for (let index = 1; index < coordinates.length; index += 1) {
+    total += getDistanceBetweenPoints(coordinates[index - 1], coordinates[index]);
+  }
+  return total;
+}
+
+export function getNearestCoordinateIndex(coordinates: RoutePoint[], point: RoutePoint) {
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < coordinates.length; index += 1) {
+    const distance = getDistanceBetweenPoints(point, coordinates[index]);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  }
+
+  return { index: nearestIndex, distance: nearestDistance };
+}
+
+export function trimRouteFromPoint(coordinates: RoutePoint[], point: RoutePoint) {
+  if (coordinates.length < 2 || !isValidCoordinate(point)) {
+    return coordinates;
+  }
+
+  const { index, distance } = getNearestCoordinateIndex(coordinates, point);
+  const remaining = coordinates.slice(index);
+
+  if (distance > 4) {
+    return filterValidCoordinates([point, ...remaining.slice(1)]);
+  }
+
+  return remaining.length >= 2 ? remaining : filterValidCoordinates([point, coordinates[coordinates.length - 1]]);
+}
+
+export function formatEtaByScope(durationSeconds: number, scope: 'city' | 'intercity') {
+  const totalMinutes = Math.max(1, Math.round(durationSeconds / 60));
+  if (scope === 'city' || totalMinutes < 60) {
+    return `${totalMinutes} min`;
+  }
+
+  const roundedHalfHours = Math.max(1, Math.round(totalMinutes / 30) / 2);
+  if (Number.isInteger(roundedHalfHours)) {
+    return roundedHalfHours === 1 ? '1 hr' : `${roundedHalfHours} hrs`;
+  }
+
+  return `${roundedHalfHours} hrs`;
+}
