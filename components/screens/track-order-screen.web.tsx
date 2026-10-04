@@ -1,21 +1,24 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Linking, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { BottomNav, CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
+import { OutsideParcelReceiptModal } from '@/components/outside-parcel-receipt-modal';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { useAppCopy } from '@/lib/app-copy';
 import {
   cancelDeliveryOrderByUser,
-  formatDeliveryDateTime,
   getDeliveryOrderStatusLabel,
   hasDeliveryOrderRating,
+  isNinunulieOrder,
   submitDeliveryOrderRating,
   subscribeToOrder,
   type DeliveryOrder,
 } from '@/lib/delivery-data';
 import { buildRecipientSmsBody, isNotifiableRecipientPhone, openRecipientSms } from '@/lib/recipient-notify';
+import { getActiveOrderHeadline, getBusParcelDetail, isBusCustomerParcel, isCargoNegotiationOpen } from '@/lib/active-order-display';
+import { lookupTrackOrderByCode, normalizeTrackCodeInput } from '@/lib/parcel-track-lookup';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useLanguage } from '@/providers/language-provider';
 
@@ -33,24 +36,8 @@ function getParamValue(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function getCancellationActorLabel(cancelledBy?: DeliveryOrder['cancelledBy']) {
-  if (cancelledBy === 'customer') {
-    return 'Customer';
-  }
-
-  if (cancelledBy === 'driver') {
-    return 'Driver';
-  }
-
-  if (cancelledBy === 'dispatch') {
-    return 'Dispatch';
-  }
-
-  return 'DoorDrop';
-}
-
 function shouldHideOrderOnTrack(order: DeliveryOrder | null) {
-  return !!order && order.status === 'cancelled';
+  return !!order && (order.status === 'cancelled' || isNinunulieOrder(order) || isCargoNegotiationOpen(order));
 }
 
 export default function TrackOrderWebScreen() {
@@ -58,10 +45,11 @@ export default function TrackOrderWebScreen() {
   const { profile, user } = useAuthSession();
   const copy = useAppCopy();
   const { language } = useLanguage();
-  const params = useLocalSearchParams<{ orderId?: string; placed?: string; notifyRecipient?: string }>();
+  const params = useLocalSearchParams<{ orderId?: string; placed?: string; notifyRecipient?: string; receipt?: string }>();
   const orderId = getParamValue(params.orderId);
   const placedParam = getParamValue(params.placed);
   const notifyRecipientParam = getParamValue(params.notifyRecipient);
+  const receiptParam = getParamValue(params.receipt);
   const [order, setOrder] = useState<DeliveryOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCancelPanel, setShowCancelPanel] = useState(false);
@@ -69,17 +57,56 @@ export default function TrackOrderWebScreen() {
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [showRatingPanel, setShowRatingPanel] = useState(false);
   const [showPlacedSheet, setShowPlacedSheet] = useState(false);
+  const [showReceipt, setShowReceipt] = useState(false);
   const [smsOpening, setSmsOpening] = useState(false);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingReview, setRatingReview] = useState('');
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [ratingPromptDismissedOrderId, setRatingPromptDismissedOrderId] = useState<string | null>(null);
+  const [trackCodeInput, setTrackCodeInput] = useState('');
+  const [trackLookupError, setTrackLookupError] = useState('');
+  const [trackLookupLoading, setTrackLookupLoading] = useState(false);
 
   useEffect(() => {
-    if (placedParam === '1') {
+    if (placedParam === '1' && notifyRecipientParam !== '1') {
       setShowPlacedSheet(true);
     }
-  }, [orderId, placedParam]);
+  }, [notifyRecipientParam, orderId, placedParam]);
+
+  useEffect(() => {
+    if (receiptParam === '1' && order) {
+      setShowReceipt(true);
+    }
+  }, [order, receiptParam]);
+
+  useEffect(() => {
+    if (!order) {
+      return;
+    }
+    setTrackCodeInput(String(order.parcelCode || order.trackingId || order.orderNumber || '').trim());
+  }, [order?.id]);
+
+  const handleTrackCodeLookup = async () => {
+    const queryText = trackCodeInput.trim();
+    if (!queryText || trackLookupLoading) {
+      return;
+    }
+    setTrackLookupLoading(true);
+    setTrackLookupError('');
+    try {
+      const result = await lookupTrackOrderByCode(queryText);
+      if (!result) {
+        setTrackLookupError(copy.track.trackCodeNotFound);
+        return;
+      }
+      setTrackCodeInput(result.parcelCode || result.orderNumber || normalizeTrackCodeInput(queryText));
+      router.setParams({ orderId: result.orderId, placed: '', notifyRecipient: '' });
+    } catch {
+      setTrackLookupError(copy.track.trackCodeLookupFailed);
+    } finally {
+      setTrackLookupLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!orderId) {
@@ -126,7 +153,6 @@ export default function TrackOrderWebScreen() {
   const driverPhone = order?.driverPhone?.trim() || '';
   const hasDriverPhone = driverPhone.length > 0;
   const canCancelOrder = !!order && !['delivered', 'cancelled'].includes(order.status);
-  const cancellationReason = order?.cancellationReason?.trim() || '';
   const orderHasRating = hasDeliveryOrderRating(order);
   const canRateOrder = !!order && order.status === 'delivered' && !!user?.uid && user.uid === order.userId;
 
@@ -289,146 +315,155 @@ export default function TrackOrderWebScreen() {
     }
   };
 
+  const vehicleLine = [order?.driverVehicleLabel, order?.driverPlateNumber].filter(Boolean).join(' · ');
+
   return (
-    <CargoScreen contentContainerStyle={styles.content} footer={<BottomNav activeTab="track" />}>
+    <CargoScreen contentContainerStyle={styles.content} footer={<BottomNav />}>
+      <View style={styles.pageBar} />
       <CargoHeader
-        title="Track"
-        leftAction="menu"
-        onLeftPress={() => router.push('/menu')}
+        title={copy.track.title}
+        leftAction="back"
+        onLeftPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+            return;
+          }
+          router.replace('/home');
+        }}
       />
 
       {loading ? (
-        <View style={styles.emptyState}>
-          <ActivityIndicator color={cargoTheme.colors.primary} />
-          <Text style={styles.emptyTitle}>Loading live order data</Text>
+        <View style={styles.quietState}>
+          <Text style={styles.statusLine}>{copy.common.loading}</Text>
         </View>
       ) : null}
 
       {!loading && !order ? (
-        <View style={styles.emptyState}>
-          <MaterialCommunityIcons name="map-marker-question-outline" size={30} color="#94A3B8" />
-          <Text style={styles.emptyTitle}>Open an order to track it</Text>
-          <Text style={styles.emptyText}>Create a booking in the app or open a recent order from history.</Text>
+        <View style={styles.quietState}>
+          <Text style={styles.statusLine}>{copy.track.emptyTitle}</Text>
+          <TextInput
+            value={trackCodeInput}
+            onChangeText={(value) => {
+              setTrackCodeInput(value);
+              if (trackLookupError) setTrackLookupError('');
+            }}
+            placeholder={copy.track.trackCodePlaceholder}
+            placeholderTextColor="#9CA3AF"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            style={styles.codeInput}
+            onSubmitEditing={() => {
+              void handleTrackCodeLookup();
+            }}
+          />
+          <Pressable accessibilityRole="button" style={styles.codeButton} onPress={() => void handleTrackCodeLookup()}>
+            <Text style={styles.codeButtonLabel}>{trackLookupLoading ? copy.common.loading : copy.track.trackCodeSearch}</Text>
+          </Pressable>
+          {trackLookupError ? <Text style={styles.codeError}>{trackLookupError}</Text> : null}
         </View>
       ) : null}
 
       {order ? (
         <>
-          <View style={styles.statusCard}>
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{getDeliveryOrderStatusLabel(order.status)}</Text>
-            </View>
-            <Text style={styles.statusTitle}>{order.serviceLabel}</Text>
-            <Text style={styles.statusText}>
-              {order.driverName ? `${order.driverName} · ${getDeliveryOrderStatusLabel(order.status)}` : getDeliveryOrderStatusLabel(order.status)}
-            </Text>
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusLine}>{getActiveOrderHeadline(order, language)}</Text>
+            {isBusCustomerParcel(order) ? <Text style={styles.driverMeta}>{getBusParcelDetail(order, language)}</Text> : null}
+            <View style={styles.statusPointer} />
           </View>
 
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Order details</Text>
-            <Text style={styles.cardLine}>{order.orderNumber}</Text>
-            <Text style={styles.cardLine}>{order.pickupLabel}</Text>
-            <Text style={styles.cardLine}>{order.dropoffLabel}</Text>
-            <Text style={styles.cardMeta}>Created {formatDeliveryDateTime(order.createdAt)}</Text>
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Driver</Text>
-            <Text style={styles.cardLine}>{order.driverName || 'Waiting for assignment'}</Text>
-            <Text style={styles.cardMeta}>
-              {order.driverName ? `${order.driverVehicleLabel || 'Vehicle pending'} • ${order.driverPlateNumber || 'Plate pending'}` : 'DoorDrop dispatch will assign a driver soon.'}
-            </Text>
-            <TouchableOpacity
-              activeOpacity={hasDriverPhone ? 0.88 : 1}
-              onPress={() => {
-                void handleCallDriver();
-              }}
-              style={[styles.phoneCard, !hasDriverPhone && styles.phoneCardMuted]}>
-              <Text style={styles.phoneLabel}>Driver phone</Text>
-              <Text style={[styles.phoneValue, !hasDriverPhone && styles.phoneValueMuted]}>{driverPhone || 'Phone pending'}</Text>
-            </TouchableOpacity>
-            <View style={styles.actionsRow}>
-              <PrimaryButton
-                label={hasDriverPhone ? 'Call driver' : 'Phone pending'}
-                variant="secondary"
-                icon="phone-outline"
-                style={[styles.actionButton, !hasDriverPhone && styles.actionButtonDisabled]}
-                onPress={() => {
-                  void handleCallDriver();
-                }}
-              />
-              <PrimaryButton
-                label="Share trip"
-                variant="secondary"
-                icon="share-variant-outline"
-                style={styles.actionButton}
-                onPress={() => {
-                  void handleShareTrip();
-                }}
-              />
-            </View>
-          </View>
-
-          {order.status === 'cancelled' ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Cancellation details</Text>
-              <Text style={styles.cardLine}>
-                Cancelled by {getCancellationActorLabel(order.cancelledBy)}
-                {order.cancelledAt ? ` • ${formatDeliveryDateTime(order.cancelledAt)}` : ''}
-              </Text>
-              {cancellationReason ? <Text style={styles.cardMeta}>{cancellationReason}</Text> : null}
+          {order.driverId ? (
+            <View style={styles.driverRow}>
+              <View style={styles.driverCopy}>
+                <Text style={styles.driverName}>{order.driverName || copy.track.assigned}</Text>
+                {vehicleLine ? <Text style={styles.driverMeta}>{vehicleLine}</Text> : null}
+              </View>
+              {hasDriverPhone ? (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={copy.track.call}
+                  style={styles.callButton}
+                  onPress={() => {
+                    void handleCallDriver();
+                  }}>
+                  <MaterialCommunityIcons name="phone" size={18} color="#111827" />
+                </TouchableOpacity>
+              ) : null}
             </View>
           ) : null}
+
+          <View style={styles.stopRow}>
+            <Text style={styles.stopLabel}>{copy.common.from}</Text>
+            <Text style={styles.stopValue}>{order.pickupLabel}</Text>
+          </View>
+          <View style={styles.stopRow}>
+            <Text style={styles.stopLabel}>{copy.common.to}</Text>
+            <Text style={styles.stopValue}>{order.dropoffLabel}</Text>
+          </View>
+          <Text style={styles.stopLabel}>{language === 'sw' ? 'Msimbo wa mzigo' : 'Parcel code'}</Text>
+          <TextInput
+            value={trackCodeInput}
+            onChangeText={(value) => {
+              setTrackCodeInput(value);
+              if (trackLookupError) setTrackLookupError('');
+            }}
+            placeholder={copy.track.trackCodePlaceholder}
+            placeholderTextColor="#9CA3AF"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            style={styles.codeInput}
+            onSubmitEditing={() => {
+              void handleTrackCodeLookup();
+            }}
+          />
+          <Pressable accessibilityRole="button" style={styles.codeButton} onPress={() => void handleTrackCodeLookup()}>
+            <Text style={styles.codeButtonLabel}>{trackLookupLoading ? copy.common.loading : copy.track.trackCodeSearch}</Text>
+          </Pressable>
+          {trackLookupError ? <Text style={styles.codeError}>{trackLookupError}</Text> : null}
 
           {order.status === 'delivered' ? (
-            <View style={styles.card}>
-              <View style={styles.reviewHeader}>
-                <View style={styles.reviewHeaderCopy}>
-                  <Text style={styles.cardTitle}>Your delivery rating</Text>
-                  <Text style={styles.cardMeta}>
-                    {orderHasRating ? 'Your feedback is saved on this completed order.' : 'Rate this completed trip to help DoorDrop improve.'}
-                  </Text>
-                </View>
-                {canRateOrder ? (
-                  <TouchableOpacity activeOpacity={0.88} onPress={handleOpenRatingPanel} style={styles.reviewEditChip}>
-                    <MaterialCommunityIcons name={orderHasRating ? 'pencil-outline' : 'star-outline'} size={15} color={cargoTheme.colors.primaryDark} />
-                    <Text style={styles.reviewEditChipText}>{orderHasRating ? 'Edit' : 'Rate'}</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-
-              <View style={styles.reviewStarsRow}>
-                {ratingOptions.map((star) => (
-                  <MaterialCommunityIcons
-                    key={star}
-                    name={star <= (order.customerRating ?? 0) ? 'star' : 'star-outline'}
-                    size={20}
-                    color="#F59E0B"
-                  />
-                ))}
-                <Text style={styles.reviewStarsText}>
-                  {orderHasRating ? `${order.customerRating}/5` : 'Not rated yet'}
-                </Text>
-              </View>
-
-              {order.customerReview?.trim() ? (
-                <Text style={styles.reviewBody}>{`"${order.customerReview.trim()}"`}</Text>
-              ) : (
-                <Text style={styles.cardMeta}>
-                  {orderHasRating ? 'No written comment was added for this trip.' : 'Add an optional note about the completed delivery.'}
-                </Text>
-              )}
-            </View>
+            <Pressable accessibilityRole="button" style={styles.textAction} onPress={canRateOrder ? handleOpenRatingPanel : undefined}>
+              <Text style={styles.textActionLabel}>{copy.track.rating}</Text>
+            </Pressable>
           ) : null}
 
+          <View style={styles.iconActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={copy.track.share}
+              style={styles.iconAction}
+              onPress={() => {
+                void handleShareTrip();
+              }}>
+              <View style={styles.iconBubble}>
+                <MaterialCommunityIcons name="share-variant" size={22} color="#111827" />
+              </View>
+              <Text style={styles.iconActionLabel}>{copy.track.share}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={copy.parcel.receiptView}
+              style={styles.iconAction}
+              onPress={() => setShowReceipt(true)}>
+              <View style={[styles.iconBubble, styles.iconBubbleYellow]}>
+                <MaterialCommunityIcons name="receipt" size={22} color="#111827" />
+              </View>
+              <Text style={styles.iconActionLabel}>{copy.parcel.receiptView}</Text>
+            </Pressable>
+          </View>
+          {isNotifiableRecipientPhone(order.recipientPhone) ? (
+            <Pressable
+              accessibilityRole="button"
+              style={styles.solidButton}
+              onPress={() => {
+                void handlePlacedNotifySms();
+              }}>
+              <Text style={styles.solidButtonLabel}>{copy.track.smsRecipient}</Text>
+            </Pressable>
+          ) : null}
           {canCancelOrder ? (
-            <PrimaryButton
-              label="Cancel order"
-              variant="dark"
-              icon="close-circle-outline"
-              style={styles.cancelToggleButton}
-              onPress={() => setShowCancelPanel(true)}
-            />
+            <Pressable accessibilityRole="button" style={styles.dangerButton} onPress={() => setShowCancelPanel(true)}>
+              <Text style={styles.dangerButtonLabel}>{copy.track.cancelOrder}</Text>
+            </Pressable>
           ) : null}
         </>
       ) : null}
@@ -556,36 +591,25 @@ export default function TrackOrderWebScreen() {
             </View>
             <Text style={styles.placedTitle}>{copy.track.orderPlaced}</Text>
             {order?.orderNumber ? <Text style={styles.placedOrderNumber}>{order.orderNumber}</Text> : null}
-            <Text style={styles.placedBody}>{copy.track.lookingDriver}</Text>
-            {notifyRecipientParam === '1' && (!order || isNotifiableRecipientPhone(order.recipientPhone)) ? (
-              <>
-                <Text style={styles.placedNotify}>
-                  {copy.track.notifyPrompt.replace('{phone}', order?.recipientPhone || '')}
-                </Text>
-                <View style={styles.actionsRow}>
-                  <PrimaryButton
-                    label={copy.common.notNow}
-                    variant="secondary"
-                    style={styles.actionButton}
-                    onPress={dismissPlacedSheet}
-                  />
-                  <PrimaryButton
-                    label={smsOpening ? copy.common.loading : copy.track.sendSms}
-                    icon="message-text-outline"
-                    style={styles.actionButton}
-                    disabled={!order || smsOpening}
-                    onPress={() => {
-                      void handlePlacedNotifySms();
-                    }}
-                  />
-                </View>
-              </>
-            ) : (
-              <PrimaryButton label={copy.common.gotIt} onPress={dismissPlacedSheet} />
-            )}
+            <Text style={styles.placedBody}>
+              {order && isBusCustomerParcel(order)
+                ? language === 'sw'
+                  ? 'Tunatafuta basi linaloenda huko. Hatua zitaonekana hapa.'
+                  : 'We are matching a bus for this route. Progress will show here.'
+                : copy.track.lookingDriver}
+            </Text>
+            <PrimaryButton label={copy.common.gotIt} onPress={dismissPlacedSheet} />
           </View>
         </View>
       </Modal>
+
+      <OutsideParcelReceiptModal
+        visible={showReceipt && Boolean(order)}
+        order={order}
+        originCity={order?.outsideOriginCity}
+        onContinue={() => setShowReceipt(false)}
+        onDismiss={() => setShowReceipt(false)}
+      />
     </CargoScreen>
   );
 }
@@ -593,7 +617,201 @@ export default function TrackOrderWebScreen() {
 const styles = StyleSheet.create({
   content: {
     paddingBottom: 24,
-    gap: 16,
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+  },
+  pageBar: {
+    height: 28,
+    backgroundColor: '#FFE500',
+    marginHorizontal: -20,
+  },
+  statusBlock: {
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    maxWidth: '100%',
+  },
+  statusPointer: {
+    marginTop: 4,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderTopWidth: 9,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#111827',
+  },
+  solidButton: {
+    minHeight: 56,
+    marginTop: 8,
+    borderRadius: 18,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  solidButtonLabel: {
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  dangerButton: {
+    minHeight: 56,
+    marginTop: 8,
+    borderRadius: 18,
+    backgroundColor: '#DC2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dangerButtonLabel: {
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  quietState: {
+    paddingTop: 12,
+  },
+  statusLine: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: '600',
+    color: '#111827',
+    letterSpacing: -0.4,
+  },
+  barTrack: {
+    marginTop: 14,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: '#E5E7EB',
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#FFE500',
+  },
+  driverRow: {
+    marginTop: 22,
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  driverCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  driverName: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  driverMeta: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#6B7280',
+  },
+  callButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFE500',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stopRow: {
+    marginTop: 16,
+    gap: 2,
+  },
+  stopLabel: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  stopValue: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  fareRow: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  iconActions: {
+    marginTop: 16,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  iconAction: {
+    flex: 1,
+    minHeight: 72,
+    borderRadius: 18,
+    backgroundColor: '#F3F4F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  iconBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBubbleYellow: {
+    backgroundColor: '#FFE500',
+  },
+  iconActionLabel: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  textAction: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  textActionLabel: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  cancelQuiet: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  codeInput: {
+    minHeight: 56,
+    marginTop: 8,
+    borderRadius: 18,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#111827',
+  },
+  codeButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  codeButtonLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  codeError: {
+    fontSize: 13,
+    color: '#6B7280',
   },
   emptyState: {
     alignItems: 'center',

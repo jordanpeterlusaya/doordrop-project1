@@ -19,25 +19,43 @@ import {
 } from 'firebase/firestore';
 
 import { recordAppActivity } from '@/lib/app-analytics';
+import { cargoAgreementPhase } from '@/doordropdrive/lib/cargo-order-agreement';
 import { logWarning } from '@/lib/debug-logger';
 import { compactFirestoreData } from '@/lib/firestore-payload';
 import { db } from '@/lib/firebase';
+import { cellsNear, encodeGeohash } from '@/lib/geohash';
+import {
+  buildOutsideParcelPublicSummary,
+  generateOutsideParcelCode,
+  isOutsideParcelOrder,
+  makeLogisticsEvent,
+} from '@/lib/outside-order-logistics';
+import { formatExactCoordinateLabel, isWeakPlaceName } from '@/lib/place-labels';
+import { getNearestServiceCity } from '@/lib/service-cities';
+import { getOutsideParcelDurationSecondsForOrder } from '@/lib/outside-parcel-eta';
+import {
+  assertExpressDepartureBookable,
+  normalizeOutsideExpressRouteSchedule,
+  parseOutsideExpressRouteId,
+  resolveExpressFirstMileMinutes,
+} from '@/lib/outside-express-schedule';
 import { createOrderStatusNotification } from '@/lib/user-notifications';
 
-export type DeliveryFlow = 'parcel' | 'cargo';
+export type DeliveryFlow = 'parcel' | 'cargo' | 'ninunulie';
 export type DeliveryTimingMode = 'now' | 'later';
 export type DeliveryCancellationActor = 'customer' | 'driver' | 'dispatch';
-export type DriverSearchStatus = 'searching' | 'waiting_for_driver' | 'assigned' | 'auto_cancelled';
-type CanonicalDriverVehicleType = 'bodaboda' | 'toyo' | 'kirikuu';
+export type DriverSearchStatus = 'searching' | 'waiting_for_driver' | 'assigned' | 'auto_cancelled' | 'ops_desk';
+type CanonicalDriverVehicleType = 'bodaboda' | 'toyo' | 'kirikuu' | 'canter';
 export type DeliveryOrderStatus =
   | 'pending_assignment'
   | 'driver_assigned'
   | 'driver_at_pickup'
   | 'in_transit'
+  | 'at_hub'
   | 'delivered'
   | 'cancelled';
 
-export type DriverVehicleType = 'bodaboda' | 'pikipiki' | 'boda' | 'motorcycle' | 'motorbike' | 'kirikuu' | 'toyo' | 'toyo_xl' | 'pickup' | 'van' | 'truck';
+export type DriverVehicleType = 'bodaboda' | 'pikipiki' | 'boda' | 'motorcycle' | 'motorbike' | 'kirikuu' | 'toyo' | 'toyo_xl' | 'pickup' | 'van' | 'truck' | 'canter' | 'center';
 export type DriverVerificationStatus = 'pending_admin_verification' | 'verified' | 'rejected';
 export type DriverVerificationDocumentKey = 'vehiclePhoto' | 'driverPhoto';
 export type DriverVerificationDocument = {
@@ -74,9 +92,57 @@ export type DeliveryOrder = {
   outsideDestinationLatitude?: number;
   outsideDestinationLongitude?: number;
   outsideParcelWeightKg?: string;
+  declaredValueTzs?: string;
+  contentsDeclarationAccepted?: boolean;
+  contentsDeclarationAcceptedAt?: unknown;
+  outsideShippingMode?: string;
+  outsideHandoffMode?: string;
+  /** When driver starts trip with an outside parcel (customer pickup complete). */
+  outsidePickupAt?: unknown;
+  /** Fixed countdown start — persists until order completes or cancels. */
+  outsideCountdownStartedAt?: unknown;
+  /** Promised delivery deadline (persisted; does not reset on track reopen). */
+  outsideEtaDeadlineAt?: unknown;
+  outsideExpressRouteId?: string;
+  outsideExpressDepartureId?: string;
+  outsideExpressDepartureAt?: unknown;
+  outsideExpressDepartureLabel?: string;
+  outsideExpressBookingCutoffAt?: unknown;
+  outsideExpressAirportHandoffAt?: unknown;
+  outsideExpressArrivalAt?: unknown;
+  /** When parcel departed hub via bus/air (admin). */
+  departedAt?: unknown;
+  /** Origin city/region label for other-region parcels. */
+  outsideOriginCity?: string;
+  /** Human + QR code for other-region parcels (e.g. DDX-AB12CD). */
+  parcelCode?: string;
+  trackingId?: string;
+  /** Bus-agent match copied from carrierShipments for the customer app. */
+  carrierShipmentId?: string;
+  carrierMatchStatus?: 'matching' | 'offered' | 'accepted';
+  carrierRouteLabel?: string;
+  carrierPickupMode?: string;
+  carrierTrackStep?: string;
+  logisticsStatus?: string;
+  logisticsEvents?: Array<{ status?: string; note?: string; by?: string; at?: unknown }>;
+  carrierRef?: string;
   etaLabel: string;
   fareLabel: string;
   totalLabel: string;
+  fareType?: 'algorithm' | 'negotiated';
+  customerOffer?: number;
+  driverOffer?: number;
+  minFare?: number;
+  distanceKm?: number;
+  lastOfferBy?: 'customer' | 'driver';
+  negotiationStatus?: 'open' | 'confirmed';
+  driverNegotiationUsed?: number;
+  driverOfferNote?: string;
+  customerOfferNote?: string;
+  fareConfirmedAt?: unknown;
+  suggestedFare?: number;
+  suggestedFareMin?: number;
+  suggestedFareMax?: number;
   routeLabel?: string;
   routeGeometry?: string;
   timingMode: DeliveryTimingMode;
@@ -85,6 +151,10 @@ export type DeliveryOrder = {
   scheduleLabel: string;
   recipientName: string;
   recipientPhone: string;
+  paymentMethod?: string;
+  paymentLabel?: string;
+  paymentProvider?: string;
+  paymentType?: string;
   parcelScope?: string;
   parcelTypeKey?: string;
   parcelTypeLabel?: string;
@@ -108,9 +178,13 @@ export type DeliveryOrder = {
   driverId?: string;
   driverName?: string;
   driverPhone?: string;
+  requestedDriverId?: string;
+  requestedDriverName?: string;
   driverVehicleType?: DriverVehicleType;
   driverVehicleLabel?: string;
-  driverPlateNumber?: string;
+    driverPlateNumber?: string;
+  driverVehicleColor?: string;
+  driverPhotoURL?: string;
   driverLatitude?: number;
   driverLongitude?: number;
   driverHeading?: number;
@@ -134,6 +208,24 @@ export type DeliveryOrder = {
   noNearbyDriverReason?: string;
   autoCancelledAt?: unknown;
   autoCancelledReason?: string;
+  ninunulieItemTitle?: string;
+  ninunulieItemDescription?: string;
+  ninunulieExpectedPriceTzs?: string;
+  ninunulieProductUrl?: string;
+  ninunuliePhotoUrls?: string[];
+  ninunulieSellerName?: string;
+  ninunulieSellerPhone?: string;
+  ninunulieSellerRegion?: string;
+  ninunulieSellerNotes?: string;
+  ninunulieCustomerNotes?: string;
+  ninunuliePurchaseAmountTzs?: string;
+  ninunulieOpsNotes?: string;
+  ninunulieFulfillmentChannel?: 'whatsapp' | 'ops_desk';
+  ninunulieWhatsAppPhone?: string;
+  ninunuliePurchased?: boolean;
+  ninunuliePurchasedAt?: unknown;
+  ninunuliePurchasedBy?: string;
+  ninunuliePurchaseNote?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -183,6 +275,7 @@ export type DriverRecord = {
   currentHeading?: number;
   currentSpeedKph?: number;
   currentAccuracyMeters?: number;
+  geohash?: string;
   lastLocationUpdatedAt?: unknown;
   lastActiveAt?: unknown;
   createdAt?: unknown;
@@ -211,9 +304,27 @@ export type CreateDeliveryOrderInput = {
   outsideDestinationLatitude?: number;
   outsideDestinationLongitude?: number;
   outsideParcelWeightKg?: string;
+  declaredValueTzs?: string;
+  contentsDeclarationAccepted?: boolean;
+  outsideShippingMode?: string;
+  outsideHandoffMode?: string;
   etaLabel: string;
   fareLabel: string;
   totalLabel: string;
+  fareType?: 'algorithm' | 'negotiated';
+  customerOffer?: number;
+  driverOffer?: number;
+  minFare?: number;
+  distanceKm?: number;
+  lastOfferBy?: 'customer' | 'driver';
+  negotiationStatus?: 'open' | 'confirmed';
+  driverNegotiationUsed?: number;
+  driverOfferNote?: string;
+  customerOfferNote?: string;
+  fareConfirmedAt?: unknown;
+  suggestedFare?: number;
+  suggestedFareMin?: number;
+  suggestedFareMax?: number;
   routeLabel?: string;
   routeGeometry?: string;
   timingMode: DeliveryTimingMode;
@@ -235,6 +346,16 @@ export type CreateDeliveryOrderInput = {
   durationLabel?: string;
   distanceMeters?: number;
   durationSeconds?: number;
+  requestedDriverId?: string;
+  requestedDriverName?: string;
+  outsideExpressRouteId?: string;
+  outsideExpressDepartureId?: string;
+  outsideExpressDepartureAtMs?: number;
+  outsideExpressDepartureLabel?: string;
+  outsideExpressBookingCutoffAtMs?: number;
+  outsideExpressAirportHandoffAtMs?: number;
+  outsideExpressFirstMileDeadlineAtMs?: number;
+  outsideExpressArrivalOffsetMinutes?: number;
 };
 
 export type CreateDriverInput = Pick<DriverRecord, 'fullName' | 'phoneNumber' | 'vehicleType' | 'vehicleLabel' | 'plateNumber'>;
@@ -262,6 +383,7 @@ export const deliveryOrderStatusOptions: DeliveryOrderStatus[] = [
   'driver_assigned',
   'driver_at_pickup',
   'in_transit',
+  'at_hub',
   'delivered',
   'cancelled',
 ];
@@ -274,7 +396,9 @@ export const DRIVER_SEARCH_TIMEOUT_MS = 1000 * 60 * 10;
 const DRIVER_SEARCH_TIMEOUT_REASON = 'No nearby driver came online in time.';
 const DRIVER_WAITING_UPDATE_THROTTLE_MS = 1000 * 15;
 const RECENT_ORDERS_SUBSCRIPTION_LIMIT = 80;
+const USER_ORDERS_SUBSCRIPTION_LIMIT = 40;
 const LIVE_DRIVER_SUBSCRIPTION_LIMIT = 80;
+const DRIVER_DOC_HEARTBEAT_MS = 45 * 1000;
 const DEFAULT_WEEKLY_SUBSCRIPTION_FEE_TZS = 20000;
 const BODABODA_WEEKLY_SUBSCRIPTION_FEE_TZS = 12000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -286,6 +410,7 @@ const deliveryOrderStatusLabels: Record<DeliveryOrderStatus, string> = {
   driver_assigned: 'Driver assigned',
   driver_at_pickup: 'Driver at pickup',
   in_transit: 'In transit',
+  at_hub: 'At DoorDrop office',
   delivered: 'Delivered',
   cancelled: 'Cancelled',
 };
@@ -310,6 +435,11 @@ const autoMatchServices: Array<{
     aliases: ['kirikuu'],
     preferredVehicleTypes: ['kirikuu'],
   },
+  {
+    key: 'canter',
+    aliases: ['canter', 'center', 'fuso'],
+    preferredVehicleTypes: ['canter'],
+  },
 ];
 
 function orderRef(orderId: string) {
@@ -318,6 +448,10 @@ function orderRef(orderId: string) {
 
 function driverRef(driverId: string) {
   return doc(db, 'drivers', driverId);
+}
+
+function driverLocationRef(driverId: string) {
+  return doc(db, 'driverLocations', driverId);
 }
 
 function toMillis(value: unknown) {
@@ -497,6 +631,9 @@ function normalizeOrderVehicleKey(vehicleKey?: string) {
     truck: 'toyo',
     toyo_xl: 'toyo',
     'toyo-xl': 'toyo',
+    canter: 'canter',
+    center: 'canter',
+    fuso: 'canter',
   };
 
   return aliases[normalized] || normalized || undefined;
@@ -526,13 +663,15 @@ function getVehicleLabelForKey(vehicleKey?: string, fallback?: string) {
     motorbike: 'Bodaboda / Motorcycle',
     toyo: 'TOYO',
     kirikuu: 'Kirikuu',
+    canter: 'Canter',
+    center: 'Canter',
   };
 
   return labels[canonicalVehicleKey || ''] || fallback;
 }
 
 function isCanonicalDriverVehicleType(vehicleKey?: string): vehicleKey is CanonicalDriverVehicleType {
-  return vehicleKey === 'bodaboda' || vehicleKey === 'toyo' || vehicleKey === 'kirikuu';
+  return vehicleKey === 'bodaboda' || vehicleKey === 'toyo' || vehicleKey === 'kirikuu' || vehicleKey === 'canter';
 }
 
 function getServiceMatchConfig(order: DeliveryOrder) {
@@ -553,6 +692,9 @@ function getServiceMatchConfig(order: DeliveryOrder) {
     cargo: 'toyo',
     truck: 'toyo',
     toyo_xl: 'toyo',
+    canter: 'canter',
+    center: 'canter',
+    fuso: 'canter',
   }[cargoVehicleKey];
 
   if (keyMatch) {
@@ -560,6 +702,9 @@ function getServiceMatchConfig(order: DeliveryOrder) {
   }
 
   const text = normalizeText(`${order.serviceLabel} ${order.flow} ${order.cargoVehicleKey} ${order.cargoVehicleLabel}`);
+  if (text.includes('canter') || text.includes('center') || text.includes('fuso')) {
+    return autoMatchServices.find((service) => service.key === 'canter') ?? autoMatchServices[0];
+  }
   if (text.includes('toyo xl')) {
     return autoMatchServices.find((service) => service.key === 'toyo') ?? autoMatchServices[0];
   }
@@ -670,6 +815,8 @@ function buildDriverAssignmentPayload(driver: DriverRecord) {
     driverVehicleType: isCanonicalDriverVehicleType(driverVehicleType) ? driverVehicleType : driver.vehicleType,
     driverVehicleLabel: driver.vehicleLabel || getVehicleLabelForKey(driverVehicleType),
     driverPlateNumber: driver.plateNumber,
+    driverVehicleColor: driver.vehicleColor || '',
+    driverPhotoURL: driver.driverPhotoURL || '',
     driverLatitude: driver.currentLatitude,
     driverLongitude: driver.currentLongitude,
     driverHeading: driver.currentHeading,
@@ -703,7 +850,20 @@ export function hasDeliveryOrderRating(order?: Pick<DeliveryOrder, 'customerRati
   return typeof order?.customerRating === 'number' && order.customerRating >= 1 && order.customerRating <= 5;
 }
 
+/** Ninunulie is WhatsApp + admin ops only — never live-tracked in the customer app. */
+export function isNinunulieOrder(order?: Pick<DeliveryOrder, 'flow' | 'serviceLabel'> | null) {
+  if (!order) return false;
+  const flow = String(order.flow || '').trim().toLowerCase();
+  if (flow === 'ninunulie') return true;
+  return String(order.serviceLabel || '').trim().toLowerCase() === 'ninunulie';
+}
+
 function getDriverSearchExpiryMillis(order: DeliveryOrder) {
+  // Bus/air (outside) parcels stay with the ops desk — never invent a driver-search timeout.
+  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+    return 0;
+  }
+
   const explicitExpiry = toMillis(order.driverSearchExpiresAt);
   if (explicitExpiry) {
     return explicitExpiry;
@@ -728,6 +888,9 @@ function isDriverSearchExpired(order: DeliveryOrder) {
 }
 
 function isImmediatePendingWithoutDriver(order: DeliveryOrder) {
+  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+    return false;
+  }
   return order.status === 'pending_assignment' && !order.driverId && order.timingMode !== 'later';
 }
 
@@ -778,6 +941,11 @@ async function markOrderWaitingForDriver(order: DeliveryOrder, reason = 'No onli
 }
 
 export async function autoCancelOrderIfDriverSearchExpired(order: DeliveryOrder) {
+  // Outside (bus/air) orders are managed by admin only — never auto-cancel.
+  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+    return false;
+  }
+
   if (!isImmediatePendingWithoutDriver(order) || !isDriverSearchExpired(order)) {
     return false;
   }
@@ -828,6 +996,10 @@ export async function autoCancelOrderIfDriverSearchExpired(order: DeliveryOrder)
 }
 
 export async function autoAssignDriverToOrder(order: DeliveryOrder) {
+  if (isOutsideParcelOrder(order) || order.fareType === 'negotiated') {
+    return;
+  }
+
   if (order.status !== 'pending_assignment' || order.timingMode === 'later') {
     return;
   }
@@ -837,7 +1009,20 @@ export async function autoAssignDriverToOrder(order: DeliveryOrder) {
   }
 
   try {
-    const driversSnapshot = await getDocs(driversCollection);
+    const pickupLat = Number(order.pickupLatitude);
+    const pickupLng = Number(order.pickupLongitude);
+    const nearbyCells = Number.isFinite(pickupLat) && Number.isFinite(pickupLng)
+      ? cellsNear(pickupLat, pickupLng, 6).slice(0, 9)
+      : [];
+    const driversQuery = nearbyCells.length
+      ? query(
+          driversCollection,
+          where('isAvailable', '==', true),
+          where('geohash', 'in', nearbyCells),
+          firestoreLimit(32)
+        )
+      : query(driversCollection, where('isAvailable', '==', true), firestoreLimit(32));
+    const driversSnapshot = await getDocs(driversQuery);
     const drivers = getSnapshotItems<DriverRecord>(driversSnapshot.docs);
     const bestMatch = await selectBestAssignableAutoMatch(order, drivers);
 
@@ -869,6 +1054,127 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
   const orderNumber = getGeneratedOrderNumber(nextOrderRef.id);
   const cargoVehicleKey = normalizeOrderVehicleKey(input.cargoVehicleKey);
   const cargoVehicleLabel = getVehicleLabelForKey(cargoVehicleKey, input.cargoVehicleLabel);
+
+  const resolveExpressRouteForValidation = (routeId?: string) => {
+    const normalizedId = String(routeId || '').trim();
+    if (!normalizedId) {
+      return null;
+    }
+
+    const parsed = parseOutsideExpressRouteId(normalizedId);
+    if (!parsed) {
+      return null;
+    }
+
+    return normalizeOutsideExpressRouteSchedule({
+      id: normalizedId,
+      originCityKey: parsed.originCityKey,
+      destinationCityKey: parsed.destinationCityKey,
+      departures: [],
+    });
+  };
+
+  const resolveLabel = (label: string | undefined, latitude?: number, longitude?: number) => {
+    const trimmed = String(label ?? '').trim();
+    if (trimmed && !isWeakPlaceName(trimmed)) {
+      return trimmed;
+    }
+    if (typeof latitude === 'number' && typeof longitude === 'number') {
+      return formatExactCoordinateLabel({ latitude, longitude });
+    }
+    return trimmed || 'Selected place';
+  };
+
+  const pickupLabel = resolveLabel(input.pickupLabel, input.pickupLatitude, input.pickupLongitude);
+  const dropoffLabel = resolveLabel(input.dropoffLabel, input.dropoffLatitude, input.dropoffLongitude);
+  const outsideDestinationLabel = input.outsideDestinationLabel
+    ? resolveLabel(
+        input.outsideDestinationLabel,
+        input.outsideDestinationLatitude,
+        input.outsideDestinationLongitude
+      )
+    : input.outsideDestinationLabel;
+
+  const isOutside = isOutsideParcelOrder({
+    parcelScope: input.parcelScope,
+    outsideDestinationCity: input.outsideDestinationCity,
+    outsideDestinationLabel: outsideDestinationLabel,
+    outsideShippingMode: input.outsideShippingMode,
+  });
+
+  if (isOutside && input.outsideShippingMode === 'express') {
+    if (!input.outsideExpressDepartureId || !input.outsideExpressDepartureAtMs || input.outsideExpressDepartureAtMs <= 0) {
+      throw new Error('Choose an available flight before placing this express parcel order.');
+    }
+
+    if (input.timingMode === 'later') {
+      throw new Error('Express flight parcels must be collected now to meet the departure window.');
+    }
+
+    const expressRoute = resolveExpressRouteForValidation(input.outsideExpressRouteId);
+    if (expressRoute) {
+      assertExpressDepartureBookable({
+        route: expressRoute,
+        departureAtMs: input.outsideExpressDepartureAtMs,
+        bookingCutoffAtMs: input.outsideExpressBookingCutoffAtMs,
+        airportHandoffAtMs: input.outsideExpressAirportHandoffAtMs,
+        firstMileDeadlineAtMs: input.outsideExpressFirstMileDeadlineAtMs,
+        firstMileMinutes: resolveExpressFirstMileMinutes({
+          route: expressRoute,
+          routeDurationSeconds: input.durationSeconds,
+        }),
+      });
+    } else {
+      const now = Date.now();
+      if (input.outsideExpressBookingCutoffAtMs && now >= input.outsideExpressBookingCutoffAtMs) {
+        throw new Error('This flight booking window has closed. Choose another departure.');
+      }
+      if (input.outsideExpressFirstMileDeadlineAtMs && now >= input.outsideExpressFirstMileDeadlineAtMs) {
+        throw new Error(
+          'Not enough time to collect your parcel and deliver it to the airport before this flight. Choose a later departure.'
+        );
+      }
+    }
+  }
+
+  const parcelCode = isOutside ? generateOutsideParcelCode(nextOrderRef.id) : undefined;
+  const outsideOriginCity =
+    isOutside &&
+    typeof input.pickupLatitude === 'number' &&
+    typeof input.pickupLongitude === 'number'
+      ? getNearestServiceCity({
+          latitude: input.pickupLatitude,
+          longitude: input.pickupLongitude,
+        }).label
+      : isOutside
+        ? 'Dar es Salaam'
+        : undefined;
+  const initialLogisticsEvent = isOutside
+    ? makeLogisticsEvent(
+        'awaiting_dispatch',
+        'Order received. DoorDrop office will arrange pickup to the hub.',
+        'system'
+      )
+    : undefined;
+  const publicSummary =
+    isOutside && parcelCode
+      ? buildOutsideParcelPublicSummary({
+          parcelCode,
+          orderId: nextOrderRef.id,
+          orderNumber,
+          originCity: outsideOriginCity,
+          destinationCity: input.outsideDestinationCity,
+          destinationStand: input.outsideDestinationStand || outsideDestinationLabel,
+          shippingMode: input.outsideShippingMode,
+          handoffMode: input.outsideHandoffMode,
+          weightKg: input.outsideParcelWeightKg,
+          recipientName: input.recipientName,
+          recipientPhone: input.recipientPhone,
+          fareLabel: input.totalLabel || input.fareLabel,
+          logisticsStatus: 'awaiting_dispatch',
+        })
+      : undefined;
+
   const order: Omit<DeliveryOrder, 'createdAt' | 'updatedAt' | 'assignedAt'> = {
     id: nextOrderRef.id,
     orderNumber,
@@ -879,8 +1185,8 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     flow: input.flow,
     serviceLabel: input.serviceLabel,
     status: 'pending_assignment',
-    pickupLabel: input.pickupLabel,
-    dropoffLabel: input.dropoffLabel,
+    pickupLabel,
+    dropoffLabel,
     pickupLatitude: input.pickupLatitude,
     pickupLongitude: input.pickupLongitude,
     dropoffLatitude: input.dropoffLatitude,
@@ -888,16 +1194,39 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     driverDropoffLabel: input.driverDropoffLabel,
     driverDropoffLatitude: input.driverDropoffLatitude,
     driverDropoffLongitude: input.driverDropoffLongitude,
-    outsideDestinationLabel: input.outsideDestinationLabel,
+    outsideDestinationLabel,
     outsideDestinationCity: input.outsideDestinationCity,
     outsideDestinationStand: input.outsideDestinationStand,
     outsideDestinationLatitude: input.outsideDestinationLatitude,
     outsideDestinationLongitude: input.outsideDestinationLongitude,
     outsideParcelWeightKg: input.outsideParcelWeightKg,
+    declaredValueTzs: input.declaredValueTzs,
+    contentsDeclarationAccepted: input.contentsDeclarationAccepted === true ? true : undefined,
+    contentsDeclarationAcceptedAt: input.contentsDeclarationAccepted === true ? serverTimestamp() : undefined,
+    outsideShippingMode: input.outsideShippingMode,
+    outsideHandoffMode: input.outsideHandoffMode,
+    outsideOriginCity,
+    parcelCode,
+    trackingId: parcelCode,
+    logisticsStatus: isOutside ? 'awaiting_dispatch' : undefined,
+    logisticsEvents: initialLogisticsEvent ? [initialLogisticsEvent] : undefined,
     etaLabel: input.etaLabel,
     fareLabel: input.fareLabel,
     totalLabel: input.totalLabel,
-    routeLabel: input.routeLabel,
+    fareType: input.fareType,
+    customerOffer: input.customerOffer,
+    driverOffer: input.driverOffer,
+    minFare: input.minFare,
+    distanceKm: input.distanceKm,
+    lastOfferBy: input.lastOfferBy,
+    negotiationStatus: input.negotiationStatus,
+    driverNegotiationUsed: input.driverNegotiationUsed,
+    customerOfferNote: input.customerOfferNote,
+    fareConfirmedAt: input.fareConfirmedAt,
+    suggestedFare: input.suggestedFare,
+    suggestedFareMin: input.suggestedFareMin,
+    suggestedFareMax: input.suggestedFareMax,
+    routeLabel: input.routeLabel || `${pickupLabel} to ${dropoffLabel}`,
     routeGeometry: input.routeGeometry,
     timingMode: input.timingMode,
     scheduleDate: input.scheduleDate,
@@ -918,12 +1247,55 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     durationLabel: input.durationLabel,
     distanceMeters: input.distanceMeters,
     durationSeconds: input.durationSeconds,
-    driverSearchStatus: input.timingMode === 'later' ? undefined : 'searching',
-    driverSearchMessage: input.timingMode === 'later'
-      ? undefined
-      : `Looking for the nearest online ${cargoVehicleLabel || input.serviceLabel} driver.`,
-    driverSearchStartedAt: input.timingMode === 'later' ? undefined : serverTimestamp(),
-    driverSearchExpiresAt: input.timingMode === 'later' ? undefined : new Date(Date.now() + DRIVER_SEARCH_TIMEOUT_MS),
+    requestedDriverId: input.requestedDriverId,
+    requestedDriverName: input.requestedDriverName,
+    assignmentMode: isOutside ? 'ops_desk' : undefined,
+    driverSearchStatus: isOutside
+      ? 'ops_desk'
+      : input.timingMode === 'later'
+        ? undefined
+        : 'searching',
+    driverSearchMessage: isOutside
+      ? 'DoorDrop central office will assign a driver to collect your parcel.'
+      : input.timingMode === 'later'
+        ? undefined
+        : input.flow === 'cargo' && input.fareType === 'negotiated'
+          ? `Tunatafuta rider kwa bei yako ya ${input.fareLabel}.`
+          : `Looking for the nearest online ${cargoVehicleLabel || input.serviceLabel} driver.`,
+    driverSearchStartedAt: isOutside || input.timingMode === 'later' ? undefined : serverTimestamp(),
+    driverSearchExpiresAt:
+      isOutside || input.timingMode === 'later' ? undefined : new Date(Date.now() + DRIVER_SEARCH_TIMEOUT_MS),
+    ...(isOutside && typeof input.outsideExpressDepartureAtMs === 'number' && input.outsideExpressDepartureAtMs > 0
+      ? {
+          outsideExpressRouteId: input.outsideExpressRouteId,
+          outsideExpressDepartureId: input.outsideExpressDepartureId,
+          outsideExpressDepartureAt: new Date(input.outsideExpressDepartureAtMs),
+          outsideExpressDepartureLabel: input.outsideExpressDepartureLabel,
+          outsideExpressBookingCutoffAt:
+            typeof input.outsideExpressBookingCutoffAtMs === 'number' && input.outsideExpressBookingCutoffAtMs > 0
+              ? new Date(input.outsideExpressBookingCutoffAtMs)
+              : undefined,
+          outsideExpressAirportHandoffAt:
+            typeof input.outsideExpressAirportHandoffAtMs === 'number' && input.outsideExpressAirportHandoffAtMs > 0
+              ? new Date(input.outsideExpressAirportHandoffAtMs)
+              : undefined,
+          outsideExpressArrivalAt: new Date(
+            input.outsideExpressDepartureAtMs +
+              Math.max(1, input.outsideExpressArrivalOffsetMinutes ?? 30) * 60 * 1000
+          ),
+          outsideCountdownStartedAt: serverTimestamp(),
+          outsideEtaDeadlineAt: new Date(
+            typeof input.outsideExpressAirportHandoffAtMs === 'number' && input.outsideExpressAirportHandoffAtMs > 0
+              ? input.outsideExpressAirportHandoffAtMs
+              : input.outsideExpressDepartureAtMs - 90 * 60 * 1000
+          ),
+        }
+      : isOutside && typeof input.durationSeconds === 'number' && input.durationSeconds > 0
+        ? {
+            outsideCountdownStartedAt: serverTimestamp(),
+            outsideEtaDeadlineAt: new Date(Date.now() + input.durationSeconds * 1000),
+          }
+        : {}),
   };
 
   await setDoc(
@@ -934,6 +1306,39 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
       updatedAt: serverTimestamp(),
     })
   );
+
+  if (publicSummary && parcelCode) {
+    try {
+      await setDoc(
+        doc(db, 'publicParcels', parcelCode),
+        compactFirestoreData({
+          ...publicSummary,
+          parcelCode,
+          orderId: nextOrderRef.id,
+          orderNumber,
+          originCity: outsideOriginCity,
+          destinationCity: input.outsideDestinationCity,
+          destinationStand: input.outsideDestinationStand || outsideDestinationLabel,
+          shippingMode: input.outsideShippingMode,
+          handoffMode: input.outsideHandoffMode,
+          weightKg: input.outsideParcelWeightKg,
+          recipientName: input.recipientName,
+          recipientPhoneMasked: publicSummary.phone,
+          fareLabel: input.totalLabel || input.fareLabel,
+          logisticsStatus: 'awaiting_dispatch',
+          updatedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+        }),
+        { merge: true }
+      );
+    } catch (error) {
+      logWarning(dataScope, 'publicParcels write skipped', {
+        orderId: nextOrderRef.id,
+        parcelCode,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   try {
     await createOrderStatusNotification({
@@ -952,9 +1357,219 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     });
   }
 
-  void autoAssignDriverToOrder(order);
+  if (!isOutside) {
+    void autoAssignDriverToOrder(order);
+  }
 
   return order;
+}
+
+export type CreateNinunulieOrderInput = {
+  userId: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  deliveryLabel: string;
+  deliveryLatitude?: number;
+  deliveryLongitude?: number;
+  itemTitle: string;
+  itemDescription?: string;
+  expectedPriceTzs?: string;
+  productUrl?: string;
+  photoUrls?: string[];
+  sellerName: string;
+  sellerPhone?: string;
+  sellerRegion: string;
+  sellerNotes?: string;
+  customerNotes?: string;
+  timingMode?: DeliveryTimingMode;
+  scheduleDate?: string;
+  scheduleTime?: string;
+  scheduleLabel?: string;
+  fulfillmentChannel?: 'whatsapp' | 'ops_desk';
+};
+
+const HAUL_SOURCE_PHONE = 'HAUL-SOURCE';
+
+export async function createNinunulieOrder(input: CreateNinunulieOrderInput) {
+  const userId = String(input.userId || '').trim();
+  const customerPhone = String(input.customerPhone || '').trim();
+  const itemTitle = String(input.itemTitle || '').trim();
+  const sellerRegion = String(input.sellerRegion || '').trim();
+  const deliveryLabel = String(input.deliveryLabel || '').trim();
+  const requestedPhone = String(input.sellerPhone || '').trim();
+  const opsSourced =
+    input.fulfillmentChannel === 'ops_desk' ||
+    !requestedPhone ||
+    requestedPhone === HAUL_SOURCE_PHONE;
+  const sellerPhone = opsSourced ? HAUL_SOURCE_PHONE : requestedPhone;
+  const sellerName =
+    String(input.sellerName || '').trim() ||
+    (opsSourced ? `HAUL itatafuta · ${sellerRegion || 'Kariakoo'}` : '');
+
+  if (!userId) {
+    throw new Error('Ingia akaunti kabla ya kutuma oda ya Ninunulie.');
+  }
+  if (!customerPhone) {
+    throw new Error('Weka namba yako ya simu.');
+  }
+  if (!itemTitle) {
+    throw new Error('Eleza bidhaa unayotaka kununuliwa.');
+  }
+  if (!sellerName || !sellerRegion) {
+    throw new Error('Chagua soko au duka.');
+  }
+  if (!deliveryLabel) {
+    throw new Error('Chagua mahali pa kukabidhiwa.');
+  }
+
+  const nextOrderRef = doc(ordersCollection);
+  const orderNumber = getGeneratedOrderNumber(nextOrderRef.id);
+  const photoUrls = (input.photoUrls || []).map((url) => String(url || '').trim()).filter(Boolean);
+  const expectedPrice = String(input.expectedPriceTzs || '').trim();
+  const productUrl = String(input.productUrl || '').trim();
+  const itemDescription = String(input.itemDescription || '').trim();
+  const sellerNotes = String(input.sellerNotes || '').trim();
+  const customerNotes = String(input.customerNotes || '').trim();
+  const customerName = String(input.customerName || '').trim() || 'DoorDrop customer';
+  const timingMode: DeliveryTimingMode = input.timingMode === 'later' ? 'later' : 'now';
+  const scheduleDate = String(input.scheduleDate || '').trim();
+  const scheduleTime = String(input.scheduleTime || '').trim();
+  const scheduleLabel =
+    String(input.scheduleLabel || '').trim() ||
+    (timingMode === 'later' && scheduleDate
+      ? `Ratiba · ${scheduleDate}${scheduleTime ? ` ${scheduleTime}` : ''}`
+      : 'Sasa');
+
+  const order: Omit<DeliveryOrder, 'createdAt' | 'updatedAt' | 'assignedAt'> = {
+    id: nextOrderRef.id,
+    orderNumber,
+    userId,
+    customerName,
+    customerEmail: String(input.customerEmail || '').trim(),
+    customerPhone,
+    flow: 'ninunulie',
+    serviceLabel: 'Ninunulie',
+    status: 'pending_assignment',
+    pickupLabel: `${sellerName} · ${sellerRegion}`,
+    dropoffLabel: deliveryLabel,
+    pickupLatitude: undefined,
+    pickupLongitude: undefined,
+    dropoffLatitude: input.deliveryLatitude,
+    dropoffLongitude: input.deliveryLongitude,
+    etaLabel: timingMode === 'later' ? scheduleLabel : 'Ops itakuhabarisha',
+    fareLabel: expectedPrice ? `TZS ${expectedPrice}` : 'Bei baadaye',
+    totalLabel: expectedPrice ? `TZS ${expectedPrice}` : 'Bei baadaye',
+    routeLabel: `${sellerRegion} → ${deliveryLabel}`,
+    timingMode,
+    scheduleDate: timingMode === 'later' ? scheduleDate || undefined : undefined,
+    scheduleTime: timingMode === 'later' ? scheduleTime || undefined : undefined,
+    scheduleLabel,
+    recipientName: customerName,
+    recipientPhone: customerPhone,
+    paymentMethod: 'mobile_money',
+    paymentLabel: 'Malipo kwa namba ya duka',
+    paymentProvider: 'phone',
+    paymentType: 'agent_supervised',
+    assignmentMode: 'ops_desk',
+    driverSearchStatus: 'ops_desk',
+    driverSearchMessage:
+      'Oda inashughulikiwa na admin / agent. Haitatafutwa dereva otomatiki.',
+    ninunulieItemTitle: itemTitle,
+    ninunulieItemDescription: itemDescription || undefined,
+    ninunulieExpectedPriceTzs: expectedPrice || undefined,
+    ninunulieProductUrl: productUrl || undefined,
+    ninunuliePhotoUrls: photoUrls.length ? photoUrls : undefined,
+    ninunulieSellerName: sellerName,
+    ninunulieSellerPhone: sellerPhone,
+    ninunulieSellerRegion: sellerRegion,
+    ninunulieSellerNotes: sellerNotes || undefined,
+    ninunulieCustomerNotes: customerNotes || undefined,
+    ninunulieFulfillmentChannel: opsSourced ? 'ops_desk' : input.fulfillmentChannel || 'whatsapp',
+    ninunulieWhatsAppPhone: '0785019093',
+  };
+
+  await setDoc(
+    nextOrderRef,
+    compactFirestoreData({
+      ...order,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  try {
+    await createOrderStatusNotification({
+      userId,
+      orderId: order.id,
+      orderNumber,
+      serviceLabel: 'Ninunulie',
+      status: 'pending_assignment',
+    });
+  } catch (error) {
+    logWarning(dataScope, 'createNinunulieOrder notification skipped after order save', {
+      orderId: order.id,
+      orderNumber,
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    await recordAppActivity({
+      userId,
+      userName: customerName,
+      userRole: 'customer',
+      eventName: 'order_created',
+      featureKey: 'ninunulie',
+      featureLabel: 'Ninunulie',
+      screen: 'ninunulie',
+      route: '/ninunulie',
+      metadata: {
+        orderId: order.id,
+        orderNumber,
+        sellerRegion,
+      },
+    });
+  } catch {
+    // non-blocking
+  }
+
+  return order;
+}
+
+/** Persist outside ETA countdown anchor once (survives track screen reopen). */
+export async function ensureOutsideOrderCountdownAnchor(order: DeliveryOrder) {
+  if (!isOutsideParcelOrder(order)) {
+    return;
+  }
+
+  if (['delivered', 'cancelled'].includes(order.status)) {
+    return;
+  }
+
+  if (toMillis(order.outsideEtaDeadlineAt) > 0) {
+    return;
+  }
+
+  const durationSeconds =
+    typeof order.durationSeconds === 'number' && order.durationSeconds > 0
+      ? order.durationSeconds
+      : getOutsideParcelDurationSecondsForOrder(order);
+
+  if (durationSeconds <= 0) {
+    return;
+  }
+
+  const startedAt = new Date();
+  await updateDoc(
+    orderRef(order.id),
+    compactFirestoreData({
+      outsideCountdownStartedAt: serverTimestamp(),
+      outsideEtaDeadlineAt: new Date(startedAt.getTime() + durationSeconds * 1000),
+      updatedAt: serverTimestamp(),
+    })
+  );
 }
 
 export function subscribeToOrders(
@@ -977,7 +1592,12 @@ export function subscribeToUserOrders(
   callback: (orders: DeliveryOrder[]) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  const userOrdersQuery = query(ordersCollection, where('userId', '==', userId));
+  const userOrdersQuery = query(
+    ordersCollection,
+    where('userId', '==', userId),
+    orderBy('createdAt', 'desc'),
+    firestoreLimit(USER_ORDERS_SUBSCRIPTION_LIMIT)
+  );
 
   return onSnapshot(
     userOrdersQuery,
@@ -1005,6 +1625,60 @@ export function subscribeToOrder(
     },
     (error) => onError?.(error)
   );
+}
+
+export type DriverLocationRecord = {
+  id: string;
+  latitude?: number;
+  longitude?: number;
+  heading?: number;
+  updatedAt?: unknown;
+};
+
+export function subscribeToDriverLocations(
+  callback: (locations: Record<string, DriverLocationRecord>) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  const locationsQuery = query(collection(db, 'driverLocations'), firestoreLimit(LIVE_DRIVER_SUBSCRIPTION_LIMIT));
+
+  return onSnapshot(
+    locationsQuery,
+    (snapshot) => {
+      const next: Record<string, DriverLocationRecord> = {};
+      snapshot.docs.forEach((item) => {
+        next[item.id] = { id: item.id, ...(item.data() as Omit<DriverLocationRecord, 'id'>) };
+      });
+      callback(next);
+    },
+    (error) => onError?.(error)
+  );
+}
+
+export function mergeDriverLivePositions(
+  drivers: DriverRecord[],
+  locations: Record<string, DriverLocationRecord>
+): DriverRecord[] {
+  return drivers.map((driver) => {
+    const live = locations[driver.id];
+    const latitude = Number(live?.latitude ?? driver.currentLatitude);
+    const longitude = Number(live?.longitude ?? driver.currentLongitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return {
+        ...driver,
+        currentLatitude: undefined,
+        currentLongitude: undefined,
+      };
+    }
+
+    return {
+      ...driver,
+      currentLatitude: latitude,
+      currentLongitude: longitude,
+      currentHeading: Number.isFinite(Number(live?.heading ?? driver.currentHeading))
+        ? Number(live?.heading ?? driver.currentHeading)
+        : driver.currentHeading,
+    };
+  });
 }
 
 export function subscribeToDrivers(
@@ -1263,9 +1937,13 @@ export async function assignDriverToOrder(
       });
     }
 
+    const driverPayload = buildDriverAssignmentPayload(driver);
+    if (order.fareType === 'negotiated') {
+      delete driverPayload.acceptedByDriverAt;
+    }
     transaction.update(orderRef(orderId), compactFirestoreData({
       status: 'driver_assigned',
-      ...buildDriverAssignmentPayload(driver),
+      ...driverPayload,
       assignmentMode: assignment.mode || 'manual',
       assignmentScore: Number.isFinite(assignment.score) ? Math.round(Number(assignment.score) * 100) / 100 : undefined,
       assignmentReason: assignment.reason?.trim() || undefined,
@@ -1365,6 +2043,49 @@ export async function unassignDriverFromOrder(orderId: string) {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+export async function updateCargoNegotiation(
+  orderId: string,
+  patch: {
+    customerOffer?: number;
+    driverOffer?: number;
+    lastOfferBy?: 'customer' | 'driver';
+    fareLabel?: string;
+    totalLabel?: string;
+    negotiationStatus?: 'open' | 'confirmed';
+    fareConfirmedAt?: unknown;
+    cargoVehicleKey?: string;
+    cargoVehicleLabel?: string;
+    serviceLabel?: string;
+    customerOfferNote?: string;
+    customerPhone?: string;
+    recipientPhone?: string;
+  }
+) {
+  const confirming = patch.negotiationStatus === 'confirmed';
+  const orderSnapshot = confirming ? await getDoc(orderRef(orderId)) : null;
+  const order = orderSnapshot?.exists()
+    ? ({ id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) })
+    : null;
+  const agreedAmount =
+    confirming && typeof patch.customerOffer === 'number' && patch.customerOffer > 0
+      ? patch.customerOffer
+      : confirming && typeof order?.driverOffer === 'number' && order.driverOffer > 0
+        ? order.driverOffer
+        : undefined;
+  const phase = order ? cargoAgreementPhase(order) : 'open';
+  const canAcceptNow = phase === 'open' || phase === 'negotiating';
+
+  await updateDoc(orderRef(orderId), compactFirestoreData({
+    ...patch,
+    customerOffer: agreedAmount ?? patch.customerOffer,
+    driverOffer: confirming ? agreedAmount ?? patch.driverOffer ?? order?.driverOffer : patch.driverOffer,
+    status: confirming && canAcceptNow ? 'driver_assigned' : undefined,
+    fareConfirmedAt:
+      confirming ? patch.fareConfirmedAt || serverTimestamp() : patch.fareConfirmedAt,
+    updatedAt: serverTimestamp(),
+  }));
 }
 
 export async function updateDeliveryOrderStatus(orderId: string, status: DeliveryOrderStatus) {
@@ -1551,17 +2272,39 @@ export async function updateDriverLocation(driverId: string, location: UpdateDri
   }
 
   const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
-  const driverPayload = compactFirestoreData({
-    currentLatitude: location.latitude,
-    currentLongitude: location.longitude,
-    currentHeading: location.heading,
-    currentSpeedKph: location.speedKph,
-    currentAccuracyMeters: location.accuracyMeters,
-    lastLocationUpdatedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  const geohash = encodeGeohash(location.latitude, location.longitude, 6);
+  const heartbeatDue = Date.now() - toMillis(driver.lastLocationUpdatedAt) >= DRIVER_DOC_HEARTBEAT_MS;
+  const cellChanged = geohash !== driver.geohash;
 
-  await updateDoc(driverRef(driverId), driverPayload);
+  await setDoc(
+    driverLocationRef(driverId),
+    compactFirestoreData({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      heading: location.heading,
+      speedKph: location.speedKph,
+      accuracyMeters: location.accuracyMeters,
+      geohash,
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  if (cellChanged || heartbeatDue || !driver.geohash) {
+    await updateDoc(
+      driverRef(driverId),
+      compactFirestoreData({
+        currentLatitude: location.latitude,
+        currentLongitude: location.longitude,
+        currentHeading: location.heading,
+        currentSpeedKph: location.speedKph,
+        currentAccuracyMeters: location.accuracyMeters,
+        geohash,
+        lastLocationUpdatedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
+  }
 
   if (!driver.currentOrderId) {
     return;

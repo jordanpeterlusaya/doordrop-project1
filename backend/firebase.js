@@ -1,29 +1,51 @@
 const { onRequest } = require('firebase-functions/v2/https');
 const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { cert, initializeApp } = require('firebase-admin/app');
+const { defineString } = require('firebase-functions/params');
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 
 const { config } = require('./config');
-const { requestListener } = require('./server');
-const {
-  autoAssignOrderById,
-  maybeRunQueueForDriverChange,
-  runAutoAssignmentQueue,
-} = require('./auto-assignment');
 
-const firebaseAdminOptions = {};
-if (config.firebaseServiceAccount) {
-  firebaseAdminOptions.credential = cert(config.firebaseServiceAccount);
-}
-if (config.firebaseProjectId || config.firebaseServiceAccount?.project_id) {
-  firebaseAdminOptions.projectId = config.firebaseProjectId || config.firebaseServiceAccount?.project_id;
+const mongikeApiKey = defineString('MONGIKE_API_KEY');
+const googleServerApiKey = defineString('GOOGLE_SERVER_API_KEY');
+
+let firestore = null;
+let cachedRequestListener = null;
+let autoAssignmentModule = null;
+
+function ensureFirebaseAdmin() {
+  if (getApps().length) {
+    return;
+  }
+
+  const firebaseAdminOptions = {};
+  if (config.firebaseServiceAccount) {
+    firebaseAdminOptions.credential = cert(config.firebaseServiceAccount);
+  }
+  if (config.firebaseProjectId || config.firebaseServiceAccount?.project_id) {
+    firebaseAdminOptions.projectId = config.firebaseProjectId || config.firebaseServiceAccount?.project_id;
+  }
+
+  initializeApp(firebaseAdminOptions);
 }
 
-initializeApp(firebaseAdminOptions);
+function getFirestoreDb() {
+  ensureFirebaseAdmin();
+  if (!firestore) {
+    firestore = getFirestore();
+  }
+  return firestore;
+}
+
+function getAutoAssignment() {
+  if (!autoAssignmentModule) {
+    autoAssignmentModule = require('./auto-assignment');
+  }
+  return autoAssignmentModule;
+}
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
-const firestore = getFirestore();
 
 function isExpoPushToken(token) {
   return /^Expo(nent)?PushToken\[[^\]]+\]$/.test(String(token || '').trim());
@@ -50,7 +72,7 @@ function buildPushData(notificationId, notification) {
 }
 
 async function markNotificationPushStatus(notificationId, payload) {
-  await firestore
+  await getFirestoreDb()
     .collection('userNotifications')
     .doc(notificationId)
     .set(
@@ -88,6 +110,7 @@ async function sendExpoPushNotification(notificationId, notification, user) {
       channelId: 'default',
       data: buildPushData(notificationId, notification),
     }),
+    signal: AbortSignal.timeout(12_000),
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -103,15 +126,51 @@ async function sendExpoPushNotification(notificationId, notification, user) {
   });
 }
 
+function applyRuntimeSecrets() {
+  try {
+    process.env.MONGIKE_API_KEY = mongikeApiKey.value();
+  } catch {
+    process.env.MONGIKE_API_KEY = process.env.MONGIKE_API_KEY || '';
+  }
+
+  try {
+    process.env.GOOGLE_SERVER_API_KEY = googleServerApiKey.value();
+  } catch {
+    process.env.GOOGLE_SERVER_API_KEY = process.env.GOOGLE_SERVER_API_KEY || '';
+  }
+
+  const googleKey = String(process.env.GOOGLE_SERVER_API_KEY || '').trim();
+  if (googleKey) {
+    config.googlePlacesApiKey = googleKey;
+    config.googleRoutesApiKey = googleKey;
+  }
+}
+
+function getRequestListener() {
+  if (!cachedRequestListener) {
+    applyRuntimeSecrets();
+    cachedRequestListener = require('./server').requestListener;
+  }
+  return cachedRequestListener;
+}
+
+function handleApiRequest(req, res) {
+  applyRuntimeSecrets();
+  return getRequestListener()(req, res);
+}
+
 exports.api = onRequest(
   {
     region: 'us-central1',
     timeoutSeconds: 60,
-    memory: '256MiB',
-    maxInstances: 10,
+    memory: '1GiB',
+    cpu: 1,
+    concurrency: 40,
+    minInstances: 0,
+    maxInstances: 40,
     cors: false,
   },
-  requestListener
+  handleApiRequest
 );
 
 exports.onOrderCreatedAutoAssign = onDocumentCreated(
@@ -119,9 +178,10 @@ exports.onOrderCreatedAutoAssign = onDocumentCreated(
     document: 'orders/{orderId}',
     region: 'us-central1',
     retry: false,
-    timeoutSeconds: 60,
-    memory: '512MiB',
-    minInstances: 1,
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 20,
   },
   async (event) => {
     const snapshot = event.data;
@@ -129,7 +189,8 @@ exports.onOrderCreatedAutoAssign = onDocumentCreated(
       return;
     }
 
-    await autoAssignOrderById(firestore, event.params.orderId);
+    const { autoAssignOrderById } = getAutoAssignment();
+    await autoAssignOrderById(getFirestoreDb(), event.params.orderId);
   }
 );
 
@@ -138,9 +199,10 @@ exports.onDriverAvailabilityAutoAssign = onDocumentUpdated(
     document: 'drivers/{driverId}',
     region: 'us-central1',
     retry: false,
-    timeoutSeconds: 60,
-    memory: '512MiB',
-    minInstances: 1,
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 10,
   },
   async (event) => {
     const before = event.data?.before?.data();
@@ -149,11 +211,62 @@ exports.onDriverAvailabilityAutoAssign = onDocumentUpdated(
       return;
     }
 
+    const { maybeRunQueueForDriverChange } = getAutoAssignment();
     await maybeRunQueueForDriverChange(
-      firestore,
+      getFirestoreDb(),
       before ? { id: event.params.driverId, ...before } : null,
       { id: event.params.driverId, ...after }
     );
+  }
+);
+
+exports.onParcelOrderMatchCarrier = onDocumentCreated(
+  {
+    document: 'orders/{orderId}',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 10,
+  },
+  async (event) => {
+    if (!event.data) return;
+    const { matchOrderById } = require('./carrier-matching');
+    await matchOrderById(getFirestoreDb(), event.params.orderId);
+  }
+);
+
+exports.advanceCarrierOffers = onSchedule(
+  {
+    schedule: 'every 2 minutes',
+    region: 'us-central1',
+    retryCount: 0,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+  },
+  async () => {
+    const { advanceCarrierOffers } = require('./carrier-matching');
+    await advanceCarrierOffers(getFirestoreDb());
+  }
+);
+
+exports.onCarrierShipmentRematch = onDocumentUpdated(
+  {
+    document: 'carrierShipments/{orderId}',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 10,
+  },
+  async (event) => {
+    const before = event.data?.before?.data() || null;
+    const after = event.data?.after?.data() || null;
+    if (!after) return;
+    const { syncCarrierShipment } = require('./carrier-matching');
+    await syncCarrierShipment(getFirestoreDb(), event.params.orderId, before, after);
   }
 );
 
@@ -166,7 +279,8 @@ exports.autoAssignPendingOrders = onSchedule(
     memory: '256MiB',
   },
   async () => {
-    await runAutoAssignmentQueue(firestore);
+    const { runAutoAssignmentQueue } = getAutoAssignment();
+    await runAutoAssignmentQueue(getFirestoreDb());
   }
 );
 
@@ -186,7 +300,7 @@ exports.onUserNotificationCreated = onDocumentCreated(
       return;
     }
 
-    const userSnapshot = await firestore.collection('users').doc(userId).get();
+    const userSnapshot = await getFirestoreDb().collection('users').doc(userId).get();
     if (!userSnapshot.exists) {
       await markNotificationPushStatus(notificationId, {
         pushStatus: 'skipped',
