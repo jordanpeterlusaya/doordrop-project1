@@ -326,17 +326,88 @@ function customerBusView(shipment) {
   return { matchStatus, routeLabel, pickupMode, trackStep: step, done };
 }
 
+async function resolveCustomerBusLabel(db, shipment) {
+  let carrierBusName = String(shipment?.routeLabel || '').trim();
+  const routeId = String(shipment?.routeId || '').trim();
+  if (routeId) {
+    const routeSnap = await db.collection('carrierRoutes').doc(routeId).get();
+    if (routeSnap.exists) {
+      const route = routeSnap.data() || {};
+      const named = String(route.routeName || route.label || route.busName || '').trim();
+      if (named) {
+        carrierBusName = named;
+      } else if (!carrierBusName && route.origin && route.destination) {
+        carrierBusName = `${route.origin} → ${route.destination}`;
+      }
+    }
+  }
+  const carrierId = String(shipment?.carrierId || shipment?.offeredCarrierId || '').trim();
+  if (!carrierBusName && carrierId) {
+    const vehiclesSnap = await db
+      .collection('carrierVehicles')
+      .where('carrierId', '==', carrierId)
+      .where('status', '==', 'active')
+      .limit(1)
+      .get();
+    if (!vehiclesSnap.empty) {
+      const vehicle = vehiclesSnap.docs[0].data() || {};
+      carrierBusName = String(vehicle.registration || vehicle.vehicleType || '').trim();
+    }
+  }
+  return carrierBusName || FieldValue.delete();
+}
+
+async function resolveCustomerCarrierContact(db, shipment) {
+  const carrierId = String(shipment?.carrierId || shipment?.offeredCarrierId || '').trim();
+  const carrierBusName = await resolveCustomerBusLabel(db, shipment);
+  if (!carrierId) {
+    return {
+      carrierName: FieldValue.delete(),
+      carrierAgentName: FieldValue.delete(),
+      carrierPhone: FieldValue.delete(),
+      carrierBusName,
+    };
+  }
+  const carrierSnap = await db.collection('carriers').doc(carrierId).get();
+  if (!carrierSnap.exists) {
+    return {
+      carrierName: FieldValue.delete(),
+      carrierAgentName: FieldValue.delete(),
+      carrierPhone: FieldValue.delete(),
+      carrierBusName,
+    };
+  }
+  const carrier = carrierSnap.data() || {};
+  const carrierName = String(carrier.companyName || '').trim();
+  const carrierAgentName = String(carrier.contactPerson || '').trim();
+  const carrierPhone = String(carrier.phone || '').trim();
+  return {
+    carrierName: carrierName || FieldValue.delete(),
+    carrierAgentName: carrierAgentName || FieldValue.delete(),
+    carrierPhone: carrierPhone || FieldValue.delete(),
+    carrierBusName,
+  };
+}
+
 async function mirrorBusOnOrder(db, orderId, shipment) {
   const orderSnap = await db.collection('orders').doc(orderId).get();
   if (!orderSnap.exists || !isBusParcel({ id: orderSnap.id, ...orderSnap.data() })) return;
   const view = customerBusView(shipment);
+  const carrierContact = await resolveCustomerCarrierContact(db, shipment);
   const patch = {
     carrierShipmentId: orderId,
     carrierMatchStatus: view.matchStatus,
     carrierRouteLabel: view.routeLabel,
     carrierPickupMode: view.pickupMode || FieldValue.delete(),
     carrierTrackStep: view.trackStep || FieldValue.delete(),
+    ...carrierContact,
   };
+  if (view.matchStatus === 'matching') {
+    patch.carrierName = FieldValue.delete();
+    patch.carrierAgentName = FieldValue.delete();
+    patch.carrierPhone = FieldValue.delete();
+    patch.carrierBusName = FieldValue.delete();
+  }
   if (view.done && orderSnap.data().status !== 'cancelled') {
     patch.status = 'delivered';
     patch.logisticsStatus = 'completed';

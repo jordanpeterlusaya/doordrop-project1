@@ -21,6 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { openPhoneDialer, readablePhone } from '@/lib/phone-link';
+import { BusParcelTrackSlot } from '@/components/bus-parcel-track-slot';
 import { BottomNav, PrimaryButton } from '@/components/cargo-ui';
 import { OutsideParcelReceiptModal } from '@/components/outside-parcel-receipt-modal';
 import { CARGO_CALLOUT_LAYOUT, CargoBullseyePin, CargoRouteCallout, VehicleDriverMarker, getMapVehicleKey } from '@/components/map-markers';
@@ -56,6 +57,7 @@ import {
   isOutsidePostHubPhase,
 } from '@/lib/outside-order-logistics';
 import { getActiveOrderHeadline, getActiveOrderProgress, getBusParcelDetail, isBusCustomerParcel, isCargoNegotiationOpen } from '@/lib/active-order-display';
+import { getReceiptTrackingCode } from '@/lib/outside-parcel-receipt';
 import { fetchRouteEstimate, type RouteEstimate } from '@/lib/location-search';
 import { lightMapStyle } from '@/lib/light-map-style';
 import { canRenderNativeGoogleMap } from '@/lib/maps-config';
@@ -909,7 +911,8 @@ export default function TrackOrderScreen() {
 
     return filterValidCoordinates([pickupPoint, dropoffPoint]);
   }, [dropoffPoint, pickupPoint, routeEstimate?.coordinates]);
-  const hasLiveMap = mapCanRender;
+  const isBusTrack = Boolean(order && isBusCustomerParcel(order));
+  const hasLiveMap = mapCanRender && !isBusTrack;
   const isWaitingForDriver =
     !!order &&
     order.status === 'pending_assignment' &&
@@ -1270,6 +1273,19 @@ export default function TrackOrderScreen() {
       : 'Listening for dispatch updates';
   const driverPhone = readablePhone(order?.driverPhone);
   const hasDriverPhone = driverPhone.length > 0;
+  const busParcelCode = isBusTrack && order ? getReceiptTrackingCode(order) : '';
+  const busAgentName = isBusTrack
+    ? String(order?.carrierAgentName || order?.carrierName || '').trim()
+    : '';
+  const busLineName = isBusTrack
+    ? String(order?.carrierBusName || order?.carrierRouteLabel || '').trim()
+    : '';
+  const busCarrierPhone = isBusTrack ? readablePhone(order?.carrierPhone) : '';
+  const hasBusCarrierPhone = busCarrierPhone.length > 0;
+  const isBusSearching =
+    isBusTrack && order?.carrierMatchStatus !== 'offered' && order?.carrierMatchStatus !== 'accepted';
+  const busAgentLabel = language === 'sw' ? 'Wakala' : 'Agent';
+  const busNameLabel = language === 'sw' ? 'Basi' : 'Bus';
   const canCancelOrder =
     !!order &&
     !['delivered', 'cancelled'].includes(order.status) &&
@@ -1380,7 +1396,7 @@ export default function TrackOrderScreen() {
   useEffect(() => {
     let isMounted = true;
 
-    if (!order?.id || !validPickupPoint || !validDropoffPoint) {
+    if (!order?.id || isBusCustomerParcel(order) || !validPickupPoint || !validDropoffPoint) {
       setRouteEstimate(null);
       return () => {
         isMounted = false;
@@ -1412,10 +1428,10 @@ export default function TrackOrderScreen() {
     return () => {
       isMounted = false;
     };
-  }, [order?.id, validDropoffPoint, validPickupPoint]);
+  }, [order, order?.id, validDropoffPoint, validPickupPoint]);
 
   useEffect(() => {
-    if (!liveRouteDestination || !isOrderAlive) {
+    if (!liveRouteDestination || !isOrderAlive || isBusCustomerParcel(order)) {
       setLiveDriverRoute(null);
       return;
     }
@@ -1443,7 +1459,7 @@ export default function TrackOrderScreen() {
     return () => {
       isMounted = false;
     };
-  }, [isOrderAlive, liveRouteDestination, order?.id, quantizedDriverPoint]);
+  }, [isOrderAlive, liveRouteDestination, order, order?.id, quantizedDriverPoint]);
 
   useEffect(() => {
     driverAnimatedCoordinateRef.current = null;
@@ -1539,6 +1555,25 @@ export default function TrackOrderScreen() {
     }
 
     setShowRatingPanel(false);
+  };
+
+  const handleCallBusAgent = async () => {
+    if (!hasBusCarrierPhone) {
+      return;
+    }
+
+    logAsyncStart(screenScope, 'handleCallBusAgent', { hasPhone: true });
+
+    try {
+      await openPhoneDialer(busCarrierPhone);
+      logAsyncSuccess(screenScope, 'handleCallBusAgent');
+    } catch (error) {
+      logAsyncFailure(screenScope, 'handleCallBusAgent', error);
+      Alert.alert(
+        language === 'sw' ? 'Imeshindikana kufungua simu' : 'Unable to place call',
+        busCarrierPhone
+      );
+    }
   };
 
   const handleCallDriver = async () => {
@@ -2118,8 +2153,7 @@ export default function TrackOrderScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFE500" />
-      <View style={styles.pageBar} />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
       {showMap && NativeMapView && Marker && Polyline ? (
         <View
@@ -2303,12 +2337,28 @@ export default function TrackOrderScreen() {
             <MaterialCommunityIcons name="arrow-left" size={22} color="#111827" />
           </TouchableOpacity>
         </View>
+      ) : isBusTrack ? (
+        <View style={styles.busTrackTopBar}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={language === 'sw' ? 'Rudi nyumbani' : 'Back to home'}
+            style={styles.headerBack}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={goBack}>
+            <MaterialCommunityIcons name="arrow-left" size={24} color="#111827" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitleCenter} numberOfLines={1}>
+            {copy.track.title}
+          </Text>
+          <View style={styles.headerSideSpacer} />
+        </View>
       ) : (
         <View style={styles.plainHeader}>
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel={language === 'sw' ? 'Rudi' : 'Back'}
             style={styles.headerBack}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             onPress={goBack}>
             <MaterialCommunityIcons name="arrow-left" size={22} color="#111827" />
           </TouchableOpacity>
@@ -2318,7 +2368,7 @@ export default function TrackOrderScreen() {
 
       <View style={[styles.trackSheet, showMap && styles.sheetOverMap]}>
         <ScrollView contentContainerStyle={styles.trackSheetContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          {loading && !order ? (
+          {loading && !order && !orderId ? (
             <View style={styles.quietState}>
               <Text style={styles.quietTitle}>{copy.common.loading}</Text>
             </View>
@@ -2367,6 +2417,23 @@ export default function TrackOrderScreen() {
 
           {order ? (
             <>
+              {isBusTrack ? (
+                <BusParcelTrackSlot
+                  language={language}
+                  searching={isBusSearching}
+                  agentLabel={busAgentLabel}
+                  agentName={busAgentName}
+                  busLabel={busNameLabel}
+                  busName={busLineName}
+                  phone={busCarrierPhone}
+                  hasPhone={hasBusCarrierPhone}
+                  callAccessibilityLabel={copy.track.call}
+                  onCallPhone={() => {
+                    void handleCallBusAgent();
+                  }}
+                />
+              ) : null}
+
               {order.driverId ? (
                 <View style={styles.driverCard}>
                   {pickupMinutes ? (
@@ -2505,44 +2572,53 @@ export default function TrackOrderScreen() {
                 </View>
               </View>
 
-              <View style={styles.codeBlock}>
-                <Text style={styles.stopLabel}>{language === 'sw' ? 'Msimbo wa mzigo' : 'Parcel code'}</Text>
-                <View style={styles.codeRow}>
-                  <TextInput
-                    value={trackCodeInput}
-                    onChangeText={(value) => {
-                      setTrackCodeInput(value);
-                      if (trackLookupError) {
-                        setTrackLookupError('');
-                      }
-                    }}
-                    placeholder={copy.track.trackCodePlaceholder}
-                    placeholderTextColor="#9CA3AF"
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    returnKeyType="search"
-                    style={styles.codeInput}
-                    onSubmitEditing={() => {
-                      void handleTrackCodeLookup();
-                    }}
-                  />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={copy.track.trackCodeSearch}
-                    style={[styles.codeButton, trackLookupLoading || !trackCodeInput.trim() ? styles.codeButtonDisabled : null]}
-                    disabled={trackLookupLoading || !trackCodeInput.trim()}
-                    onPress={() => {
-                      void handleTrackCodeLookup();
-                    }}>
-                    {trackLookupLoading ? (
-                      <ActivityIndicator color="#FFFFFF" size="small" />
-                    ) : (
-                      <Text style={styles.codeButtonLabel}>{copy.track.trackCodeSearch}</Text>
-                    )}
-                  </Pressable>
+              {isBusTrack ? (
+                <View style={styles.codeBlock}>
+                  <Text style={styles.stopLabel}>{language === 'sw' ? 'Msimbo wa mzigo' : 'Parcel code'}</Text>
+                  <Text style={styles.codeReadonly} selectable>
+                    {busParcelCode || '—'}
+                  </Text>
                 </View>
-                {trackLookupError ? <Text style={styles.codeError}>{trackLookupError}</Text> : null}
-              </View>
+              ) : (
+                <View style={styles.codeBlock}>
+                  <Text style={styles.stopLabel}>{language === 'sw' ? 'Msimbo wa mzigo' : 'Parcel code'}</Text>
+                  <View style={styles.codeRow}>
+                    <TextInput
+                      value={trackCodeInput}
+                      onChangeText={(value) => {
+                        setTrackCodeInput(value);
+                        if (trackLookupError) {
+                          setTrackLookupError('');
+                        }
+                      }}
+                      placeholder={copy.track.trackCodePlaceholder}
+                      placeholderTextColor="#9CA3AF"
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      returnKeyType="search"
+                      style={styles.codeInput}
+                      onSubmitEditing={() => {
+                        void handleTrackCodeLookup();
+                      }}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={copy.track.trackCodeSearch}
+                      style={[styles.codeButton, trackLookupLoading || !trackCodeInput.trim() ? styles.codeButtonDisabled : null]}
+                      disabled={trackLookupLoading || !trackCodeInput.trim()}
+                      onPress={() => {
+                        void handleTrackCodeLookup();
+                      }}>
+                      {trackLookupLoading ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.codeButtonLabel}>{copy.track.trackCodeSearch}</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                  {trackLookupError ? <Text style={styles.codeError}>{trackLookupError}</Text> : null}
+                </View>
+              )}
 
               <View style={styles.iconActions}>
                 <Pressable
@@ -3018,6 +3094,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  busTrackTopBar: {
+    minHeight: 52,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTitleCenter: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 17,
+    lineHeight: 22,
+    fontFamily: typography.semibold,
+    color: '#111827',
+  },
+  headerSideSpacer: {
+    width: 44,
+    height: 44,
+  },
   plainHeader: {
     minHeight: 56,
     paddingHorizontal: 8,
@@ -3067,6 +3164,56 @@ const styles = StyleSheet.create({
   codeBlock: {
     marginTop: 16,
     gap: 6,
+  },
+  codeReadonly: {
+    fontSize: 22,
+    lineHeight: 28,
+    fontFamily: typography.semibold,
+    color: '#111827',
+    letterSpacing: 0.6,
+  },
+  busCarrierCard: {
+    marginTop: 4,
+    marginBottom: 8,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  busCarrierIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFE500',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  busCarrierCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  busCarrierKicker: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.medium,
+    color: '#6B7280',
+  },
+  busCarrierName: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontFamily: typography.semibold,
+    color: '#111827',
+  },
+  busCarrierPhone: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.medium,
+    color: '#2563EB',
+    marginTop: 2,
   },
   stepRail: {
     marginTop: 16,

@@ -123,6 +123,14 @@ export type DeliveryOrder = {
   carrierRouteLabel?: string;
   carrierPickupMode?: string;
   carrierTrackStep?: string;
+  /** Verified bus company name (customer-safe mirror from carrier match). */
+  carrierName?: string;
+  /** Bus agent / contact person name (customer-safe). */
+  carrierAgentName?: string;
+  /** Matched bus or route label for the customer (customer-safe). */
+  carrierBusName?: string;
+  /** Bus agent office phone (customer-safe mirror from carrier match). */
+  carrierPhone?: string;
   logisticsStatus?: string;
   logisticsEvents?: Array<{ status?: string; note?: string; by?: string; at?: unknown }>;
   carrierRef?: string;
