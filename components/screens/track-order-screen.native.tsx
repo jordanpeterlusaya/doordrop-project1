@@ -2504,13 +2504,15 @@ export default function TrackOrderScreen() {
                 </View>
               ) : null}
 
-              <View style={styles.statusBlock}>
-                <Text style={styles.statusLine}>{statusLine}</Text>
-                {order && isBusCustomerParcel(order) ? (
-                  <Text style={styles.statusMeta}>{getBusParcelDetail(order, language)}</Text>
-                ) : null}
-                <View style={styles.statusPointer} />
-              </View>
+              {!(isBusTrack && isBusSearching) ? (
+                <View style={styles.statusBlock}>
+                  <Text style={styles.statusLine}>{statusLine}</Text>
+                  {order && isBusCustomerParcel(order) ? (
+                    <Text style={styles.statusMeta}>{getBusParcelDetail(order, language)}</Text>
+                  ) : null}
+                  <View style={styles.statusPointer} />
+                </View>
+              ) : null}
               <View style={styles.stepRail}>
                 {shipmentSteps.map((step, index) => (
                   <View key={step.key} style={styles.stepCol}>
