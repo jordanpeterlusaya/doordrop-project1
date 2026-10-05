@@ -1,6 +1,6 @@
 const { FieldValue } = require('firebase-admin/firestore');
 
-const OFFER_TIMEOUT_MS = 10 * 60 * 1000;
+const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
 const HAUL_FEE_RATE = 0.2;
 const MAX_OFFERS = 3;
 const DAR_TIME_ZONE = 'Africa/Dar_es_Salaam';
@@ -58,7 +58,7 @@ function isBusParcel(order) {
   if (mode === 'express' || mode === 'air' || mode === 'flight' || mode === 'ndege') return false;
   if (normalize(order.parcelScope) === 'outside') return true;
   if (String(order.outsideDestinationCity || order.outsideDestinationLabel || '').trim()) return true;
-  return mode === 'road' || mode === 'bus' || mode === 'ferry';
+  return mode === 'road' || mode === 'bus' || mode === 'ferry' || mode === 'standard';
 }
 
 function isDarHub(value) {
@@ -503,6 +503,24 @@ async function advanceCarrierOffers(db) {
     const result = await offerNext(db, doc.id, { id: orderSnap.id, ...orderSnap.data() }, shipment);
     if (result?.matched) advanced += 1;
   }
+
+  // Orders whose create trigger never wrote carrierShipments stay invisible to the queries above.
+  const orphanOrdersSnap = await db
+    .collection('orders')
+    .where('flow', '==', 'parcel')
+    .where('parcelScope', '==', 'outside')
+    .where('status', '==', 'pending_assignment')
+    .limit(30)
+    .get();
+  for (const doc of orphanOrdersSnap.docs) {
+    const order = { id: doc.id, ...doc.data() };
+    if (!isBusParcel(order)) continue;
+    const shipmentSnap = await db.collection('carrierShipments').doc(doc.id).get();
+    if (shipmentSnap.exists) continue;
+    const result = await matchOrderById(db, doc.id);
+    if (result?.matched) advanced += 1;
+  }
+
   return { advanced };
 }
 

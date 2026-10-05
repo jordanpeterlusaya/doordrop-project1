@@ -232,8 +232,14 @@ exports.onParcelOrderMatchCarrier = onDocumentCreated(
   },
   async (event) => {
     if (!event.data) return;
-    const { matchOrderById } = require('./carrier-matching');
-    await matchOrderById(getFirestoreDb(), event.params.orderId);
+    const orderId = event.params.orderId;
+    try {
+      const { matchOrderById } = require('./carrier-matching');
+      await matchOrderById(getFirestoreDb(), orderId);
+    } catch (error) {
+      console.error('onParcelOrderMatchCarrier failed', orderId, error);
+      throw error;
+    }
   }
 );
 
