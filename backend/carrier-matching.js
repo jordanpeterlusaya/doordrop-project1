@@ -379,7 +379,7 @@ async function resolveCustomerCarrierContact(db, shipment) {
   }
   const carrier = carrierSnap.data() || {};
   const carrierName = String(carrier.companyName || '').trim();
-  const carrierAgentName = String(carrier.contactPerson || '').trim();
+  const carrierAgentName = String(carrier.contactPerson || carrier.companyName || '').trim();
   const carrierPhone = String(carrier.phone || '').trim();
   return {
     carrierName: carrierName || FieldValue.delete(),

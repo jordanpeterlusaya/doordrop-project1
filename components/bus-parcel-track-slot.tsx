@@ -52,18 +52,22 @@ export function BusParcelTrackSlot({
         <MaterialCommunityIcons name="bus-side" size={24} color="#111827" />
       </View>
       <View style={styles.matchedCopy}>
-        <View style={styles.matchedRow}>
-          <Text style={styles.matchedLabel}>{agentLabel}</Text>
-          <Text style={styles.matchedValue} numberOfLines={2}>
-            {agentName || '—'}
-          </Text>
-        </View>
-        <View style={styles.matchedRow}>
-          <Text style={styles.matchedLabel}>{busLabel}</Text>
-          <Text style={styles.matchedValue} numberOfLines={2}>
-            {busName || '—'}
-          </Text>
-        </View>
+        {agentName ? (
+          <View style={styles.matchedRow}>
+            <Text style={styles.matchedLabel}>{agentLabel}</Text>
+            <Text style={styles.matchedValue} numberOfLines={2}>
+              {agentName}
+            </Text>
+          </View>
+        ) : null}
+        {busName ? (
+          <View style={styles.matchedRow}>
+            <Text style={styles.matchedLabel}>{busLabel}</Text>
+            <Text style={styles.matchedValue} numberOfLines={2}>
+              {busName}
+            </Text>
+          </View>
+        ) : null}
         {hasPhone ? (
           <Pressable accessibilityRole="link" onPress={onCallPhone}>
             <Text style={styles.matchedPhone} numberOfLines={1}>
