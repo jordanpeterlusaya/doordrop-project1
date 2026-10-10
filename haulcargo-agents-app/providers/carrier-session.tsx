@@ -89,16 +89,26 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     }
     setNeedsCompanySetup(false);
     const carrierId = memberSnap.exists()
-      ? (memberSnap.data().carrierId as string)
+      ? String(memberSnap.data().carrierId || '').trim()
       : nextUser.email?.toLowerCase() === ADMIN_EMAIL
         ? ''
         : nextUser.uid;
     if (!carrierId) {
       setCarrier(null);
+      if (nextUser.email?.toLowerCase() !== ADMIN_EMAIL) {
+        setNeedsCompanySetup(true);
+      }
       return;
     }
     const carrierSnap = await getDoc(doc(db, 'carriers', carrierId));
-    setCarrier(carrierSnap.exists() ? { id: carrierSnap.id, ...carrierSnap.data() } : null);
+    if (!carrierSnap.exists()) {
+      setCarrier(null);
+      if (nextUser.email?.toLowerCase() !== ADMIN_EMAIL) {
+        setNeedsCompanySetup(true);
+      }
+      return;
+    }
+    setCarrier({ id: carrierSnap.id, ...carrierSnap.data() });
   }, [isAdmin]);
 
   const refreshCarrier = useCallback(async () => {

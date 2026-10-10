@@ -9,12 +9,14 @@ import type { CarrierShipment } from '@/lib/carrier-types';
 export function OfferCountdown({ shipment }: { shipment: CarrierShipment }) {
   const [left, setLeft] = useState(() => offerExpiresMs(shipment) - Date.now());
 
+  const expiresAt = offerExpiresMs(shipment);
+
   useEffect(() => {
-    const tick = () => setLeft(offerExpiresMs(shipment) - Date.now());
+    const tick = () => setLeft(expiresAt - Date.now());
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [shipment]);
+  }, [expiresAt]);
 
   const expired = left <= 0;
   const urgent = left > 0 && left <= 60000;

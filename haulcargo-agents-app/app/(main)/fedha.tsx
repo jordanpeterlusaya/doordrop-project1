@@ -3,7 +3,7 @@ import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { CommissionLock } from '@/components/commission-lock';
-import { Header, Muted, Screen } from '@/components/ui';
+import { EmptyState, Header, Screen, SectionTitle } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { cashStatusLabel, money, shipmentCode } from '@/lib/carrier-helpers';
@@ -32,9 +32,8 @@ export default function FedhaScreen() {
   }, [rows]);
 
   return (
-    <Screen scroll>
-      <Header title="Fedha" />
-      <Muted style={styles.lead}>Muhtasari wa fedha, salio, na kamisheni ya HAUL.</Muted>
+    <Screen scroll edges="top">
+      <Header title="Fedha" subtitle="Muhtasari wa fedha, salio, na kamisheni ya HAUL." />
 
       <View style={styles.summary}>
         <CommissionLock
@@ -58,11 +57,9 @@ export default function FedhaScreen() {
         </Pressable>
       </View>
 
-      <Text style={styles.section}>Oda</Text>
+      <SectionTitle>Oda</SectionTitle>
       {rows.length === 0 ? (
-        <View style={styles.empty}>
-          <Muted>Hakuna rekodi za fedha.</Muted>
-        </View>
+        <EmptyState title="Hakuna rekodi" body="Rekodi za fedha zitaonekana baada ya oda." />
       ) : (
         rows.map((item) => {
           const reconciled = item.cashStatus === 'reconciled';
@@ -90,12 +87,9 @@ export default function FedhaScreen() {
 }
 
 const styles = StyleSheet.create({
-  lead: { marginBottom: 14 },
   summary: {
-    backgroundColor: theme.white,
+    backgroundColor: theme.tile,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.border,
     padding: 16,
     marginBottom: 14,
   },
@@ -103,7 +97,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 18,
+    marginBottom: 10,
+    gap: 12,
   },
   metaText: {
     flex: 1,
@@ -116,24 +111,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.ink,
   },
-  section: {
-    fontFamily: typography.bold,
-    fontSize: 15,
-    color: theme.ink,
-    letterSpacing: -0.2,
-    marginBottom: 10,
-  },
-  empty: {
-    paddingVertical: 28,
-    alignItems: 'center',
-  },
   row: {
-    backgroundColor: theme.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
+    backgroundColor: theme.tile,
+    borderRadius: 16,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
     marginBottom: 10,
   },
   rowTop: {
@@ -148,6 +130,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: theme.ink,
     letterSpacing: -0.2,
+    flex: 1,
   },
   badge: {
     paddingHorizontal: 8,

@@ -4,7 +4,7 @@ import React, { useMemo, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { OrderInboxCard } from '@/components/order-inbox-card';
-import { Card, Muted, Screen } from '@/components/ui';
+import { EmptyState, FilterChip, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import {
@@ -49,139 +49,131 @@ export default function HomeScreen() {
   }, [inbox, filter, carrierId]);
 
   const offerCount = inbox.filter((item) => isIncomingOffer(item, carrierId)).length;
+  const company = carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni';
 
   return (
-    <Screen scroll>
-      <View style={styles.hero}>
-        <View style={styles.heroText}>
-          <Text style={styles.eyebrow}>HAUL Cargo Desk</Text>
-          <Text style={styles.company} numberOfLines={2}>
-            {carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni'}
-          </Text>
-          <Muted>{darTodayLabel()}</Muted>
-          <Text style={styles.lead}>
-            {offerCount > 0
-              ? `${offerCount} oda mpya zinazosubiri kukubaliwa`
-              : 'Oda kutoka HAUL zitaonekana hapa'}
-          </Text>
-        </View>
-        <Image source={images.deskCargoTruck} style={styles.heroArt} resizeMode="contain" />
+    <Screen scroll edges="top">
+      <Text style={styles.greeting} numberOfLines={2}>
+        {company}
+      </Text>
+      <Text style={styles.dateLine}>{darTodayLabel()}</Text>
+      <Text style={styles.lead}>
+        {offerCount > 0
+          ? `${offerCount} oda mpya zinazosubiri kukubaliwa`
+          : 'Oda kutoka HAUL zitaonekana hapa'}
+      </Text>
+
+      <View style={styles.utilityBar}>
+        <Pressable style={styles.utilityAction} onPress={() => router.push('/history')}>
+          <View style={styles.utilityIcon}>
+            <Ionicons name="time-outline" size={16} color={theme.ink} />
+          </View>
+          <Text style={styles.utilityLabel}>Historia</Text>
+        </Pressable>
+        <View style={styles.utilityDivider} />
+        <Pressable style={styles.utilityAction} onPress={() => router.push('/(main)/fedha')}>
+          <View style={styles.utilityIcon}>
+            <Ionicons name="wallet-outline" size={16} color={theme.ink} />
+          </View>
+          <Text style={styles.utilityLabel}>Fedha</Text>
+        </Pressable>
+        <View style={styles.utilityDivider} />
+        <Pressable style={styles.utilityAction} onPress={() => router.push('/schedule')}>
+          <View style={styles.utilityIcon}>
+            <Ionicons name="bus-outline" size={16} color={theme.ink} />
+          </View>
+          <Text style={styles.utilityLabel}>Ratiba</Text>
+        </Pressable>
       </View>
 
       <View style={styles.filters}>
-        {FILTERS.map((item) => {
-          const selected = filter === item.key;
-          return (
-            <Pressable
-              key={item.key}
-              onPress={() => setFilter(item.key)}
-              style={[styles.filterChip, selected && styles.filterChipOn]}>
-              <Text style={[styles.filterText, selected && styles.filterTextOn]}>{item.label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      <View style={styles.quickRow}>
-        <Pressable style={styles.quick} onPress={() => router.push('/history')}>
-          <Ionicons name="time-outline" size={16} color={theme.ink} />
-          <Text style={styles.quickText}>Historia</Text>
-        </Pressable>
-        <Pressable style={styles.quick} onPress={() => router.push('/(main)/fedha')}>
-          <Ionicons name="wallet-outline" size={16} color={theme.ink} />
-          <Text style={styles.quickText}>Fedha</Text>
-        </Pressable>
-        <Pressable style={styles.quick} onPress={() => router.push('/schedule')}>
-          <Ionicons name="bus-outline" size={16} color={theme.ink} />
-          <Text style={styles.quickText}>Ratiba</Text>
-        </Pressable>
+        {FILTERS.map((item) => (
+          <FilterChip
+            key={item.key}
+            label={item.label}
+            selected={filter === item.key}
+            onPress={() => setFilter(item.key)}
+          />
+        ))}
       </View>
 
       {rows.length === 0 ? (
-        <Card style={styles.empty}>
+        <EmptyState
+          title="Hakuna oda kwenye inbox"
+          body="Mtuma mzigo kwenye HAUL anapoweka oda ya parcel, itaonekana hapa ikiwa coverage na njia yenu inalingana.">
           <Image source={images.deskPackingBox} style={styles.emptyArt} resizeMode="contain" />
-          <Text style={styles.emptyTitle}>Hakuna oda kwenye inbox</Text>
-          <Muted style={styles.emptyBody}>
-            Mtuma mzigo kwenye HAUL anapoweka oda ya parcel, itaonekana hapa ikiwa coverage na njia yenu
-            inalingana.
-          </Muted>
-        </Card>
+        </EmptyState>
       ) : (
-        rows.map((item) => <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />)
+        <View style={styles.list}>
+          {rows.map((item) => (
+            <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />
+          ))}
+        </View>
       )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  hero: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
-    backgroundColor: theme.white,
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  heroText: { flex: 1 },
-  eyebrow: {
-    fontFamily: typography.semibold,
-    fontSize: 12,
-    color: theme.muted,
-    marginBottom: 4,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-  },
-  company: {
+  greeting: {
+    fontSize: 26,
+    lineHeight: 32,
     fontFamily: typography.bold,
-    fontSize: 24,
-    lineHeight: 30,
     color: theme.ink,
-    letterSpacing: -0.45,
+    letterSpacing: -0.5,
+    marginBottom: 4,
+  },
+  dateLine: {
+    fontFamily: typography.body,
+    fontSize: 13,
+    color: theme.muted,
+    marginBottom: 8,
   },
   lead: {
-    marginTop: 8,
     fontFamily: typography.body,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 15,
+    lineHeight: 22,
     color: theme.ink,
+    marginBottom: 14,
   },
-  heroArt: { width: 88, height: 72 },
-  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-  filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
+  utilityBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
     backgroundColor: theme.tile,
+    borderRadius: 14,
+    marginBottom: 14,
+    overflow: 'hidden',
   },
-  filterChipOn: { backgroundColor: theme.ink },
-  filterText: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  filterTextOn: { color: theme.primary },
-  quickRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  quick: {
+  utilityAction: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    backgroundColor: theme.white,
-    borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
-    paddingVertical: 10,
+    gap: 8,
+    minHeight: 52,
+    paddingHorizontal: 8,
   },
-  quickText: { fontFamily: typography.semibold, fontSize: 12, color: theme.ink },
-  empty: { alignItems: 'center', paddingVertical: 28 },
-  emptyArt: { width: 120, height: 96, marginBottom: 12 },
-  emptyTitle: {
-    fontFamily: typography.bold,
-    fontSize: 17,
+  utilityIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: theme.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  utilityLabel: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
     color: theme.ink,
-    marginBottom: 6,
-    textAlign: 'center',
   },
-  emptyBody: { textAlign: 'center', lineHeight: 20 },
+  utilityDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 24,
+    backgroundColor: '#D1D5DB',
+  },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
+  list: { gap: 0 },
+  emptyArt: { width: 120, height: 96, marginTop: 14 },
 });

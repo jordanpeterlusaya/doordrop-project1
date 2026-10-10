@@ -1,22 +1,44 @@
+import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Haptics from 'expo-haptics';
-import * as Notifications from 'expo-notifications';
 import { doc, setDoc } from 'firebase/firestore';
 import { Platform, Vibration } from 'react-native';
 
 import { db } from '@/lib/firebase';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+/** Expo Go (SDK 53+) throws on Android if expo-notifications is imported. */
+function isExpoGo() {
+  return Constants.appOwnership === 'expo';
+}
+
+type NotificationsModule = typeof import('expo-notifications');
+
+function loadNotifications(): NotificationsModule | null {
+  if (Platform.OS === 'web' || isExpoGo()) return null;
+  try {
+    // Lazy require so Expo Go never evaluates the native module at import time.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-notifications') as NotificationsModule;
+  } catch {
+    return null;
+  }
+}
+
+const Notifications = loadNotifications();
+
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
+}
 
 export async function ensureAndroidOfferChannel() {
-  if (Platform.OS !== 'android') return;
+  if (!Notifications || Platform.OS !== 'android') return;
   await Notifications.setNotificationChannelAsync('carrier_offers', {
     name: 'Oda mpya',
     importance: Notifications.AndroidImportance.MAX,
@@ -30,7 +52,7 @@ export async function registerCarrierPushToken(opts: {
   uid: string;
   carrierId: string;
 }): Promise<string | null> {
-  if (!Device.isDevice) return null;
+  if (!Notifications || !Device.isDevice) return null;
 
   await ensureAndroidOfferChannel();
 

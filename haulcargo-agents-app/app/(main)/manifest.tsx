@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Header, Muted, PrimaryButton, Screen } from '@/components/ui';
+import { EmptyState, Header, PrimaryButton, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { applyManifestMark } from '@/lib/carrier-actions';
@@ -17,22 +17,21 @@ export default function ManifestScreen() {
   const total = groups.reduce((n, [, rows]) => n + rows.length, 0);
 
   return (
-    <Screen scroll>
-      <Header title="Orodha" />
-      <Muted style={styles.lead}>
-        {total > 0 ? `${total} mizigo · kwa marudio` : 'Mizigo ya leo inaonekana hapa.'}
-      </Muted>
+    <Screen scroll edges="top">
+      <Header
+        title="Orodha"
+        subtitle={total > 0 ? `${total} mizigo · kwa marudio` : 'Mizigo ya leo inaonekana hapa.'}
+      />
 
       {groups.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>Hakuna mizigo</Text>
-          <Muted style={styles.emptyBody}>Oda zinazokubaliwa zitaonekana kwenye orodha.</Muted>
-        </View>
+        <EmptyState title="Hakuna mizigo" body="Oda zinazokubaliwa zitaonekana kwenye orodha." />
       ) : (
         groups.map(([drop, rows]) => (
           <View key={drop} style={styles.group}>
             <View style={styles.dropHeader}>
-              <Text style={styles.dropTitle}>{drop}</Text>
+              <Text style={styles.dropTitle} numberOfLines={2}>
+                {drop}
+              </Text>
               <Text style={styles.dropCount}>{rows.length}</Text>
             </View>
             {rows.map((item) => {
@@ -68,32 +67,16 @@ export default function ManifestScreen() {
 }
 
 const styles = StyleSheet.create({
-  lead: { marginBottom: 16 },
-  empty: {
-    paddingVertical: 36,
-    alignItems: 'center',
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.white,
-    paddingHorizontal: 20,
-  },
-  emptyTitle: {
-    fontFamily: typography.bold,
-    fontSize: 16,
-    color: theme.ink,
-    marginBottom: 6,
-  },
-  emptyBody: { textAlign: 'center' },
-  group: { marginBottom: 18 },
+  group: { marginBottom: 20 },
   dropHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
     marginBottom: 10,
     paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
   },
   dropTitle: {
     fontFamily: typography.bold,
@@ -105,7 +88,7 @@ const styles = StyleSheet.create({
   dropCount: {
     fontFamily: typography.semibold,
     fontSize: 12,
-    color: theme.muted,
+    color: theme.ink,
     backgroundColor: theme.primarySoft,
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -113,10 +96,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   card: {
-    backgroundColor: theme.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
+    backgroundColor: theme.tile,
+    borderRadius: 16,
     padding: 14,
     marginBottom: 10,
   },

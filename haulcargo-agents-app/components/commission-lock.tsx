@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { cashStatusLabel, money } from '@/lib/carrier-helpers';
 
 export function CommissionLock({
@@ -54,32 +55,58 @@ export function CommissionLock({
         <Text style={[styles.value, styles.net]}>{money(carrierNet)}</Text>
       </View>
       {canRequestPay ? (
-        <PrimaryButton
-          label="Lipa kamisheni"
-          loading={paying}
-          onPress={() => onPayCommission?.()}
-        />
+        <PrimaryButton label="Lipa kamisheni" loading={paying} onPress={() => onPayCommission?.()} />
       ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 8 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  label: { fontSize: 14, color: theme.muted },
-  value: { fontSize: 15, fontWeight: '600', color: theme.charcoal },
-  net: { color: theme.ink, fontWeight: '800' },
+  wrap: { gap: 10 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  label: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: theme.muted,
+    flex: 1,
+  },
+  value: {
+    fontSize: 15,
+    fontFamily: typography.semibold,
+    color: theme.ink,
+  },
+  net: {
+    fontFamily: typography.bold,
+    fontSize: 17,
+  },
   commissionRow: {
     backgroundColor: theme.primarySoft,
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 12,
     borderWidth: 1,
     borderColor: '#F3E7A3',
   },
   lockLabel: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  commissionText: { fontSize: 14, fontWeight: '700', color: theme.ink },
-  commissionValue: { fontSize: 16, fontWeight: '800', color: theme.ink },
-  hint: { fontSize: 12, color: theme.muted, lineHeight: 18 },
-  statusLine: { fontSize: 12, fontWeight: '700', color: theme.ink },
+  commissionText: {
+    fontSize: 14,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    flexShrink: 1,
+  },
+  commissionValue: {
+    fontSize: 16,
+    fontFamily: typography.bold,
+    color: theme.ink,
+  },
+  hint: {
+    fontSize: 12,
+    fontFamily: typography.body,
+    color: theme.muted,
+    lineHeight: 18,
+  },
+  statusLine: {
+    fontSize: 12,
+    fontFamily: typography.semibold,
+    color: theme.ink,
+  },
 });

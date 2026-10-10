@@ -57,8 +57,7 @@ export default function OrderDetailScreen() {
   if (!item) {
     return (
       <Screen>
-        <Header title="Oda" back />
-        <Muted>Mzigo haupatikani au bado unapakia…</Muted>
+        <Header title="Oda" subtitle="Mzigo haupatikani au bado unapakia…" back />
       </Screen>
     );
   }
@@ -96,11 +95,18 @@ export default function OrderDetailScreen() {
 
   return (
     <Screen scroll padBottom={40}>
-      <Header title={code} back />
-      {isIncomingOffer(item, carrierId) && offerStillValid(item) ? <OfferCountdown shipment={item} /> : null}
+      <Header
+        title={code}
+        subtitle={STATUS_LABEL[item.shipmentStatus] || item.shipmentStatus}
+        back
+      />
+      {isIncomingOffer(item, carrierId) && offerStillValid(item) ? (
+        <View style={styles.countdownWrap}>
+          <OfferCountdown shipment={item} />
+        </View>
+      ) : null}
 
       <View style={styles.panel}>
-        <Text style={styles.status}>{STATUS_LABEL[item.shipmentStatus] || item.shipmentStatus}</Text>
         <Fact label="Msimbo wa mzigo" value={copied ? 'Imenakiliwa ✓' : code} onPress={() => void copyCode()} />
         <Fact label="Marudio / eneo la mpokeaji" value={dropOffLabel(item)} />
         <Fact label="Mahali pa kuchukua" value={item.pickupLabel || item.origin || '—'} />
@@ -235,21 +241,12 @@ export default function OrderDetailScreen() {
 }
 
 const styles = StyleSheet.create({
+  countdownWrap: { marginBottom: 14 },
   panel: {
-    backgroundColor: theme.white,
+    backgroundColor: theme.tile,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.border,
     padding: 16,
     marginBottom: 14,
-  },
-  status: {
-    fontSize: 17,
-    lineHeight: 22,
-    fontFamily: typography.bold,
-    color: theme.ink,
-    marginBottom: 14,
-    letterSpacing: -0.2,
   },
   fact: { marginBottom: 12 },
   factLabel: {

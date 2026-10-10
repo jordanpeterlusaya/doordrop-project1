@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { doc, updateDoc } from 'firebase/firestore';
 
-import { Field, Header, PrimaryButton, Screen, Muted } from '@/components/ui';
+import { Field, Header, PrimaryButton, Screen, SectionTitle, SettingsRow } from '@/components/ui';
 import { coverageSummary } from '@/constants/coverage';
 import { ADMIN_EMAIL, theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
@@ -21,14 +21,24 @@ export default function SettingsScreen() {
 
   if (!carrier && !isAdmin) {
     return (
-      <Screen>
-        <Header title="Mipangilio" />
-        <Muted style={styles.lead}>Akaunti ya msimamizi — hakuna kampuni.</Muted>
-        {user?.email?.toLowerCase() === ADMIN_EMAIL ? (
-          <PrimaryButton label="Uthibitisho wa makampuni" onPress={() => router.push('/admin/verify')} />
-        ) : null}
-        <View style={styles.spacer} />
-        <PrimaryButton label="Toka" variant="outline" onPress={() => void signOut().then(() => router.replace('/'))} />
+      <Screen edges="top">
+        <Header title="Akaunti" subtitle="Akaunti ya msimamizi — hakuna kampuni." />
+        <View style={styles.group}>
+          {user?.email?.toLowerCase() === ADMIN_EMAIL ? (
+            <SettingsRow
+              icon="shield-checkmark-outline"
+              title="Uthibitisho wa makampuni"
+              onPress={() => router.push('/admin/verify')}
+            />
+          ) : null}
+          <SettingsRow
+            icon="log-out-outline"
+            title="Toka"
+            destructive
+            last
+            onPress={() => void signOut().then(() => router.replace('/'))}
+          />
+        </View>
       </Screen>
     );
   }
@@ -39,11 +49,29 @@ export default function SettingsScreen() {
     coverageAllTanzania: Boolean(carrier?.coverageAllTanzania),
     coverageInternational: Boolean(carrier?.coverageInternational),
   });
+  const displayName = carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni';
+  const initials = displayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || 'H';
 
   return (
-    <Screen scroll>
-      <Header title="Mipangilio" />
-      <Muted style={styles.lead}>Wasifu, coverage, na akaunti.</Muted>
+    <Screen scroll edges="top">
+      <View style={styles.identityRow}>
+        <View style={styles.identityCopy}>
+          <Text numberOfLines={2} style={styles.displayName}>
+            {displayName}
+          </Text>
+          <Text numberOfLines={1} style={styles.displayMeta}>
+            {user?.email || phone || 'HAUL Cargo Agents'}
+          </Text>
+        </View>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{initials}</Text>
+        </View>
+      </View>
 
       <View style={styles.statusCard}>
         <View style={styles.statusRow}>
@@ -63,7 +91,7 @@ export default function SettingsScreen() {
         ) : null}
       </View>
 
-      <Text style={styles.section}>Kampuni</Text>
+      <SectionTitle>Kampuni</SectionTitle>
       <Field label="Jina la kampuni" value={companyName} onChangeText={setCompanyName} />
       <Field label="Simu" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
       <Field label="Eneo" value={location} onChangeText={setLocation} />
@@ -88,31 +116,76 @@ export default function SettingsScreen() {
         }}
       />
 
-      <Text style={styles.section}>Zana</Text>
-      <View style={styles.tools}>
-        <PrimaryButton label="Ratiba ya safari" variant="outline" onPress={() => router.push('/schedule')} />
+      <SectionTitle>Zana</SectionTitle>
+      <View style={styles.group}>
+        <SettingsRow
+          icon="bus-outline"
+          title="Ratiba ya safari"
+          onPress={() => router.push('/schedule')}
+        />
+        <SettingsRow icon="time-outline" title="Historia" onPress={() => router.push('/history')} />
         {user?.email?.toLowerCase() === ADMIN_EMAIL ? (
-          <PrimaryButton label="Admin: Uthibitisho" variant="outline" onPress={() => router.push('/admin/verify')} />
+          <SettingsRow
+            icon="shield-checkmark-outline"
+            title="Admin: Uthibitisho"
+            onPress={() => router.push('/admin/verify')}
+          />
         ) : null}
-      </View>
-
-      <View style={styles.logoutWrap}>
-        <PrimaryButton label="Toka" variant="danger" onPress={() => void signOut().then(() => router.replace('/'))} />
+        <SettingsRow
+          icon="log-out-outline"
+          title="Toka"
+          destructive
+          last
+          onPress={() => void signOut().then(() => router.replace('/'))}
+        />
       </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  lead: { marginBottom: 16 },
-  spacer: { height: 12 },
+  identityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 18,
+    gap: 14,
+  },
+  identityCopy: { flex: 1, minWidth: 0 },
+  displayName: {
+    fontSize: 28,
+    lineHeight: 34,
+    fontFamily: typography.ident,
+    color: theme.ink,
+    letterSpacing: -0.7,
+  },
+  displayMeta: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.body,
+    color: theme.muted,
+  },
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: theme.tile,
+    borderWidth: 2,
+    borderColor: theme.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 20,
+    fontFamily: typography.ident,
+    color: theme.ink,
+  },
   statusCard: {
-    backgroundColor: theme.white,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.border,
+    backgroundColor: theme.tile,
+    borderRadius: 18,
     padding: 16,
-    marginBottom: 20,
+    marginBottom: 18,
   },
   statusRow: {
     flexDirection: 'row',
@@ -156,19 +229,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.danger,
   },
-  section: {
-    fontFamily: typography.bold,
-    fontSize: 15,
-    color: theme.ink,
-    letterSpacing: -0.2,
-    marginBottom: 12,
-    marginTop: 4,
-  },
   ok: {
     fontFamily: typography.semibold,
     color: theme.success,
     marginBottom: 8,
   },
-  tools: { gap: 10, marginBottom: 8 },
-  logoutWrap: { marginTop: 24 },
+  group: {
+    backgroundColor: theme.tile,
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: 24,
+  },
 });

@@ -1,10 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { OrderInboxCard } from '@/components/order-inbox-card';
-import { Card, Header, Muted, Screen } from '@/components/ui';
-import { theme } from '@/constants/theme';
-import { typography } from '@/constants/typography';
+import { EmptyState, FilterChip, Header, Screen } from '@/components/ui';
 import { inboxShipments, isIncomingOffer } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
@@ -23,9 +21,8 @@ export default function OrdersScreen() {
   }, [inbox, filter, carrierId]);
 
   return (
-    <Screen scroll>
-      <Header title="Oda" />
-      <Muted style={styles.lead}>Inbox ya oda zinazoingia na zinazoendelea.</Muted>
+    <Screen scroll edges="top">
+      <Header title="Oda" subtitle="Inbox ya oda zinazoingia na zinazoendelea." />
       <View style={styles.filters}>
         {(
           [
@@ -34,19 +31,17 @@ export default function OrdersScreen() {
             ['active', 'Hai'],
           ] as const
         ).map(([key, label]) => (
-          <Pressable
+          <FilterChip
             key={key}
+            label={label}
+            selected={filter === key}
             onPress={() => setFilter(key)}
-            style={[styles.chip, filter === key && styles.chipOn]}>
-            <Text style={[styles.chipText, filter === key && styles.chipTextOn]}>{label}</Text>
-          </Pressable>
+          />
         ))}
       </View>
 
       {rows.length === 0 ? (
-        <Card>
-          <Muted>Hakuna oda kwenye kichujio hiki.</Muted>
-        </Card>
+        <EmptyState title="Hakuna oda" body="Hakuna oda kwenye kichujio hiki." />
       ) : (
         rows.map((item) => <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />)
       )}
@@ -55,15 +50,5 @@ export default function OrdersScreen() {
 }
 
 const styles = StyleSheet.create({
-  lead: { marginBottom: 14 },
-  filters: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
-    backgroundColor: theme.tile,
-  },
-  chipOn: { backgroundColor: theme.ink },
-  chipText: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  chipTextOn: { color: theme.primary },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
 });

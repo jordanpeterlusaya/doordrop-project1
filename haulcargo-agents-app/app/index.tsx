@@ -1,5 +1,5 @@
 import { Redirect, router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -22,9 +22,10 @@ export default function LandingScreen() {
   const { user, initializing, needsCompanySetup, carrier } = useCarrierSession();
   const [showIntro, setShowIntro] = useState(true);
   const insets = useSafeAreaInsets();
+  const finishIntro = useCallback(() => setShowIntro(false), []);
 
   if (showIntro) {
-    return <HaulLetterIntro onFinished={() => setShowIntro(false)} />;
+    return <HaulLetterIntro onFinished={finishIntro} />;
   }
 
   if (initializing) {
