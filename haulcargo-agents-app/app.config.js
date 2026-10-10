@@ -59,7 +59,7 @@ module.exports = {
       favicon: './assets/favicon.png',
       bundler: 'metro',
     },
-    plugins: ['expo-router', 'expo-font'],
+    plugins: ['expo-router', 'expo-font', 'expo-sharing', 'expo-splash-screen', 'expo-status-bar'],
     experiments: {
       typedRoutes: true,
     },
