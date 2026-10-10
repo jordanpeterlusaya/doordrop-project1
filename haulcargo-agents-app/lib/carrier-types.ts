@@ -19,6 +19,9 @@ export type Carrier = {
   coverageRegions?: string[];
   coverageAllTanzania?: boolean;
   coverageInternational?: boolean;
+  coverageInternationalCountries?: string;
+  phoneNormalized?: string;
+  phoneVerified?: boolean;
 };
 
 export type CarrierRoute = {

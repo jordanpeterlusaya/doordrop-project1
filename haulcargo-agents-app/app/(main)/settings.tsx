@@ -1,36 +1,27 @@
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { doc, updateDoc } from 'firebase/firestore';
 
-import { Field, Header, PrimaryButton, Screen, SectionTitle, SettingsRow } from '@/components/ui';
+import { Screen, SectionTitle, SettingsRow } from '@/components/ui';
 import { coverageSummary } from '@/constants/coverage';
-import { ADMIN_EMAIL, theme } from '@/constants/theme';
+import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { carrierStatusLabel } from '@/lib/carrier-helpers';
-import { db } from '@/lib/firebase';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function SettingsScreen() {
-  const { carrier, user, signOut, refreshCarrier, isAdmin } = useCarrierSession();
-  const [companyName, setCompanyName] = useState(carrier?.companyName || carrier?.name || '');
-  const [phone, setPhone] = useState(carrier?.phone || '');
-  const [location, setLocation] = useState(carrier?.location || '');
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const { carrier, user, signOut } = useCarrierSession();
 
-  if (!carrier && !isAdmin) {
+  if (!carrier) {
     return (
       <Screen edges="top">
-        <Header title="Akaunti" subtitle="Akaunti ya msimamizi — hakuna kampuni." />
+        <View style={styles.identityRow}>
+          <View style={styles.identityCopy}>
+            <Text style={styles.displayName}>Akaunti</Text>
+            <Text style={styles.displayMeta}>{user?.email || 'HAUL Cargo Agents'}</Text>
+          </View>
+        </View>
         <View style={styles.group}>
-          {user?.email?.toLowerCase() === ADMIN_EMAIL ? (
-            <SettingsRow
-              icon="shield-checkmark-outline"
-              title="Uthibitisho wa makampuni"
-              onPress={() => router.push('/admin/verify')}
-            />
-          ) : null}
           <SettingsRow
             icon="log-out-outline"
             title="Toka"
@@ -43,19 +34,22 @@ export default function SettingsScreen() {
     );
   }
 
-  const verified = carrier?.status === 'verified';
+  const verified = carrier.status === 'verified';
   const coverage = coverageSummary({
-    coverageRegions: carrier?.coverageRegions || [],
-    coverageAllTanzania: Boolean(carrier?.coverageAllTanzania),
-    coverageInternational: Boolean(carrier?.coverageInternational),
+    coverageRegions: carrier.coverageRegions || [],
+    coverageAllTanzania: Boolean(carrier.coverageAllTanzania),
+    coverageInternational: Boolean(carrier.coverageInternational),
+    coverageInternationalCountries: String(carrier.coverageInternationalCountries || ''),
   });
-  const displayName = carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni';
-  const initials = displayName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('') || 'H';
+  const displayName = carrier.companyName?.trim() || carrier.name?.trim() || 'Kampuni';
+  const phone = carrier.phone || '';
+  const initials =
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? '')
+      .join('') || 'H';
 
   return (
     <Screen scroll edges="top">
@@ -78,7 +72,7 @@ export default function SettingsScreen() {
           <Text style={styles.statusLabel}>Hali</Text>
           <View style={[styles.statusPill, verified ? styles.statusPillOk : styles.statusPillWait]}>
             <Text style={[styles.statusPillText, verified ? styles.statusPillTextOk : undefined]}>
-              {carrierStatusLabel(carrier?.status)}
+              {carrierStatusLabel(carrier.status)}
             </Text>
           </View>
         </View>
@@ -86,51 +80,43 @@ export default function SettingsScreen() {
           {verified ? 'Unaweza kupokea oda kutoka HAUL.' : 'HAUL inapitia taarifa za kampuni.'}
         </Text>
         <Text style={styles.coverage}>Coverage · {coverage}</Text>
-        {carrier?.rejectionReason ? (
+        {carrier.rejectionReason ? (
           <Text style={styles.reject}>Sababu: {carrier.rejectionReason}</Text>
         ) : null}
       </View>
 
-      <SectionTitle>Kampuni</SectionTitle>
-      <Field label="Jina la kampuni" value={companyName} onChangeText={setCompanyName} />
-      <Field label="Simu" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
-      <Field label="Eneo" value={location} onChangeText={setLocation} />
-      {message ? <Text style={styles.ok}>{message}</Text> : null}
-      <PrimaryButton
-        label="Hifadhi"
-        loading={saving}
-        onPress={async () => {
-          if (!carrier?.id) return;
-          setSaving(true);
-          try {
-            await updateDoc(doc(db, 'carriers', carrier.id), {
-              companyName: companyName.trim(),
-              phone: phone.trim(),
-              location: location.trim(),
-            });
-            await refreshCarrier();
-            setMessage('Imehifadhiwa.');
-          } finally {
-            setSaving(false);
-          }
-        }}
-      />
-
       <SectionTitle>Zana</SectionTitle>
       <View style={styles.group}>
+        <SettingsRow
+          icon="business-outline"
+          title="Hariri taarifa za kampuni"
+          onPress={() => router.push('/edit-company')}
+        />
+        <SettingsRow
+          icon="map-outline"
+          title="Coverage / maeneo"
+          value={coverage}
+          onPress={() => router.push('/edit-coverage')}
+        />
+        <SettingsRow
+          icon="document-text-outline"
+          title="Hati za kampuni"
+          onPress={() => router.push('/edit-documents')}
+        />
         <SettingsRow
           icon="bus-outline"
           title="Ratiba ya safari"
           onPress={() => router.push('/schedule')}
         />
-        <SettingsRow icon="time-outline" title="Historia" onPress={() => router.push('/history')} />
-        {user?.email?.toLowerCase() === ADMIN_EMAIL ? (
-          <SettingsRow
-            icon="shield-checkmark-outline"
-            title="Admin: Uthibitisho"
-            onPress={() => router.push('/admin/verify')}
-          />
-        ) : null}
+        <SettingsRow
+          icon="time-outline"
+          title="Historia"
+          last
+          onPress={() => router.push('/history')}
+        />
+      </View>
+
+      <View style={[styles.group, styles.groupSpaced]}>
         <SettingsRow
           icon="log-out-outline"
           title="Toka"
@@ -229,15 +215,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.danger,
   },
-  ok: {
-    fontFamily: typography.semibold,
-    color: theme.success,
-    marginBottom: 8,
-  },
   group: {
     backgroundColor: theme.tile,
     borderRadius: 18,
     overflow: 'hidden',
-    marginBottom: 24,
+    marginBottom: 12,
   },
+  groupSpaced: { marginTop: 8, marginBottom: 24 },
 });

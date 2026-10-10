@@ -46,6 +46,7 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right', contentStyle: styles.stack }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="login" />
+            <Stack.Screen name="otp" />
             <Stack.Screen name="register" />
             <Stack.Screen name="forgot-password" />
             <Stack.Screen name="register-company" />
@@ -56,7 +57,9 @@ export default function RootLayout() {
             <Stack.Screen name="order/[id]" />
             <Stack.Screen name="directions/[id]" />
             <Stack.Screen name="receipt/[id]" />
-            <Stack.Screen name="admin/verify" />
+            <Stack.Screen name="edit-company" />
+            <Stack.Screen name="edit-coverage" />
+            <Stack.Screen name="edit-documents" />
           </Stack>
         </View>
       </CarrierSessionProvider>
@@ -66,6 +69,6 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  canvas: { flex: 1, backgroundColor: '#FFE500' },
-  stack: { backgroundColor: '#FFE500' },
+  canvas: { flex: 1, backgroundColor: '#F7F7F5' },
+  stack: { backgroundColor: '#F7F7F5' },
 });

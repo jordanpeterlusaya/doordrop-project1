@@ -12,7 +12,7 @@ import { createCarrierFromRegistration } from '@/lib/carrier-registration';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function RegisterCompanyScreen() {
-  const { user, needsCompanySetup, refreshCarrier, carrier, isAdmin } = useCarrierSession();
+  const { user, refreshCarrier, carrier } = useCarrierSession();
   const [step, setStep] = useState(1);
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
@@ -29,7 +29,6 @@ export default function RegisterCompanyScreen() {
   if (carrier) {
     return <Redirect href={carrier.status === 'pending' ? '/verification-pending' : '/(main)'} />;
   }
-  if (isAdmin && !needsCompanySetup) return <Redirect href="/(main)" />;
 
   return (
     <AuthShell title="Kamilisha kampuni" subtitle={`Hatua ${step} / 3 — unganisha akaunti na kampuni.`}>
@@ -94,6 +93,7 @@ export default function RegisterCompanyScreen() {
                 coverageRegions: coverage.coverageRegions,
                 coverageAllTanzania: coverage.coverageAllTanzania,
                 coverageInternational: coverage.coverageInternational,
+                coverageInternationalCountries: coverage.coverageInternationalCountries,
               },
               email
             );

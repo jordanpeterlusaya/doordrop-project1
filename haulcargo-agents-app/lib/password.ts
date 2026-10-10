@@ -9,3 +9,13 @@ export function passwordsMatch(password: string, confirm: string): string | null
   if (password !== confirm) return 'Nenosiri halifanani.';
   return null;
 }
+
+/** Strong random password for Firebase account bootstrap (phone OTP is primary login). */
+export function generateAccountPassword() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
+  let out = 'Ha1!';
+  for (let i = 0; i < 20; i += 1) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return out;
+}

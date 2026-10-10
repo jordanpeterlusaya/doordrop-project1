@@ -275,6 +275,7 @@ async function handleConfirmPhone(req, decoded) {
   await db.collection('carriers').doc(carrierId).set(
     {
       phone,
+      phoneNormalized: phone,
       phoneVerified: true,
       phoneVerifiedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -295,8 +296,111 @@ async function handleConfirmPhone(req, decoded) {
   return { ok: true, phoneMasked: maskPhone(phone), carrierId };
 }
 
+async function findCarrierByPhone(db, phone) {
+  const normalized = normalizeSmsPhone(phone);
+  if (!normalized) return null;
+
+  const byNormalized = await db
+    .collection('carriers')
+    .where('phoneNormalized', '==', normalized)
+    .limit(1)
+    .get();
+  if (!byNormalized.empty) return byNormalized.docs[0];
+
+  const byPhone = await db.collection('carriers').where('phone', '==', normalized).limit(1).get();
+  if (!byPhone.empty) return byPhone.docs[0];
+
+  const digits = normalized.replace(/\D/g, '');
+  if (digits.startsWith('255') && digits.length >= 12) {
+    const local = `0${digits.slice(3)}`;
+    const byLocal = await db.collection('carriers').where('phone', '==', local).limit(1).get();
+    if (!byLocal.empty) return byLocal.docs[0];
+  }
+
+  return null;
+}
+
+/**
+ * Exchange a verified OTP ticket for a Firebase custom token (phone OTP login).
+ */
+async function handleLoginWithOtp(req) {
+  const body = await readJsonBody(req);
+  const phone = normalizeSmsPhone(body.phone);
+  const otpTicket = String(body.otpTicket || '').trim();
+  if (!phone) throw badRequest('Weka namba ya simu sahihi.', 'invalid_phone');
+  if (!otpTicket) throw badRequest('Thibitisha OTP kwanza.', 'missing_ticket');
+
+  const db = getDb();
+  const id = sessionIdForPhone(phone);
+  const ref = db.collection('carrierOtpSessions').doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw badRequest('Uthibitisho wa simu hauko sahihi.', 'no_session');
+
+  const session = snap.data();
+  const now = Date.now();
+  if (!session.verified || !session.otpTicketHash) {
+    throw badRequest('Thibitisha simu kwanza.', 'not_verified');
+  }
+  if (Number(session.ticketExpiresAtMs) < now) {
+    throw badRequest('Uthibitisho umeisha muda. Anza upya.', 'ticket_expired');
+  }
+  if (hashValue(otpTicket, 'ticket') !== session.otpTicketHash) {
+    throw badRequest('Uthibitisho wa simu hauko sahihi.', 'bad_ticket');
+  }
+
+  const purpose = String(session.purpose || 'signup').trim().toLowerCase();
+  if (purpose !== 'login' && purpose !== 'signup') {
+    throw badRequest('OTP haitumiki kuingia.', 'bad_purpose');
+  }
+
+  const carrierDoc = await findCarrierByPhone(db, phone);
+  if (!carrierDoc) {
+    throw badRequest('Hakuna akaunti kwa simu hii. Jisajili kwanza.', 'no_account');
+  }
+
+  const carrier = carrierDoc.data() || {};
+  const uid = String(carrier.ownerUid || carrierDoc.id).trim();
+  if (!uid) throw badRequest('Akaunti haipatikani.', 'no_account');
+
+  const { getAuth } = require('firebase-admin/auth');
+  const customToken = await getAuth().createCustomToken(uid, {
+    role: 'carrier',
+    carrierId: carrierDoc.id,
+  });
+
+  await ref.set(
+    {
+      otpTicketHash: FieldValue.delete(),
+      consumedAtMs: now,
+      consumedByUid: uid,
+      loginAtMs: now,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // Backfill normalized phone for faster future lookups.
+  if (!carrier.phoneNormalized) {
+    await carrierDoc.ref.set(
+      { phoneNormalized: phone, phone, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  }
+
+  console.info('carrier-otp login', { toMasked: maskPhone(phone), carrierId: carrierDoc.id });
+
+  return {
+    ok: true,
+    customToken,
+    carrierId: carrierDoc.id,
+    status: String(carrier.status || 'pending'),
+    phoneMasked: maskPhone(phone),
+  };
+}
+
 module.exports = {
   handleConfirmPhone,
+  handleLoginWithOtp,
   handleSendOtp,
   handleVerifyOtp,
   maskPhone,

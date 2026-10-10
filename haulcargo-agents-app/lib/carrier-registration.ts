@@ -34,6 +34,7 @@ export type RegisterCompanyInput = {
   coverageRegions?: string[];
   coverageAllTanzania?: boolean;
   coverageInternational?: boolean;
+  coverageInternationalCountries?: string;
 };
 
 export async function createCarrierFromRegistration(user: User, input: RegisterCompanyInput, email: string) {
@@ -53,6 +54,7 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     coverageRegions: input.coverageAllTanzania ? [] : [...(input.coverageRegions || [])],
     coverageAllTanzania: Boolean(input.coverageAllTanzania),
     coverageInternational: Boolean(input.coverageInternational),
+    coverageInternationalCountries: input.coverageInternationalCountries?.trim() || '',
   };
 
   await setDoc(doc(db, 'carriers', carrierId), {
@@ -66,6 +68,7 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     representativeTitle: input.representativeTitle?.trim() || '',
     representativeIdNumber: input.representativeIdNumber?.trim() || '',
     phone: input.phone || '',
+    phoneNormalized: input.phone || '',
     businessEmail: (input.businessEmail || email).trim().toLowerCase(),
     email,
     location: input.location || input.physicalAddress || '',
@@ -82,6 +85,7 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     coverageRegions: coverage.coverageRegions,
     coverageAllTanzania: coverage.coverageAllTanzania,
     coverageInternational: coverage.coverageInternational,
+    coverageInternationalCountries: coverage.coverageInternationalCountries,
     ordersReceived: 0,
     accepted: 0,
     rejected: 0,

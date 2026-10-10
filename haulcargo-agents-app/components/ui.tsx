@@ -130,9 +130,18 @@ export function PrimaryButton({
         pressed && styles.btnPressed,
       ]}>
       {loading ? (
-        <ActivityIndicator color={resolved === 'outline' ? theme.ink : theme.white} />
+        <ActivityIndicator
+          color={resolved === 'outline' || resolved === 'primary' ? theme.ink : theme.white}
+        />
       ) : (
-        <Text style={[styles.btnText, resolved === 'outline' && styles.btnTextOutline]}>{label}</Text>
+        <Text
+          style={[
+            styles.btnText,
+            resolved === 'outline' && styles.btnTextOutline,
+            resolved === 'primary' && styles.btnTextPrimary,
+          ]}>
+          {label}
+        </Text>
       )}
     </Pressable>
   );
@@ -299,12 +308,13 @@ const styles = StyleSheet.create({
   btnDisabled: { opacity: 0.5 },
   btnPressed: { opacity: 0.88 },
   btnText: {
-    color: theme.cta.labelColor,
+    color: theme.white,
     fontSize: theme.cta.labelSize,
     lineHeight: theme.cta.labelLineHeight,
     fontFamily: typography.bold,
     letterSpacing: theme.cta.letterSpacing,
   },
+  btnTextPrimary: { color: theme.cta.labelColor },
   btnTextOutline: { color: theme.ink },
   field: { marginBottom: 14 },
   fieldLabel: {
@@ -314,14 +324,13 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   input: {
-    borderWidth: 1,
-    borderColor: theme.line,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderWidth: 0,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     fontSize: 16,
     fontFamily: typography.body,
-    backgroundColor: theme.white,
+    backgroundColor: theme.tile,
     color: theme.ink,
   },
   inputError: { borderColor: theme.danger },

@@ -23,12 +23,12 @@ export default function VerificationPendingScreen() {
   if (carrier?.status === 'verified') return <Redirect href="/(main)" />;
   if (carrier?.status === 'rejected') {
     return (
-      <AuthShell title="Haijakubaliwa" subtitle="HAUL haijaidhinisha akaunti hii kwa sasa." back={false}>
+      <AuthShell title="Not approved" subtitle="HAUL has not approved this account." back={false}>
         {carrier.rejectionReason ? <Text style={styles.reason}>{carrier.rejectionReason}</Text> : null}
-        <PrimaryButton label="Fungua mipangilio" onPress={() => router.replace('/(main)/settings')} />
+        <PrimaryButton label="Open settings" onPress={() => router.replace('/(main)/settings')} />
         <View style={styles.gap} />
         <PrimaryButton
-          label="Toka"
+          label="Sign out"
           variant="outline"
           onPress={() => void signOut().then(() => router.replace('/'))}
         />
@@ -38,33 +38,28 @@ export default function VerificationPendingScreen() {
 
   return (
     <AuthShell
-      title="Inasubiri uthibitisho"
-      subtitle="Akaunti ya kampuni imetumwa. HAUL itathibitisha hati na BRELA/TIN kabla ya kupokea oda."
+      title="Waiting for verification"
+      subtitle="Your company is under review. You will receive orders once HAUL verifies your documents."
       back={false}>
-      <Animated.View entering={FadeInDown.duration(450)} style={styles.statusCard}>
-        <Text style={styles.statusEyebrow}>Hali ya biashara</Text>
-        <Text style={styles.statusTitle}>Pending verification</Text>
+      <Animated.View entering={FadeInDown.duration(420)} style={styles.statusCard}>
+        <Text style={styles.statusEyebrow}>Status</Text>
+        <Text style={styles.statusTitle}>Pending</Text>
         <Text style={styles.statusBody}>
-          {carrier?.companyName
-            ? `${carrier.companyName} · `
-            : ''}
-          Simu na barua pepe zimehifadhiwa. Unaweza kuingia kuona wasifu, lakini oda mpya zinahitaji
-          uthibitisho wa HAUL.
+          {carrier?.companyName ? `${carrier.companyName}. ` : ''}
+          BRELA, TIN, and licences are being checked.
         </Text>
       </Animated.View>
 
-      <Animated.View entering={FadeInUp.delay(120).duration(450)} style={styles.steps}>
-        <Text style={styles.step}>1. Timu yetu inapitia hati ulizopakia</Text>
-        <Text style={styles.step}>2. Tutathibitisha BRELA, TIN, na leseni</Text>
-        <Text style={styles.step}>3. Utapokea oda mara tu status ikawa verified</Text>
+      <Animated.View entering={FadeInUp.delay(100).duration(420)} style={styles.steps}>
+        <Text style={styles.step}>1. Documents under review</Text>
+        <Text style={styles.step}>2. Business numbers verified</Text>
+        <Text style={styles.step}>3. Orders unlock when verified</Text>
       </Animated.View>
 
-      <PrimaryButton label="Endelea kwenye desk" onPress={() => router.replace('/(main)')} />
-      <View style={styles.gap} />
-      <PrimaryButton label="Sasisha hali" variant="outline" onPress={() => void refreshCarrier()} />
+      <PrimaryButton label="Refresh status" onPress={() => void refreshCarrier()} />
       <View style={styles.gap} />
       <PrimaryButton
-        label="Toka"
+        label="Sign out"
         variant="outline"
         onPress={() => void signOut().then(() => router.replace('/'))}
       />
@@ -74,12 +69,10 @@ export default function VerificationPendingScreen() {
 
 const styles = StyleSheet.create({
   statusCard: {
-    backgroundColor: theme.primarySoft,
+    backgroundColor: theme.tile,
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#F3E7A3',
   },
   statusEyebrow: {
     fontFamily: typography.semibold,
@@ -89,7 +82,7 @@ const styles = StyleSheet.create({
   },
   statusTitle: {
     fontFamily: typography.bold,
-    fontSize: 20,
+    fontSize: 22,
     color: theme.ink,
     letterSpacing: -0.3,
     marginBottom: 8,

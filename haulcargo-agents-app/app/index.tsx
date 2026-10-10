@@ -9,6 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HaulLetterIntro } from '@/components/haul-letter-intro';
@@ -31,7 +32,7 @@ export default function LandingScreen() {
   if (initializing) {
     return (
       <View style={styles.loading}>
-        <StatusBar barStyle="dark-content" backgroundColor={theme.primary} />
+        <StatusBar barStyle="dark-content" backgroundColor={theme.bg} />
         <ActivityIndicator size="large" color={theme.ink} />
       </View>
     );
@@ -46,32 +47,30 @@ export default function LandingScreen() {
   }
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom, 16) }]}>
-      <StatusBar barStyle="dark-content" backgroundColor={theme.white} />
+    <View style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: Math.max(insets.bottom, 20) }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={theme.bg} />
 
-      <View style={styles.brandRow}>
+      <Animated.View entering={FadeIn.duration(400)} style={styles.brandBlock}>
         <Image source={images.haulLogo} style={styles.logo} resizeMode="contain" />
         <Text style={styles.brandMark}>HAUL</Text>
-      </View>
+        <Text style={styles.product}>Cargo Agents</Text>
+      </Animated.View>
 
-      <Text style={styles.headline}>Cargo Agents</Text>
-      <Text style={styles.subtitle}>
-        Pokea oda za mizigo, simamia safari, na fedha — katika mfumo mmoja wa HAUL.
-      </Text>
+      <Animated.View entering={FadeInUp.delay(80).duration(480)} style={styles.copy}>
+        <Text style={styles.headline}>Move freight with your desk.</Text>
+        <Text style={styles.subtitle}>Orders, routes, and payouts — one place.</Text>
+      </Animated.View>
 
-      <View style={styles.artStage}>
+      <Animated.View entering={FadeInUp.delay(140).duration(500)} style={styles.artStage}>
         <Image source={images.onboardingCargo} style={styles.art} resizeMode="contain" />
-      </View>
+      </Animated.View>
 
-      <View style={styles.footer}>
-        <PrimaryButton label="Ingia" onPress={() => router.push('/login')} />
-        <View style={styles.gap} />
-        <PrimaryButton label="Jisajili kampuni" variant="outline" onPress={() => router.push('/register')} />
-        <Pressable onPress={() => router.push('/login')} style={styles.loginLinkWrap}>
-          <Text style={styles.loginLinkMuted}>Tayari una akaunti? </Text>
-          <Text style={styles.loginLinkAction}>Ingia</Text>
+      <Animated.View entering={FadeInUp.delay(200).duration(480)} style={styles.footer}>
+        <PrimaryButton label="Start" onPress={() => router.push('/login')} />
+        <Pressable onPress={() => router.push('/register')} style={styles.secondary}>
+          <Text style={styles.secondaryText}>Register company</Text>
         </Pressable>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -79,76 +78,76 @@ export default function LandingScreen() {
 const styles = StyleSheet.create({
   loading: {
     flex: 1,
-    backgroundColor: theme.primary,
+    backgroundColor: theme.bg,
     justifyContent: 'center',
     alignItems: 'center',
   },
   root: {
     flex: 1,
-    backgroundColor: theme.white,
-    paddingHorizontal: 24,
+    backgroundColor: theme.bg,
+    paddingHorizontal: 28,
   },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 18,
+  brandBlock: {
+    alignItems: 'flex-start',
+    marginBottom: 28,
   },
   logo: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
+    marginBottom: 12,
   },
   brandMark: {
-    fontSize: 28,
-    lineHeight: 32,
+    fontSize: 42,
+    lineHeight: 46,
     fontFamily: typography.ident,
     color: theme.ink,
-    letterSpacing: -0.8,
+    letterSpacing: -1.2,
+  },
+  product: {
+    marginTop: 4,
+    fontSize: 16,
+    fontFamily: typography.medium,
+    color: theme.muted,
+    letterSpacing: 0.2,
+  },
+  copy: {
+    marginBottom: 8,
   },
   headline: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 22,
+    lineHeight: 28,
     fontFamily: typography.bold,
     color: theme.ink,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 22,
-    fontFamily: typography.medium,
-    color: theme.subtext,
-    marginBottom: 8,
+    fontFamily: typography.body,
+    color: theme.muted,
   },
   artStage: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 180,
+    minHeight: 160,
   },
   art: {
     width: '100%',
-    height: 240,
+    height: 220,
   },
   footer: {
-    gap: 0,
+    gap: 4,
     paddingTop: 8,
   },
-  gap: { height: 12 },
-  loginLinkWrap: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+  secondary: {
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 16,
   },
-  loginLinkMuted: {
-    fontSize: 14,
-    fontFamily: typography.medium,
-    color: theme.subtext,
-  },
-  loginLinkAction: {
-    fontSize: 14,
-    fontFamily: typography.bold,
+  secondaryText: {
+    fontSize: 15,
+    fontFamily: typography.semibold,
     color: theme.ink,
   },
 });

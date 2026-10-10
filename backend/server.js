@@ -27,7 +27,12 @@ const {
 } = require('./mongike-payments');
 const { handleNearbyCustomers } = require('./nearby-customers');
 const { handleCarrierDocumentUpload, handleNinunuliePhotoUpload } = require('./media-upload');
-const { handleConfirmPhone, handleSendOtp, handleVerifyOtp } = require('./carrier-otp');
+const {
+  handleConfirmPhone,
+  handleLoginWithOtp,
+  handleSendOtp,
+  handleVerifyOtp,
+} = require('./carrier-otp');
 
 function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -597,6 +602,7 @@ async function requestListener(req, res) {
             'POST /media/carrier-document',
             'POST /carrier-auth/otp/send',
             'POST /carrier-auth/otp/verify',
+            'POST /carrier-auth/otp/login',
             'POST /carrier-auth/confirm-phone',
             'POST /driver-payments/webhook/mongike',
           ],
@@ -716,6 +722,12 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/verify') {
       const payload = await handleVerifyOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/login') {
+      const payload = await handleLoginWithOtp(req);
       sendJson(res, 200, payload, originHeader);
       return;
     }

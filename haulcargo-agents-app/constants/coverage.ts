@@ -40,6 +40,8 @@ export type CoverageSelection = {
   coverageRegions: string[];
   coverageAllTanzania: boolean;
   coverageInternational: boolean;
+  /** Comma-separated countries when operating outside Tanzania. */
+  coverageInternationalCountries: string;
 };
 
 export function emptyCoverage(): CoverageSelection {
@@ -47,21 +49,25 @@ export function emptyCoverage(): CoverageSelection {
     coverageRegions: [],
     coverageAllTanzania: false,
     coverageInternational: false,
+    coverageInternationalCountries: '',
   };
 }
 
 export function coverageIsValid(selection: CoverageSelection) {
-  return (
-    selection.coverageAllTanzania ||
-    selection.coverageInternational ||
-    selection.coverageRegions.length > 0
-  );
+  if (selection.coverageAllTanzania || selection.coverageRegions.length > 0) return true;
+  if (selection.coverageInternational) {
+    return selection.coverageInternationalCountries.trim().length > 1;
+  }
+  return false;
 }
 
 export function coverageSummary(selection: CoverageSelection) {
   const parts: string[] = [];
   if (selection.coverageAllTanzania) parts.push(COVERAGE_ALL_TZ);
-  if (selection.coverageInternational) parts.push(COVERAGE_INTERNATIONAL);
+  if (selection.coverageInternational) {
+    const countries = selection.coverageInternationalCountries.trim();
+    parts.push(countries ? `${COVERAGE_INTERNATIONAL}: ${countries}` : COVERAGE_INTERNATIONAL);
+  }
   if (!selection.coverageAllTanzania && selection.coverageRegions.length) {
     parts.push(...selection.coverageRegions.slice(0, 4));
     if (selection.coverageRegions.length > 4) {

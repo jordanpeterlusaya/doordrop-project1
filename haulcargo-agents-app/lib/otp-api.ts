@@ -2,6 +2,8 @@ import { apiBaseUrl } from '@/lib/api-config';
 
 type ApiError = Error & { statusCode?: number; code?: string };
 
+export type OtpPurpose = 'signup' | 'login';
+
 async function postJson<T>(path: string, body: Record<string, unknown>, token?: string): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -30,13 +32,13 @@ async function postJson<T>(path: string, body: Record<string, unknown>, token?: 
   return payload;
 }
 
-export async function sendCarrierOtp(phone: string) {
+export async function sendCarrierOtp(phone: string, purpose: OtpPurpose = 'signup') {
   return postJson<{
     ok: boolean;
     cooldownSeconds: number;
     expiresInSeconds: number;
     phoneMasked: string;
-  }>('/carrier-auth/otp/send', { phone, purpose: 'signup' });
+  }>('/carrier-auth/otp/send', { phone, purpose });
 }
 
 export async function verifyCarrierOtp(phone: string, code: string) {
@@ -46,6 +48,16 @@ export async function verifyCarrierOtp(phone: string, code: string) {
     expiresInSeconds: number;
     phoneMasked: string;
   }>('/carrier-auth/otp/verify', { phone, code });
+}
+
+export async function loginCarrierWithOtp(phone: string, otpTicket: string) {
+  return postJson<{
+    ok: boolean;
+    customToken: string;
+    carrierId: string;
+    status: string;
+    phoneMasked: string;
+  }>('/carrier-auth/otp/login', { phone, otpTicket });
 }
 
 export async function confirmCarrierPhone(opts: {

@@ -9,7 +9,7 @@ import {
 } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { Muted } from '@/components/ui';
+import { Field, Muted } from '@/components/ui';
 
 type Props = {
   value: CoverageSelection;
@@ -46,7 +46,12 @@ export function CoveragePicker({ value, onChange }: Props) {
   };
 
   const toggleIntl = () => {
-    onChange({ ...value, coverageInternational: !value.coverageInternational });
+    const next = !value.coverageInternational;
+    onChange({
+      ...value,
+      coverageInternational: next,
+      coverageInternationalCountries: next ? value.coverageInternationalCountries : '',
+    });
   };
 
   const toggleRegion = (region: string) => {
@@ -54,6 +59,7 @@ export function CoveragePicker({ value, onChange }: Props) {
       onChange({
         coverageAllTanzania: false,
         coverageInternational: value.coverageInternational,
+        coverageInternationalCountries: value.coverageInternationalCountries,
         coverageRegions: [region],
       });
       return;
@@ -69,16 +75,24 @@ export function CoveragePicker({ value, onChange }: Props) {
 
   return (
     <View style={styles.wrap}>
-      <Muted style={styles.hint}>
-        Chagua maeneo mnayohudumia — HAUL itapeleka oda za mizigo kulingana na coverage hii na njia zenu.
-      </Muted>
+      <Muted style={styles.hint}>Chagua mikoa, Tanzania yote, au nje ya nchi.</Muted>
       <View style={styles.row}>
         <Chip label={COVERAGE_ALL_TZ} selected={value.coverageAllTanzania} onPress={toggleAllTz} />
         <Chip label={COVERAGE_INTERNATIONAL} selected={value.coverageInternational} onPress={toggleIntl} />
       </View>
+
+      {value.coverageInternational ? (
+        <Field
+          label="Nchi (nje ya Tanzania)"
+          placeholder="Kenya, Uganda, …"
+          value={value.coverageInternationalCountries}
+          onChangeText={(text) => onChange({ ...value, coverageInternationalCountries: text })}
+        />
+      ) : null}
+
       {!value.coverageAllTanzania ? (
         <>
-          <Text style={styles.section}>Mikoa mahususi</Text>
+          <Text style={styles.section}>Mikoa</Text>
           <View style={styles.grid}>
             {TZ_REGIONS.map((region) => (
               <Chip
@@ -98,7 +112,7 @@ export function CoveragePicker({ value, onChange }: Props) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginBottom: 16 },
+  wrap: { marginBottom: 8 },
   hint: { marginBottom: 12, lineHeight: 20 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   section: {

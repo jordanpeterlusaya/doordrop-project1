@@ -33,11 +33,11 @@ export const theme = {
   cta: {
     minHeight: 56,
     borderRadius: 28,
-    backgroundColor: '#111827',
+    backgroundColor: '#FFE500',
     paddingHorizontal: 20,
     labelSize: 17,
     labelLineHeight: 22,
-    labelColor: '#FFFFFF',
+    labelColor: '#111827',
     letterSpacing: -0.2,
   },
 } as const;

@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -27,22 +26,23 @@ type Props = {
   back?: boolean;
   footer?: React.ReactNode;
   contentStyle?: ViewStyle;
+  /** Centered OTP-style layout (more vertical space, tighter card). */
+  centered?: boolean;
 };
 
-export function AuthShell({ title, subtitle, children, back = true, footer, contentStyle }: Props) {
+export function AuthShell({
+  title,
+  subtitle,
+  children,
+  back = true,
+  footer,
+  contentStyle,
+  centered = false,
+}: Props) {
   const insets = useSafeAreaInsets();
-
-  useEffect(() => {
-    // Mount marker for subtle enter animations via Reanimated entering props.
-  }, []);
 
   return (
     <View style={styles.root}>
-      <LinearGradient
-        colors={['#FFF8C2', '#FFFFFF', '#F7F7F5']}
-        locations={[0, 0.38, 1]}
-        style={StyleSheet.absoluteFill}
-      />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -50,17 +50,20 @@ export function AuthShell({ title, subtitle, children, back = true, footer, cont
         <ScrollView
           contentContainerStyle={[
             styles.scroll,
-            { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 28 },
+            centered && styles.scrollCentered,
+            { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 28 },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.duration(420)} style={styles.topRow}>
+          <Animated.View entering={FadeInDown.duration(380)} style={styles.topRow}>
             {back ? (
               <Pressable
                 onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
                 hitSlop={12}
-                style={styles.backBtn}>
-                <Ionicons name="chevron-back" size={22} color={theme.ink} />
+                style={styles.backBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Back">
+                <Ionicons name="chevron-back" size={20} color={theme.ink} />
               </Pressable>
             ) : (
               <View style={styles.backBtn} />
@@ -72,17 +75,21 @@ export function AuthShell({ title, subtitle, children, back = true, footer, cont
             <View style={styles.backBtn} />
           </Animated.View>
 
-          <Animated.View entering={FadeInUp.delay(80).duration(480)} style={[styles.hero, contentStyle]}>
-            <Text style={styles.title}>{title}</Text>
-            {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          <Animated.View
+            entering={FadeInUp.delay(60).duration(420)}
+            style={[styles.hero, centered && styles.heroCentered, contentStyle]}>
+            <Text style={[styles.title, centered && styles.titleCentered]}>{title}</Text>
+            {subtitle ? (
+              <Text style={[styles.subtitle, centered && styles.subtitleCentered]}>{subtitle}</Text>
+            ) : null}
           </Animated.View>
 
-          <Animated.View entering={FadeInUp.delay(140).duration(500)} style={styles.card}>
+          <Animated.View entering={FadeInUp.delay(120).duration(440)} style={styles.card}>
             {children}
           </Animated.View>
 
           {footer ? (
-            <Animated.View entering={FadeInUp.delay(200).duration(480)} style={styles.footer}>
+            <Animated.View entering={FadeInUp.delay(160).duration(420)} style={styles.footer}>
               {footer}
             </Animated.View>
           ) : null}
@@ -93,14 +100,15 @@ export function AuthShell({ title, subtitle, children, back = true, footer, cont
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: theme.white },
+  root: { flex: 1, backgroundColor: theme.bg },
   flex: { flex: 1 },
   scroll: { paddingHorizontal: 22, flexGrow: 1 },
+  scrollCentered: { justifyContent: 'center' },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 18,
+    marginBottom: 28,
   },
   backBtn: {
     width: 40,
@@ -108,6 +116,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: theme.white,
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   logo: { width: 28, height: 28 },
@@ -117,14 +126,16 @@ const styles = StyleSheet.create({
     letterSpacing: -0.6,
     color: theme.ink,
   },
-  hero: { marginBottom: 18 },
+  hero: { marginBottom: 20 },
+  heroCentered: { alignItems: 'center' },
   title: {
     fontFamily: typography.bold,
-    fontSize: 28,
-    lineHeight: 34,
-    letterSpacing: -0.5,
+    fontSize: 26,
+    lineHeight: 32,
+    letterSpacing: -0.4,
     color: theme.ink,
   },
+  titleCentered: { textAlign: 'center', fontSize: 24 },
   subtitle: {
     marginTop: 8,
     fontFamily: typography.body,
@@ -132,12 +143,16 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: theme.muted,
   },
+  subtitleCentered: { textAlign: 'center', maxWidth: 280 },
   card: {
     backgroundColor: theme.white,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: theme.border,
-    padding: 18,
+    borderRadius: 24,
+    padding: 22,
+    shadowColor: '#111827',
+    shadowOpacity: 0.06,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
   },
-  footer: { marginTop: 18, alignItems: 'center' },
+  footer: { marginTop: 20, alignItems: 'center' },
 });

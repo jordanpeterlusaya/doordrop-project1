@@ -4,6 +4,7 @@ import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  signInWithCustomToken,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
@@ -23,6 +24,7 @@ import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/
 import type { Carrier, CarrierRoute, CarrierShipment } from '@/lib/carrier-types';
 import { isIncomingOffer } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
+import { loginCarrierWithOtp } from '@/lib/otp-api';
 import { registerCarrierPushToken, vibrateForNewOffer } from '@/lib/push-notifications';
 
 type CarrierSessionValue = {
@@ -32,6 +34,7 @@ type CarrierSessionValue = {
   authError: string;
   clearAuthError: () => void;
   signIn: (email: string, password: string) => Promise<void>;
+  signInWithPhoneOtp: (phone: string, otpTicket: string) => Promise<void>;
   signUp: (email: string, password: string, company: RegisterCompanyInput) => Promise<void>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -190,6 +193,24 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     }
   }, []);
 
+  const signInWithPhoneOtp = useCallback(async (phone: string, otpTicket: string) => {
+    setAuthenticating(true);
+    setAuthError('');
+    try {
+      const result = await loginCarrierWithOtp(phone, otpTicket);
+      await signInWithCustomToken(auth, result.customToken);
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Imeshindwa kuingia. Thibitisha OTP na jaribu tena.';
+      setAuthError(message);
+      throw error;
+    } finally {
+      setAuthenticating(false);
+    }
+  }, []);
+
   const signUp = useCallback(async (email: string, password: string, company: RegisterCompanyInput) => {
     setAuthenticating(true);
     setAuthError('');
@@ -224,6 +245,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       authError,
       clearAuthError,
       signIn,
+      signInWithPhoneOtp,
       signUp,
       signOut,
       resetPassword,
@@ -241,6 +263,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       authError,
       clearAuthError,
       signIn,
+      signInWithPhoneOtp,
       signUp,
       signOut,
       resetPassword,
