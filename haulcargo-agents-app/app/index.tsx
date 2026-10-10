@@ -1,20 +1,38 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import { Redirect, router } from 'expo-router';
-import React from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { PrimaryButton, Screen } from '@/components/ui';
+import { HaulLetterIntro } from '@/components/haul-letter-intro';
+import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
+import { images } from '@/lib/images';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function LandingScreen() {
   const { user, initializing, needsCompanySetup, carrier } = useCarrierSession();
+  const [showIntro, setShowIntro] = useState(true);
+  const insets = useSafeAreaInsets();
+
+  if (showIntro) {
+    return <HaulLetterIntro onFinished={() => setShowIntro(false)} />;
+  }
 
   if (initializing) {
     return (
-      <Screen style={styles.center}>
-        <ActivityIndicator size="large" color={theme.green} />
-      </Screen>
+      <View style={styles.loading}>
+        <StatusBar barStyle="dark-content" backgroundColor={theme.primary} />
+        <ActivityIndicator size="large" color={theme.ink} />
+      </View>
     );
   }
 
@@ -26,44 +44,109 @@ export default function LandingScreen() {
   }
 
   return (
-    <Screen scroll padBottom={32}>
-      <LinearGradient colors={['#14532d', '#166534']} style={styles.hero}>
-        <Text style={styles.brand}>Haul Cargo Agents</Text>
-        <Text style={styles.tagline}>Makampuni ya usafirishaji yapokee mizigo ya HAUL — simamia oda, safari, na fedha mahali pamoja.</Text>
-      </LinearGradient>
-      <View style={styles.body}>
-        <View style={styles.logoRow}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoLetter}>H</Text>
-          </View>
-          <Text style={styles.lead}>
-            Unganisha na wateja wa DoorDrop/HAUL, kubali oda ndani ya dakika 5, fuata eneo la kuchukua mzigo, na simamia manifesti yako.
-          </Text>
-        </View>
+    <View style={[styles.root, { paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom, 16) }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={theme.white} />
+
+      <View style={styles.brandRow}>
+        <Image source={images.haulLogo} style={styles.logo} resizeMode="contain" />
+        <Text style={styles.brandMark}>HAUL</Text>
+      </View>
+
+      <Text style={styles.headline}>Cargo Agents</Text>
+      <Text style={styles.subtitle}>
+        Pokea oda za mizigo, simamia safari, na fedha — katika mfumo mmoja wa HAUL.
+      </Text>
+
+      <View style={styles.artStage}>
+        <Image source={images.onboardingCargo} style={styles.art} resizeMode="contain" />
+      </View>
+
+      <View style={styles.footer}>
         <PrimaryButton label="Ingia" onPress={() => router.push('/login')} />
         <View style={styles.gap} />
         <PrimaryButton label="Jisajili kampuni" variant="outline" onPress={() => router.push('/register')} />
+        <Pressable onPress={() => router.push('/login')} style={styles.loginLinkWrap}>
+          <Text style={styles.loginLinkMuted}>Tayari una akaunti? </Text>
+          <Text style={styles.loginLinkAction}>Ingia</Text>
+        </Pressable>
       </View>
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  center: { justifyContent: 'center', alignItems: 'center' },
-  hero: { marginHorizontal: -20, paddingHorizontal: 24, paddingVertical: 36, borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
-  brand: { fontSize: 26, fontWeight: '800', color: theme.white, marginBottom: 10 },
-  tagline: { fontSize: 15, lineHeight: 22, color: '#dcfce7' },
-  body: { marginTop: 28, flex: 1 },
-  logoRow: { flexDirection: 'row', gap: 14, marginBottom: 28, alignItems: 'flex-start' },
-  logoCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: theme.green,
+  loading: {
+    flex: 1,
+    backgroundColor: theme.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  root: {
+    flex: 1,
+    backgroundColor: theme.white,
+    paddingHorizontal: 24,
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 18,
+  },
+  logo: {
+    width: 40,
+    height: 40,
+  },
+  brandMark: {
+    fontSize: 28,
+    lineHeight: 32,
+    fontFamily: typography.ident,
+    color: theme.ink,
+    letterSpacing: -0.8,
+  },
+  headline: {
+    fontSize: 28,
+    lineHeight: 34,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    letterSpacing: -0.4,
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.medium,
+    color: theme.subtext,
+    marginBottom: 8,
+  },
+  artStage: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 180,
   },
-  logoLetter: { color: theme.white, fontSize: 22, fontWeight: '800' },
-  lead: { flex: 1, fontSize: 14, lineHeight: 21, color: theme.muted },
+  art: {
+    width: '100%',
+    height: 240,
+  },
+  footer: {
+    gap: 0,
+    paddingTop: 8,
+  },
   gap: { height: 12 },
+  loginLinkWrap: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  loginLinkMuted: {
+    fontSize: 14,
+    fontFamily: typography.medium,
+    color: theme.subtext,
+  },
+  loginLinkAction: {
+    fontSize: 14,
+    fontFamily: typography.bold,
+    color: theme.ink,
+  },
 });

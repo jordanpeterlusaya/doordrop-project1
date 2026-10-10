@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { formatCountdown, offerExpiresMs } from '@/lib/carrier-helpers';
 import type { CarrierShipment } from '@/lib/carrier-types';
 
@@ -28,15 +29,24 @@ export function OfferCountdown({ shipment }: { shipment: CarrierShipment }) {
 
 const styles = StyleSheet.create({
   box: {
-    backgroundColor: '#ecfdf5',
-    borderRadius: 10,
+    backgroundColor: theme.primarySoft,
+    borderRadius: 14,
     padding: 12,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#a7f3d0',
+    borderColor: theme.primary,
   },
-  urgent: { borderColor: theme.warning, backgroundColor: '#fefce8' },
-  expired: { borderColor: theme.muted, backgroundColor: '#f5f5f4' },
-  label: { fontSize: 12, color: theme.muted, fontWeight: '600' },
-  time: { fontSize: 28, fontWeight: '800', color: theme.green, fontVariant: ['tabular-nums'] },
+  urgent: { borderColor: theme.warning, backgroundColor: theme.primarySoft },
+  expired: { borderColor: theme.muted, backgroundColor: theme.tile },
+  label: {
+    fontSize: 12,
+    color: theme.muted,
+    fontFamily: typography.semibold,
+  },
+  time: {
+    fontSize: 28,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    fontVariant: ['tabular-nums'],
+  },
 });

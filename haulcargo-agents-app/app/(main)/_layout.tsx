@@ -4,6 +4,7 @@ import React from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function MainTabsLayout() {
@@ -11,8 +12,8 @@ export default function MainTabsLayout() {
 
   if (initializing) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.bg }}>
-        <ActivityIndicator color={theme.green} size="large" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.primary }}>
+        <ActivityIndicator color={theme.ink} size="large" />
       </View>
     );
   }
@@ -25,9 +26,18 @@ export default function MainTabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: theme.green,
+        tabBarActiveTintColor: theme.ink,
         tabBarInactiveTintColor: theme.muted,
-        tabBarStyle: { borderTopColor: theme.border, backgroundColor: theme.white },
+        tabBarLabelStyle: {
+          fontFamily: typography.semibold,
+          fontSize: 11,
+        },
+        tabBarStyle: {
+          borderTopColor: theme.line,
+          backgroundColor: theme.white,
+          height: 62,
+          paddingTop: 4,
+        },
       }}>
       <Tabs.Screen
         name="index"

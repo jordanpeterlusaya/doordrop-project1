@@ -16,6 +16,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 
 export function Screen({
   children,
@@ -49,7 +50,7 @@ export function Header({ title, back }: { title: string; back?: boolean }) {
     <View style={styles.header}>
       {back ? (
         <Pressable onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} hitSlop={12} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color={theme.charcoal} />
+          <Ionicons name="chevron-back" size={24} color={theme.ink} />
         </Pressable>
       ) : (
         <View style={styles.backSpacer} />
@@ -65,27 +66,32 @@ export function PrimaryButton({
   onPress,
   disabled,
   loading,
-  variant = 'green',
+  variant = 'primary',
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
-  variant?: 'green' | 'outline' | 'danger';
+  variant?: 'primary' | 'green' | 'outline' | 'danger';
 }) {
+  const resolved = variant === 'green' ? 'primary' : variant;
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
       style={({ pressed }) => [
         styles.btn,
-        variant === 'green' && styles.btnGreen,
-        variant === 'outline' && styles.btnOutline,
-        variant === 'danger' && styles.btnDanger,
+        resolved === 'primary' && styles.btnPrimary,
+        resolved === 'outline' && styles.btnOutline,
+        resolved === 'danger' && styles.btnDanger,
         (disabled || loading) && styles.btnDisabled,
         pressed && styles.btnPressed,
       ]}>
-      {loading ? <ActivityIndicator color={variant === 'outline' ? theme.green : theme.white} /> : <Text style={[styles.btnText, variant === 'outline' && styles.btnTextOutline]}>{label}</Text>}
+      {loading ? (
+        <ActivityIndicator color={resolved === 'outline' ? theme.ink : theme.white} />
+      ) : (
+        <Text style={[styles.btnText, resolved === 'outline' && styles.btnTextOutline]}>{label}</Text>
+      )}
     </Pressable>
   );
 }
@@ -112,48 +118,77 @@ export function SectionTitle({ children }: { children: string }) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg },
+  screen: { flex: 1, backgroundColor: theme.white },
   screenInner: { flex: 1, paddingHorizontal: 20 },
   scrollGrow: { flexGrow: 1 },
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   backBtn: { width: 36 },
   backSpacer: { width: 36 },
-  headerTitle: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '700', color: theme.charcoal },
+  headerTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 18,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    letterSpacing: -0.2,
+  },
   btn: {
-    borderRadius: 12,
+    borderRadius: theme.cta.borderRadius,
     paddingVertical: 14,
-    paddingHorizontal: 18,
+    paddingHorizontal: theme.cta.paddingHorizontal,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 48,
+    minHeight: theme.cta.minHeight,
   },
-  btnGreen: { backgroundColor: theme.green },
-  btnOutline: { backgroundColor: theme.white, borderWidth: 1, borderColor: theme.border },
+  btnPrimary: { backgroundColor: theme.cta.backgroundColor },
+  btnOutline: { backgroundColor: theme.white, borderWidth: 1.5, borderColor: theme.line },
   btnDanger: { backgroundColor: theme.danger },
   btnDisabled: { opacity: 0.5 },
   btnPressed: { opacity: 0.88 },
-  btnText: { color: theme.white, fontSize: 16, fontWeight: '700' },
-  btnTextOutline: { color: theme.green },
+  btnText: {
+    color: theme.cta.labelColor,
+    fontSize: theme.cta.labelSize,
+    lineHeight: theme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    letterSpacing: theme.cta.letterSpacing,
+  },
+  btnTextOutline: { color: theme.ink },
   field: { marginBottom: 14 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: theme.charcoal, marginBottom: 6 },
+  fieldLabel: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: theme.ink,
+    marginBottom: 6,
+  },
   input: {
     borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 10,
+    borderColor: theme.line,
+    borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
+    fontFamily: typography.body,
     backgroundColor: theme.white,
-    color: theme.charcoal,
+    color: theme.ink,
   },
   card: {
-    backgroundColor: theme.white,
-    borderRadius: 14,
+    backgroundColor: theme.tile,
+    borderRadius: theme.radius.md,
     padding: 16,
-    borderWidth: 1,
-    borderColor: theme.border,
     marginBottom: 12,
   },
-  muted: { color: theme.muted, fontSize: 14, lineHeight: 20 },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: theme.charcoal, marginBottom: 10, marginTop: 4 },
+  muted: {
+    color: theme.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.body,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    marginBottom: 10,
+    marginTop: 4,
+    letterSpacing: -0.2,
+  },
 });

@@ -70,5 +70,5 @@ const styles = StyleSheet.create({
   sub: { color: theme.muted, marginBottom: 20, lineHeight: 20 },
   error: { color: theme.danger, marginBottom: 12 },
   linkWrap: { marginTop: 16, alignItems: 'center' },
-  link: { color: theme.green, fontWeight: '600' },
+  link: { color: theme.ink, fontWeight: '600' },
 });

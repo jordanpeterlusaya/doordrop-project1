@@ -37,9 +37,9 @@ module.exports = {
     userInterfaceStyle: 'light',
     newArchEnabled: true,
     splash: {
-      image: './assets/splash-icon.png',
+      image: './assets/images/haul-splash-blank.png',
       resizeMode: 'contain',
-      backgroundColor: '#14532d',
+      backgroundColor: '#FFE500',
     },
     ios: {
       supportsTablet: true,
@@ -50,7 +50,7 @@ module.exports = {
         foregroundImage: './assets/android-icon-foreground.png',
         backgroundImage: './assets/android-icon-background.png',
         monochromeImage: './assets/android-icon-monochrome.png',
-        backgroundColor: '#14532d',
+        backgroundColor: '#FFE500',
       },
       package: 'com.haulcargo.agents',
       config: googleMapsApiKey ? { googleMaps: { apiKey: googleMapsApiKey } } : undefined,

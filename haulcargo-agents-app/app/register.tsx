@@ -82,7 +82,7 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  step: { fontWeight: '700', color: theme.green, marginBottom: 12 },
+  step: { fontWeight: '700', color: theme.ink, marginBottom: 12 },
   hint: { color: theme.muted, marginBottom: 12, lineHeight: 20 },
   error: { color: theme.danger, marginBottom: 12 },
 });
