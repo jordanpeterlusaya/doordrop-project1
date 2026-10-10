@@ -1,24 +1,5 @@
 const { FieldValue } = require('firebase-admin/firestore');
-
-function digitsOnly(value) {
-  return String(value || '').replace(/\D/g, '');
-}
-
-function maskPhone(phone) {
-  const digits = digitsOnly(phone);
-  if (digits.length < 4) return '****';
-  return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
-}
-
-function normalizeSmsPhone(phone) {
-  const digits = digitsOnly(phone);
-  if (digits.length < 9) return '';
-  if (digits.startsWith('0') && digits.length === 10) return `+255${digits.slice(1)}`;
-  if (digits.startsWith('255') || digits.startsWith('254') || digits.startsWith('256') || digits.startsWith('250')) {
-    return `+${digits}`;
-  }
-  return `+${digits}`;
-}
+const { maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
 
 function parcelCodeOf(shipment, orderId) {
   return String(shipment?.parcelCode || shipment?.orderNumber || orderId || '')
@@ -97,52 +78,31 @@ async function enqueueRecipientSms(db, { orderId, shipment, event, carrierCompan
 
   await ref.set(payload, { merge: true });
 
-  // Optional live send if a provider URL is configured (generic webhook).
-  const webhook = String(process.env.SMS_WEBHOOK_URL || '').trim();
-  if (webhook) {
+  // Live send when Africa's Talking / Twilio / SMS_API_* / webhook is configured.
+  if (smsConfigured()) {
     try {
-      const response = await fetch(webhook, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(process.env.SMS_WEBHOOK_TOKEN
-            ? { Authorization: `Bearer ${process.env.SMS_WEBHOOK_TOKEN}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          to,
-          body,
-          event,
-          orderId,
-          jobId,
-        }),
-      });
-      if (response.ok) {
-        await ref.set(
-          { status: 'sent', sentAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() },
-          { merge: true }
-        );
-        console.info('carrier-sms sent', { orderId, event, toMasked: maskPhone(to) });
-        return { queued: true, sent: true, jobId };
-      }
+      const result = await sendSms(to, body, { event, orderId, jobId, audience: 'recipient' });
       await ref.set(
         {
-          status: 'pending',
-          lastError: `webhook_${response.status}`,
+          status: 'sent',
+          provider: result.provider || provider || 'live',
+          sentAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
+      console.info('carrier-sms sent', { orderId, event, toMasked: maskPhone(to), provider: result.provider });
+      return { queued: true, sent: true, jobId };
     } catch (error) {
       await ref.set(
         {
           status: 'pending',
-          lastError: 'webhook_failed',
+          lastError: String(error?.message || 'sms_failed').slice(0, 160),
           updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
-      console.warn('carrier-sms webhook failed', { orderId, event, toMasked: maskPhone(to) });
+      console.warn('carrier-sms send failed', { orderId, event, toMasked: maskPhone(to) });
     }
   } else {
     console.info('carrier-sms queued', { orderId, event, toMasked: maskPhone(to) });

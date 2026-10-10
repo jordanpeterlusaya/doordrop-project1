@@ -1,17 +1,32 @@
 import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import type { User } from 'firebase/auth';
 
 import type { CoverageSelection } from '@/constants/coverage';
-import { ALL_OPERATING_DAYS, DAYS } from '@/lib/carrier-types';
+import { ALL_OPERATING_DAYS } from '@/lib/carrier-types';
 import { darTodayKey } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
-import type { User } from 'firebase/auth';
 
 export type RegisterCompanyInput = {
   companyName: string;
+  brelaNumber?: string;
+  tin?: string;
+  businessLicence?: string;
+  latraLicence?: string;
   contactPerson?: string;
+  representativeTitle?: string;
+  representativeIdNumber?: string;
   phone?: string;
+  businessEmail?: string;
   location?: string;
+  physicalAddress?: string;
+  gpsLatitude?: number | null;
+  gpsLongitude?: number | null;
+  operatingStations?: string;
   businessDetails?: string;
+  documents?: Record<string, string>;
+  termsAccepted?: boolean;
+  privacyAccepted?: boolean;
+  phoneVerified?: boolean;
   routeOrigin: string;
   routeDestination: string;
   routeDepart: string;
@@ -43,13 +58,27 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
   await setDoc(doc(db, 'carriers', carrierId), {
     ownerUid: carrierId,
     companyName: input.companyName.trim(),
+    brelaNumber: input.brelaNumber?.trim() || '',
+    tin: input.tin?.trim() || '',
+    businessLicence: input.businessLicence?.trim() || '',
+    latraLicence: input.latraLicence?.trim() || '',
     contactPerson: input.contactPerson || '',
+    representativeTitle: input.representativeTitle?.trim() || '',
+    representativeIdNumber: input.representativeIdNumber?.trim() || '',
     phone: input.phone || '',
+    businessEmail: (input.businessEmail || email).trim().toLowerCase(),
     email,
-    location: input.location || '',
+    location: input.location || input.physicalAddress || '',
+    physicalAddress: input.physicalAddress?.trim() || input.location || '',
+    gpsLatitude: input.gpsLatitude ?? null,
+    gpsLongitude: input.gpsLongitude ?? null,
+    operatingStations: input.operatingStations?.trim() || '',
     businessDetails: input.businessDetails || '',
     status: 'pending',
-    documents: {},
+    documents: input.documents || {},
+    termsAcceptedAt: input.termsAccepted ? serverTimestamp() : null,
+    privacyAcceptedAt: input.privacyAccepted ? serverTimestamp() : null,
+    phoneVerified: Boolean(input.phoneVerified),
     coverageRegions: coverage.coverageRegions,
     coverageAllTanzania: coverage.coverageAllTanzania,
     coverageInternational: coverage.coverageInternational,
@@ -86,5 +115,3 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
 
   return carrierId;
 }
-
-export { DAYS };

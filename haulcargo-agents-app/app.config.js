@@ -59,7 +59,26 @@ module.exports = {
       favicon: './assets/favicon.png',
       bundler: 'metro',
     },
-    plugins: ['expo-router', 'expo-font', 'expo-sharing', 'expo-splash-screen', 'expo-status-bar'],
+    plugins: [
+      'expo-router',
+      'expo-font',
+      'expo-sharing',
+      'expo-splash-screen',
+      'expo-status-bar',
+      [
+        'expo-notifications',
+        {
+          color: '#FFE500',
+          defaultChannel: 'carrier_offers',
+        },
+      ],
+      [
+        'expo-image-picker',
+        {
+          photosPermission: 'Ruhusu HAUL Agents kuchagua picha za hati za biashara.',
+        },
+      ],
+    ],
     experiments: {
       typedRoutes: true,
     },
@@ -71,6 +90,9 @@ module.exports = {
       firebaseMessagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '',
       googleMapsApiKey,
+      apiBaseUrl:
+        process.env.EXPO_PUBLIC_API_BASE_URL ||
+        'https://us-central1-efootball-app-9d175.cloudfunctions.net/api',
     },
   },
 };

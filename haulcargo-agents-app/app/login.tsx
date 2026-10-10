@@ -1,18 +1,23 @@
 import { Redirect, router } from 'expo-router';
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
-import { Field, Header, PrimaryButton, Screen } from '@/components/ui';
+import { AuthShell } from '@/components/auth-shell';
+import { Field, PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function LoginScreen() {
-  const { signIn, authenticating, authError, clearAuthError, user, needsCompanySetup, carrier } = useCarrierSession();
+  const { signIn, authenticating, authError, clearAuthError, user, needsCompanySetup, carrier } =
+    useCarrierSession();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState('');
 
   if (user && !needsCompanySetup && (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com')) {
+    if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }
   if (user && needsCompanySetup) return <Redirect href="/register-company" />;
@@ -20,13 +25,26 @@ export default function LoginScreen() {
   const error = localError || authError;
 
   return (
-    <Screen scroll>
-      <Header title="Ingia" back />
-      <Text style={styles.sub}>Barua pepe na nenosiri la kampuni yako.</Text>
+    <AuthShell
+      title="Ingia"
+      subtitle="Barua pepe na nenosiri la kampuni yako ya usafirishaji."
+      footer={
+        <>
+          <Pressable onPress={() => router.push('/forgot-password')} style={styles.linkWrap}>
+            <Text style={styles.link}>Umesahau nenosiri?</Text>
+          </Pressable>
+          <Pressable onPress={() => router.replace('/register')} style={styles.linkWrap}>
+            <Text style={styles.muted}>
+              Huna akaunti? <Text style={styles.link}>Jisajili</Text>
+            </Text>
+          </Pressable>
+        </>
+      }>
       <Field
         label="Barua pepe"
         autoCapitalize="none"
         keyboardType="email-address"
+        autoComplete="email"
         value={email}
         onChangeText={(t) => {
           setEmail(t);
@@ -37,6 +55,7 @@ export default function LoginScreen() {
       <Field
         label="Nenosiri"
         secureTextEntry
+        autoComplete="password"
         value={password}
         onChangeText={(t) => {
           setPassword(t);
@@ -44,7 +63,11 @@ export default function LoginScreen() {
           setLocalError('');
         }}
       />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <Animated.Text entering={FadeIn.duration(200)} style={styles.error}>
+          {error}
+        </Animated.Text>
+      ) : null}
       <PrimaryButton
         label="Ingia"
         loading={authenticating}
@@ -56,19 +79,18 @@ export default function LoginScreen() {
           void signIn(email, password).catch(() => undefined);
         }}
       />
-      <Pressable onPress={() => router.push('/forgot-password')} style={styles.linkWrap}>
-        <Text style={styles.link}>Umesahau nenosiri?</Text>
-      </Pressable>
-      <Pressable onPress={() => router.replace('/register')} style={styles.linkWrap}>
-        <Text style={styles.link}>Huna akaunti? Jisajili</Text>
-      </Pressable>
-    </Screen>
+    </AuthShell>
   );
 }
 
 const styles = StyleSheet.create({
-  sub: { color: theme.muted, marginBottom: 20, lineHeight: 20 },
-  error: { color: theme.danger, marginBottom: 12 },
-  linkWrap: { marginTop: 16, alignItems: 'center' },
-  link: { color: theme.ink, fontWeight: '600' },
+  error: {
+    color: theme.danger,
+    marginBottom: 12,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+  },
+  linkWrap: { marginTop: 10, alignItems: 'center' },
+  link: { color: theme.ink, fontFamily: typography.bold, fontSize: 14 },
+  muted: { color: theme.muted, fontFamily: typography.body, fontSize: 14 },
 });

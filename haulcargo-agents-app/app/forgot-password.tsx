@@ -1,8 +1,12 @@
+import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
-import { Field, Header, PrimaryButton, Screen } from '@/components/ui';
+import { AuthShell } from '@/components/auth-shell';
+import { Field, PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function ForgotPasswordScreen() {
@@ -13,12 +17,36 @@ export default function ForgotPasswordScreen() {
   const [loading, setLoading] = useState(false);
 
   return (
-    <Screen scroll>
-      <Header title="Badili nenosiri" back />
-      <Text style={styles.sub}>Tutakutumia kiungo cha kubadili nenosiri kwenye barua pepe.</Text>
-      <Field label="Barua pepe" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {message ? <Text style={styles.ok}>{message}</Text> : null}
+    <AuthShell
+      title="Badili nenosiri"
+      subtitle="Tutakutumia kiungo cha kubadili nenosiri kwenye barua pepe ya kampuni."
+      footer={
+        <Pressable onPress={() => router.replace('/login')} style={styles.linkWrap}>
+          <Text style={styles.link}>Rudi kuingia</Text>
+        </Pressable>
+      }>
+      <Field
+        label="Barua pepe"
+        autoCapitalize="none"
+        keyboardType="email-address"
+        autoComplete="email"
+        value={email}
+        onChangeText={(t) => {
+          setEmail(t);
+          setError('');
+          setMessage('');
+        }}
+      />
+      {error ? (
+        <Animated.Text entering={FadeIn} style={styles.error}>
+          {error}
+        </Animated.Text>
+      ) : null}
+      {message ? (
+        <Animated.Text entering={FadeIn} style={styles.ok}>
+          {message}
+        </Animated.Text>
+      ) : null}
       <PrimaryButton
         label="Tuma barua"
         loading={loading}
@@ -31,20 +59,21 @@ export default function ForgotPasswordScreen() {
           setError('');
           try {
             await resetPassword(email);
-            setMessage('Barua ya kubadili nenosiri imetumwa.');
+            setMessage('Barua ya kubadili nenosiri imetumwa. Angalia inbox na spam.');
           } catch {
-            setError('Imeshindwa. Jaribu tena.');
+            setError('Imeshindwa. Hakikisha barua pepe na jaribu tena.');
           } finally {
             setLoading(false);
           }
         }}
       />
-    </Screen>
+    </AuthShell>
   );
 }
 
 const styles = StyleSheet.create({
-  sub: { color: theme.muted, marginBottom: 20 },
-  error: { color: theme.danger, marginBottom: 12 },
-  ok: { color: theme.success, marginBottom: 12 },
+  error: { color: theme.danger, marginBottom: 12, fontFamily: typography.semibold, fontSize: 13 },
+  ok: { color: theme.success, marginBottom: 12, fontFamily: typography.semibold, fontSize: 13 },
+  linkWrap: { marginTop: 8 },
+  link: { color: theme.ink, fontFamily: typography.bold, fontSize: 14 },
 });

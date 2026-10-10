@@ -96,11 +96,22 @@ export function PrimaryButton({
   );
 }
 
-export function Field({ label, ...props }: TextInputProps & { label: string }) {
+export function Field({
+  label,
+  error,
+  hint,
+  ...props
+}: TextInputProps & { label: string; error?: string; hint?: string }) {
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput placeholderTextColor={theme.muted} style={styles.input} {...props} />
+      <TextInput
+        placeholderTextColor={theme.muted}
+        style={[styles.input, error ? styles.inputError : null]}
+        {...props}
+      />
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+      {!error && hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
     </View>
   );
 }
@@ -118,19 +129,20 @@ export function SectionTitle({ children }: { children: string }) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.white },
+  screen: { flex: 1, backgroundColor: theme.bg },
   screenInner: { flex: 1, paddingHorizontal: 20 },
   scrollGrow: { flexGrow: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
   backBtn: { width: 36 },
   backSpacer: { width: 36 },
   headerTitle: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 18,
+    fontSize: 20,
+    lineHeight: 26,
     fontFamily: typography.bold,
     color: theme.ink,
-    letterSpacing: -0.2,
+    letterSpacing: -0.35,
   },
   btn: {
     borderRadius: theme.cta.borderRadius,
@@ -170,6 +182,19 @@ const styles = StyleSheet.create({
     fontFamily: typography.body,
     backgroundColor: theme.white,
     color: theme.ink,
+  },
+  inputError: { borderColor: theme.danger },
+  fieldError: {
+    marginTop: 6,
+    fontSize: 12,
+    fontFamily: typography.semibold,
+    color: theme.danger,
+  },
+  fieldHint: {
+    marginTop: 6,
+    fontSize: 12,
+    fontFamily: typography.body,
+    color: theme.muted,
   },
   card: {
     backgroundColor: theme.tile,

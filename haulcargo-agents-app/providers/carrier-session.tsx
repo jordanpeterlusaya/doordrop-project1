@@ -15,13 +15,15 @@ import {
   query,
   where,
 } from 'firebase/firestore';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ADMIN_EMAIL } from '@/constants/theme';
 import { loginAuthErrorMessage } from '@/lib/auth-errors';
 import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/carrier-registration';
 import type { Carrier, CarrierRoute, CarrierShipment } from '@/lib/carrier-types';
+import { isIncomingOffer } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
+import { registerCarrierPushToken, vibrateForNewOffer } from '@/lib/push-notifications';
 
 type CarrierSessionValue = {
   user: User | null;
@@ -52,6 +54,8 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   const [needsCompanySetup, setNeedsCompanySetup] = useState(false);
   const [shipments, setShipments] = useState<CarrierShipment[]>([]);
   const [routes, setRoutes] = useState<CarrierRoute[]>([]);
+  const knownOfferIds = useRef<Set<string>>(new Set());
+  const offersReady = useRef(false);
 
   const isAdmin = user?.email?.toLowerCase() === ADMIN_EMAIL;
 
@@ -112,9 +116,16 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   }, [resolveCarrier]);
 
   useEffect(() => {
+    if (!carrier?.id || !user?.uid) return;
+    void registerCarrierPushToken({ uid: user.uid, carrierId: carrier.id }).catch(() => undefined);
+  }, [carrier?.id, user?.uid]);
+
+  useEffect(() => {
     if (!carrier?.id) {
       setShipments([]);
       setRoutes([]);
+      knownOfferIds.current = new Set();
+      offersReady.current = false;
       return;
     }
     const id = carrier.id;
@@ -122,7 +133,22 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     const publish = () => {
       const map = new Map<string, CarrierShipment>();
       [...buckets.offered, ...buckets.owned].forEach((item) => map.set(item.id, item));
-      setShipments([...map.values()]);
+      const next = [...map.values()];
+      const openOffers = next.filter((item) => isIncomingOffer(item, id));
+      const nextIds = new Set(openOffers.map((item) => item.id));
+      if (!offersReady.current) {
+        knownOfferIds.current = nextIds;
+        offersReady.current = true;
+      } else {
+        for (const offerId of nextIds) {
+          if (!knownOfferIds.current.has(offerId)) {
+            vibrateForNewOffer();
+            break;
+          }
+        }
+        knownOfferIds.current = nextIds;
+      }
+      setShipments(next);
     };
     const unsubs = [
       onSnapshot(query(collection(db, 'carrierShipments'), where('offeredCarrierId', '==', id)), (snap) => {

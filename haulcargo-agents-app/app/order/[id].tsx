@@ -5,8 +5,9 @@ import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { CommissionLock } from '@/components/commission-lock';
 import { OfferCountdown } from '@/components/offer-countdown';
-import { Card, Header, Muted, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
+import { Header, Muted, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import {
   acceptOffer,
   advanceTrackStep,
@@ -98,7 +99,7 @@ export default function OrderDetailScreen() {
       <Header title={code} back />
       {isIncomingOffer(item, carrierId) && offerStillValid(item) ? <OfferCountdown shipment={item} /> : null}
 
-      <Card>
+      <View style={styles.panel}>
         <Text style={styles.status}>{STATUS_LABEL[item.shipmentStatus] || item.shipmentStatus}</Text>
         <Fact label="Msimbo wa mzigo" value={copied ? 'Imenakiliwa ✓' : code} onPress={() => void copyCode()} />
         <Fact label="Marudio / eneo la mpokeaji" value={dropOffLabel(item)} />
@@ -107,7 +108,11 @@ export default function OrderDetailScreen() {
         <Fact label="Thamani iliyotangazwa" value={item.declaredValueTzs ? money(item.declaredValueTzs) : '—'} />
         <Fact label="Maelezo" value={item.parcelDescription || '—'} />
         <Fact label="Mtumaji" value={item.customerName || '—'} />
-        <Fact label="Simu mtumaji" value={item.customerPhone || '—'} onPress={senderTel ? () => void Linking.openURL(senderTel) : undefined} />
+        <Fact
+          label="Simu mtumaji"
+          value={item.customerPhone || '—'}
+          onPress={senderTel ? () => void Linking.openURL(senderTel) : undefined}
+        />
         <Fact label="Mpokeaji" value={item.recipientName || '—'} />
         <Fact
           label="Simu mpokeaji"
@@ -116,12 +121,16 @@ export default function OrderDetailScreen() {
         />
         <Fact
           label="Safari"
-          value={[item.routeLabel, item.departureTime ? `kuondoka ${item.departureTime}` : ''].filter(Boolean).join(' · ') || '—'}
+          value={
+            [item.routeLabel, item.departureTime ? `kuondoka ${item.departureTime}` : '']
+              .filter(Boolean)
+              .join(' · ') || '—'
+          }
         />
-      </Card>
+      </View>
 
       <SectionTitle>Malipo & kamisheni</SectionTitle>
-      <Card>
+      <View style={styles.panel}>
         <CommissionLock
           cashExpected={item.cashExpected}
           haulFee={item.haulFee}
@@ -130,18 +139,18 @@ export default function OrderDetailScreen() {
           paying={paying}
           onPayCommission={item.carrierId === carrierId ? payCommission : undefined}
         />
-      </Card>
+      </View>
 
       {item.statusHistory?.length ? (
         <>
           <SectionTitle>Historia</SectionTitle>
-          <Card>
+          <View style={styles.panel}>
             {[...item.statusHistory].reverse().slice(0, 12).map((entry, i) => (
               <Text key={`${entry.at}-${i}`} style={styles.historyLine}>
                 {entry.label || entry.status} · {formatWhen(entry.at)}
               </Text>
             ))}
-          </Card>
+          </View>
         </>
       ) : null}
 
@@ -158,7 +167,9 @@ export default function OrderDetailScreen() {
           <PrimaryButton
             label="Nitafuata kwa mteja"
             onPress={() =>
-              void setPickupMode(item.id, carrierId, 'agent_collects', email).then(() => router.push(`/directions/${item.id}`))
+              void setPickupMode(item.id, carrierId, 'agent_collects', email).then(() =>
+                router.push(`/directions/${item.id}`)
+              )
             }
           />
           <PrimaryButton
@@ -203,10 +214,18 @@ export default function OrderDetailScreen() {
           <PrimaryButton label="Piga simu mtumaji" variant="outline" onPress={() => void Linking.openURL(senderTel)} />
         ) : null}
         {recipientTel ? (
-          <PrimaryButton label="Piga simu mpokeaji" variant="outline" onPress={() => void Linking.openURL(recipientTel)} />
+          <PrimaryButton
+            label="Piga simu mpokeaji"
+            variant="outline"
+            onPress={() => void Linking.openURL(recipientTel)}
+          />
         ) : null}
         <PrimaryButton label="Nakili msimbo" variant="outline" onPress={() => void copyCode()} />
-        <PrimaryButton label="Chapisha risiti / stika" variant="outline" onPress={() => router.push(`/receipt/${item.id}`)} />
+        <PrimaryButton
+          label="Chapisha risiti / stika"
+          variant="outline"
+          onPress={() => router.push(`/receipt/${item.id}`)}
+        />
         {item.cashStatus === 'unpaid' && item.carrierId === carrierId ? (
           <PrimaryButton label="Cash imekusanywa" onPress={() => void markCashCollected(item.id)} />
         ) : null}
@@ -216,10 +235,41 @@ export default function OrderDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  status: { fontSize: 16, fontWeight: '800', color: theme.ink, marginBottom: 12 },
-  fact: { marginBottom: 10 },
-  factLabel: { fontSize: 12, color: theme.muted, fontWeight: '600' },
-  factValue: { fontSize: 15, color: theme.charcoal, marginTop: 2 },
-  historyLine: { fontSize: 13, color: theme.muted, marginBottom: 6 },
+  panel: {
+    backgroundColor: theme.white,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.border,
+    padding: 16,
+    marginBottom: 14,
+  },
+  status: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontFamily: typography.bold,
+    color: theme.ink,
+    marginBottom: 14,
+    letterSpacing: -0.2,
+  },
+  fact: { marginBottom: 12 },
+  factLabel: {
+    fontSize: 12,
+    fontFamily: typography.semibold,
+    color: theme.muted,
+  },
+  factValue: {
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: typography.body,
+    color: theme.ink,
+    marginTop: 3,
+  },
+  historyLine: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: theme.muted,
+    marginBottom: 6,
+  },
   gap: { gap: 10, marginBottom: 10 },
 });

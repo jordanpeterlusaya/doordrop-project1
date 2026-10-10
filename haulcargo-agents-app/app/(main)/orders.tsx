@@ -24,7 +24,8 @@ export default function OrdersScreen() {
 
   return (
     <Screen scroll>
-      <Header title="Oda zinazoingia" />
+      <Header title="Oda" />
+      <Muted style={styles.lead}>Inbox ya oda zinazoingia na zinazoendelea.</Muted>
       <View style={styles.filters}>
         {(
           [
@@ -54,7 +55,8 @@ export default function OrdersScreen() {
 }
 
 const styles = StyleSheet.create({
-  filters: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  lead: { marginBottom: 14 },
+  filters: { flexDirection: 'row', gap: 8, marginBottom: 14 },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,

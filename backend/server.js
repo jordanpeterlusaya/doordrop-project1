@@ -5,7 +5,10 @@ const polyline = require('@mapbox/polyline');
 
 const { config, assertGoogleApiConfig } = require('./config');
 const { sendDebugWebhook } = require('./debug-webhook');
-const { computeRoute, fetchAutocompleteSuggestions, fetchPlaceDetails } = require('./google-maps');
+const { computeRoute, fetchAutocompleteSuggestions, fetchPlaceDetails, reverseGeocodePoint } = require('./google-maps');
+const { readRouteCache, routeCacheKey, writeRouteCache } = require('./route-cache');
+const { enforceRateLimit } = require('./rate-limit');
+const { getMetricsSnapshot, recordRequest } = require('./request-metrics');
 const {
   SUPPORTED_VEHICLE_TYPES,
   calculateEstimatedPrice,
@@ -22,8 +25,11 @@ const {
   mongikeNetworks,
   verifyDriverPayment,
 } = require('./mongike-payments');
+const { handleNearbyCustomers } = require('./nearby-customers');
+const { handleCarrierDocumentUpload, handleNinunuliePhotoUpload } = require('./media-upload');
+const { handleConfirmPhone, handleSendOtp, handleVerifyOtp } = require('./carrier-otp');
 
-function sendJson(res, statusCode, data, originHeader) {
+function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
 
   res.writeHead(statusCode, {
@@ -31,6 +37,7 @@ function sendJson(res, statusCode, data, originHeader) {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Headers': 'Content-Type,Authorization,x-api-key,x-admin-email,x-admin-uid',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    ...extraHeaders,
   });
 
   res.end(JSON.stringify(data));
@@ -77,11 +84,16 @@ function validatePlaceInput(input) {
 }
 
 async function readJsonBody(req) {
+  const MAX_BODY_BYTES = 256 * 1024;
+
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     return req.body;
   }
 
   if (req.rawBody && Buffer.isBuffer(req.rawBody) && req.rawBody.length > 0) {
+    if (req.rawBody.length > MAX_BODY_BYTES) {
+      throw badRequest('Request body is too large.');
+    }
     try {
       return JSON.parse(req.rawBody.toString('utf8'));
     } catch {
@@ -90,9 +102,15 @@ async function readJsonBody(req) {
   }
 
   const chunks = [];
+  let totalBytes = 0;
 
   for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
+    const buffer = Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_BODY_BYTES) {
+      throw badRequest('Request body is too large.');
+    }
+    chunks.push(buffer);
   }
 
   if (!chunks.length) {
@@ -286,6 +304,24 @@ async function handleAutocomplete(req, res, url) {
   }
 }
 
+async function handlePlaceReverse(req, res, url) {
+  const latitude = parseCoordinate(url.searchParams.get('latitude'), 'latitude');
+  const longitude = parseCoordinate(url.searchParams.get('longitude'), 'longitude');
+
+  const place = await reverseGeocodePoint({
+    apiKey: config.googlePlacesApiKey,
+    latitude,
+    longitude,
+  });
+
+  if (!place) {
+    sendJson(res, 200, { name: null, address: null, latitude, longitude }, getRequestOrigin(req));
+    return;
+  }
+
+  sendJson(res, 200, place, getRequestOrigin(req));
+}
+
 async function handlePlaceDetails(req, res, url) {
   const placeId = String(url.searchParams.get('placeId') || '').trim();
   const sessionToken = String(url.searchParams.get('sessionToken') || '').trim();
@@ -389,11 +425,17 @@ async function handleRouteEstimate(req, res) {
   });
 
   try {
-    const route = await computeRoute({
+    const cacheKey = routeCacheKey(origin, destination, vehicleType, cargoSize);
+    const cached = readRouteCache(cacheKey);
+    const route = cached || await computeRoute({
       apiKey: config.googleRoutesApiKey,
       origin,
       destination,
     });
+
+    if (!cached) {
+      writeRouteCache(cacheKey, route);
+    }
 
     const coordinatesCount = countPolylineCoordinates(route.polyline);
     const routePricingEstimate = buildOptionalRoutePricingEstimate(route.distanceMeters, vehicleType, cargoSize, pricingScope);
@@ -495,8 +537,8 @@ async function handleDriverPaymentVerify(req, res) {
   sendJson(res, 200, payload, getRequestOrigin(req));
 }
 
-async function handleDriverPaymentStatus(req, res) {
-  const payload = await getDriverPaymentStatusPayload(req);
+async function handleDriverPaymentStatus(req, res, url) {
+  const payload = await getDriverPaymentStatusPayload(req, url);
   sendJson(res, 200, payload, getRequestOrigin(req));
 }
 
@@ -513,6 +555,8 @@ async function handleDriverPaymentWebhook(req, res) {
 
 async function requestListener(req, res) {
   const originHeader = getRequestOrigin(req);
+  const startedAt = Date.now();
+  let pathname = '/';
 
   if (req.method === 'OPTIONS') {
     sendJson(res, 204, {}, originHeader);
@@ -522,6 +566,9 @@ async function requestListener(req, res) {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     url.pathname = normalizeFunctionPathname(url.pathname);
+    pathname = url.pathname;
+
+    enforceRateLimit(req, pathname);
 
     if (req.method === 'GET' && url.pathname === '/') {
       sendJson(
@@ -531,10 +578,13 @@ async function requestListener(req, res) {
           ok: true,
           service: 'DoorDrop API',
           health: '/health',
+          metrics: '/metrics',
           endpoints: [
             'GET /health',
+            'GET /metrics',
             'GET /places/autocomplete',
             'GET /places/details',
+            'GET /places/reverse',
             'GET /places/resolve',
             'POST /routes/estimate',
             'POST /pricing/estimate',
@@ -542,11 +592,22 @@ async function requestListener(req, res) {
             'POST /driver-payments/verify',
             'GET /driver-payments/status',
             'GET /driver-payments/history',
+            'GET /nearby-customers',
+            'POST /media/ninunulie',
+            'POST /media/carrier-document',
+            'POST /carrier-auth/otp/send',
+            'POST /carrier-auth/otp/verify',
+            'POST /carrier-auth/confirm-phone',
             'POST /driver-payments/webhook/mongike',
           ],
         },
         originHeader
       );
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      sendJson(res, 200, getMetricsSnapshot(), originHeader);
       return;
     }
 
@@ -578,6 +639,11 @@ async function requestListener(req, res) {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/places/reverse') {
+      await handlePlaceReverse(req, res, url);
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/places/resolve') {
       await handlePlaceResolve(req, res, url);
       return;
@@ -604,12 +670,74 @@ async function requestListener(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/driver-payments/status') {
-      await handleDriverPaymentStatus(req, res);
+      await handleDriverPaymentStatus(req, res, url);
       return;
     }
 
     if (req.method === 'GET' && url.pathname === '/driver-payments/history') {
       await handleDriverPaymentHistory(req, res);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/nearby-customers') {
+      const payload = await handleNearbyCustomers(req, url);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/media/ninunulie') {
+      const payload = await handleNinunuliePhotoUpload(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/media/carrier-document') {
+      const payload = await handleCarrierDocumentUpload(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/send') {
+      const payload = await handleSendOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/verify') {
+      const payload = await handleVerifyOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier-auth/confirm-phone') {
+      const authHeader = String(req.headers.authorization || req.headers.Authorization || '');
+      const match = authHeader.match(/^Bearer\s+(.+)$/i);
+      if (!match) {
+        sendJson(res, 401, { error: 'Missing auth token.' }, originHeader);
+        return;
+      }
+      const { cert, getApps, initializeApp } = require('firebase-admin/app');
+      const { getAuth } = require('firebase-admin/auth');
+      if (!getApps().length) {
+        const firebaseAdminOptions = {};
+        if (config.firebaseServiceAccount) {
+          firebaseAdminOptions.credential = cert(config.firebaseServiceAccount);
+        }
+        if (config.firebaseProjectId || config.firebaseServiceAccount?.project_id) {
+          firebaseAdminOptions.projectId =
+            config.firebaseProjectId || config.firebaseServiceAccount?.project_id;
+        }
+        initializeApp(firebaseAdminOptions);
+      }
+      let decoded;
+      try {
+        decoded = await getAuth().verifyIdToken(match[1].trim());
+      } catch {
+        sendJson(res, 401, { error: 'Invalid or expired auth token.' }, originHeader);
+        return;
+      }
+      const payload = await handleConfirmPhone(req, decoded);
+      sendJson(res, 200, payload, originHeader);
       return;
     }
 
@@ -629,6 +757,8 @@ async function requestListener(req, res) {
       },
       originHeader
     );
+  } finally {
+    recordRequest(pathname, Date.now() - startedAt, res.statusCode || 200);
   }
 }
 
@@ -647,8 +777,8 @@ function normalizeFunctionPathname(pathname) {
 function startServer() {
   assertGoogleApiConfig();
   const server = http.createServer(requestListener);
-  server.listen(config.port, () => {
-    console.log(`DoorDrop backend listening on port ${config.port}`);
+  server.listen(config.port, '0.0.0.0', () => {
+    console.log(`DoorDrop backend listening on 0.0.0.0:${config.port}`);
   });
 
   return server;

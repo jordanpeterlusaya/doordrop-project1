@@ -38,6 +38,7 @@ export default function LandingScreen() {
 
   if (user) {
     if (needsCompanySetup) return <Redirect href="/register-company" />;
+    if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     if (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com') {
       return <Redirect href="/(main)" />;
     }

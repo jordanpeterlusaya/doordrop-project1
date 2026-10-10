@@ -49,6 +49,7 @@ export default function RootLayout() {
             <Stack.Screen name="register" />
             <Stack.Screen name="forgot-password" />
             <Stack.Screen name="register-company" />
+            <Stack.Screen name="verification-pending" />
             <Stack.Screen name="(main)" />
             <Stack.Screen name="schedule" options={{ presentation: 'modal' }} />
             <Stack.Screen name="history" />

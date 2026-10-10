@@ -2,10 +2,12 @@ import { Redirect, router } from 'expo-router';
 import React, { useState } from 'react';
 import { StyleSheet, Text } from 'react-native';
 
+import { AuthShell } from '@/components/auth-shell';
 import { CoveragePicker } from '@/components/coverage-picker';
-import { Field, Header, PrimaryButton, Screen } from '@/components/ui';
+import { Field, PrimaryButton } from '@/components/ui';
 import { coverageIsValid, emptyCoverage, type CoverageSelection } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
+import { typography } from '@/constants/typography';
 import { createCarrierFromRegistration } from '@/lib/carrier-registration';
 import { useCarrierSession } from '@/providers/carrier-session';
 
@@ -26,10 +28,7 @@ export default function RegisterCompanyScreen() {
   if (!needsCompanySetup) return <Redirect href="/(main)" />;
 
   return (
-    <Screen scroll>
-      <Header title="Kamilisha kampuni" back />
-      <Text style={styles.sub}>Hatua {step} / 3 — unganisha akaunti na kampuni ya usafirishaji.</Text>
-
+    <AuthShell title="Kamilisha kampuni" subtitle={`Hatua ${step} / 3 — unganisha akaunti na kampuni.`}>
       {step === 1 ? (
         <>
           <Field label="Jina la kampuni" value={companyName} onChangeText={setCompanyName} />
@@ -95,7 +94,7 @@ export default function RegisterCompanyScreen() {
               email
             );
             await refreshCarrier();
-            router.replace('/(main)');
+            router.replace('/verification-pending');
           } catch (e) {
             setError(e instanceof Error ? e.message : 'Imeshindwa.');
           } finally {
@@ -103,11 +102,15 @@ export default function RegisterCompanyScreen() {
           }
         }}
       />
-    </Screen>
+    </AuthShell>
   );
 }
 
 const styles = StyleSheet.create({
-  sub: { color: theme.muted, marginBottom: 16, lineHeight: 20 },
-  error: { color: theme.danger, marginBottom: 12 },
+  error: {
+    color: theme.danger,
+    marginBottom: 12,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+  },
 });

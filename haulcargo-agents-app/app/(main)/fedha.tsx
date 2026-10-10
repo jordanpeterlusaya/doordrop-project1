@@ -34,7 +34,7 @@ export default function FedhaScreen() {
   return (
     <Screen scroll>
       <Header title="Fedha" />
-      <Muted style={styles.lead}>Muhtasari wa fedha na kamisheni.</Muted>
+      <Muted style={styles.lead}>Muhtasari wa fedha, salio, na kamisheni ya HAUL.</Muted>
 
       <View style={styles.summary}>
         <CommissionLock

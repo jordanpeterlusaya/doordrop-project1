@@ -602,14 +602,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
       { merge: true }
     );
     tx.set(db.collection('carriers').doc(chosen.carrierId), { ordersReceived: FieldValue.increment(1) }, { merge: true });
-    tx.set(db.collection('carriers').doc(chosen.carrierId).collection('notifications').doc(), {
-      title: 'New assignment',
-      body: `${base.orderNumber} · ${base.destination} · ${chosen.score}% match`,
-      orderId,
-      createdAt: FieldValue.serverTimestamp(),
-      read: false,
-    });
-    return { matched: true, carrierId: chosen.carrierId, score: chosen.score, routeLabel: chosen.routeLabel };
+    return { matched: true, carrierId: chosen.carrierId, score: chosen.score, routeLabel: chosen.routeLabel, orderNumber: base.orderNumber, destination: base.destination };
   });
 
   if (!result?.skipped && isBusParcel(order)) {
@@ -621,6 +614,22 @@ async function offerNext(db, orderId, order, shipmentHint) {
         : { shipmentStatus: 'matching' }
     );
   }
+
+  if (result?.matched && result.carrierId) {
+    try {
+      const { notifyCarrierNewOffer } = require('./carrier-push');
+      await notifyCarrierNewOffer(db, {
+        carrierId: result.carrierId,
+        orderId,
+        orderNumber: result.orderNumber,
+        destination: result.destination,
+        score: result.score,
+      });
+    } catch (error) {
+      console.error('carrier offer push failed', orderId, error?.message || error);
+    }
+  }
+
   return result;
 }
 

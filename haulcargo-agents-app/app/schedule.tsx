@@ -47,7 +47,7 @@ export default function ScheduleScreen() {
   return (
     <Screen scroll>
       <Header title="Safari / Ratiba" back />
-      <Muted style={styles.lead}>Weka njia na siku za kufanya kazi. Chaguo la kawaida: kila siku.</Muted>
+      <Muted style={styles.lead}>Njia, uwezo, na siku za kufanya kazi. Chaguo la kawaida: kila siku.</Muted>
       <Field label="Kutoka" value={origin} onChangeText={setOrigin} />
       <Field label="Kwenda" value={destination} onChangeText={setDestination} />
       <Field label="Muda wa kuondoka" value={departureTime} onChangeText={setDepartureTime} />
