@@ -3,11 +3,20 @@ import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { CommissionLock } from '@/components/commission-lock';
-import { EmptyState, Header, Screen, SectionTitle } from '@/components/ui';
+import { Header, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { cashStatusLabel, money, shipmentCode } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
+
+function shortCash(status?: string) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'reconciled') return 'Sawa';
+  if (s === 'pending_reconciliation') return 'Inasubiri';
+  if (s === 'collected') return 'Imekusanywa';
+  if (s === 'unpaid') return 'Bado';
+  return cashStatusLabel(status);
+}
 
 export default function FedhaScreen() {
   const { carrier, shipments } = useCarrierSession();
@@ -33,7 +42,7 @@ export default function FedhaScreen() {
 
   return (
     <Screen scroll edges="top">
-      <Header title="Fedha" subtitle="Muhtasari wa fedha, salio, na kamisheni ya HAUL." />
+      <Header title="Fedha" />
 
       <View style={styles.summary}>
         <CommissionLock
@@ -46,41 +55,30 @@ export default function FedhaScreen() {
 
       <View style={styles.metaRow}>
         <Text style={styles.metaText}>
-          {totals.unpaid > 0
-            ? `${totals.unpaid} bado hazijalinganishwa`
-            : rows.length
-              ? 'Zote zimefananishwa'
-              : 'Hakuna oda bado'}
+          {totals.unpaid > 0 ? `${totals.unpaid} bado` : rows.length ? 'Sawa' : '—'}
         </Text>
         <Pressable onPress={() => router.push('/history')} hitSlop={8}>
           <Text style={styles.link}>Historia</Text>
         </Pressable>
       </View>
 
-      <SectionTitle>Oda</SectionTitle>
       {rows.length === 0 ? (
-        <EmptyState title="Hakuna rekodi" body="Rekodi za fedha zitaonekana baada ya oda." />
+        <Text style={styles.empty}>Hakuna oda</Text>
       ) : (
-        rows.map((item) => {
-          const reconciled = item.cashStatus === 'reconciled';
-          return (
-            <Pressable key={item.id} onPress={() => router.push(`/order/${item.id}`)} style={styles.row}>
-              <View style={styles.rowTop}>
+        <View style={styles.list}>
+          {rows.map((item, index) => (
+            <Pressable
+              key={item.id}
+              onPress={() => router.push(`/order/${item.id}`)}
+              style={[styles.row, index < rows.length - 1 && styles.rowBorder]}>
+              <View style={styles.rowMain}>
                 <Text style={styles.code}>{shipmentCode(item)}</Text>
-                <View style={[styles.badge, reconciled ? styles.badgeOk : styles.badgeWait]}>
-                  <Text style={[styles.badgeText, reconciled ? styles.badgeTextOk : styles.badgeTextWait]}>
-                    {cashStatusLabel(item.cashStatus)}
-                  </Text>
-                </View>
+                <Text style={styles.status}>{shortCash(item.cashStatus)}</Text>
               </View>
-              <View style={styles.amounts}>
-                <Text style={styles.amtMuted}>Mteja {money(item.cashExpected)}</Text>
-                <Text style={styles.amtMuted}>Kamisheni {money(item.haulFee)}</Text>
-                <Text style={styles.amtNet}>Salio {money(item.carrierNet)}</Text>
-              </View>
+              <Text style={styles.amt}>{money(item.carrierNet)}</Text>
             </Pressable>
-          );
-        })
+          ))}
+        </View>
       )}
     </Screen>
   );
@@ -88,16 +86,16 @@ export default function FedhaScreen() {
 
 const styles = StyleSheet.create({
   summary: {
-    backgroundColor: theme.tile,
-    borderRadius: theme.radius.md,
-    padding: 16,
-    marginBottom: 14,
+    paddingBottom: 18,
+    marginBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
   },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 6,
     gap: 12,
   },
   metaText: {
@@ -111,47 +109,40 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.ink,
   },
+  list: { marginTop: 4 },
   row: {
-    backgroundColor: theme.tile,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    marginBottom: 10,
-  },
-  rowTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 8,
+    gap: 12,
+    paddingVertical: 16,
   },
+  rowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
+  },
+  rowMain: { flex: 1, gap: 2 },
   code: {
     fontFamily: typography.bold,
     fontSize: 15,
     color: theme.ink,
     letterSpacing: -0.2,
-    flex: 1,
   },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  badgeOk: { backgroundColor: '#ECFDF5' },
-  badgeWait: { backgroundColor: theme.primarySoft },
-  badgeText: { fontFamily: typography.semibold, fontSize: 11 },
-  badgeTextOk: { color: '#047857' },
-  badgeTextWait: { color: theme.ink },
-  amounts: { gap: 2 },
-  amtMuted: {
+  status: {
     fontFamily: typography.body,
     fontSize: 13,
     color: theme.muted,
   },
-  amtNet: {
+  amt: {
     fontFamily: typography.semibold,
     fontSize: 14,
     color: theme.ink,
-    marginTop: 2,
+  },
+  empty: {
+    marginTop: 40,
+    textAlign: 'center',
+    fontFamily: typography.body,
+    fontSize: 14,
+    color: theme.muted,
   },
 });

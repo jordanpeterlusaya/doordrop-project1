@@ -32,43 +32,43 @@ export function CommissionLock({
   return (
     <View style={styles.wrap}>
       <View style={styles.row}>
-        <Text style={styles.label}>Jumla ya mteja</Text>
+        <Text style={styles.label}>Mteja</Text>
         <Text style={styles.value}>{money(cashExpected)}</Text>
       </View>
-      <View style={[styles.row, styles.commissionRow]}>
-        <View style={styles.lockLabel}>
-          <Ionicons name={locked ? 'lock-closed' : 'lock-open'} size={16} color={theme.ink} />
-          <Text style={styles.commissionText}>Kamisheni ya HAUL (20%)</Text>
-        </View>
-        <Text style={styles.commissionValue}>{money(haulFee)}</Text>
-      </View>
-      <Text style={styles.hint}>
-        {status === 'reconciled'
-          ? 'Kamisheni imelinganishwa — salio lako limepatikana.'
-          : status === 'pending_reconciliation'
-            ? 'Ombi la malipo limetumwa. HAUL inalinganisha (pending reconciliation).'
-            : 'Kamisheni imefungwa. Lipa kamisheni kamili ili HAUL ilinganishe.'}
-      </Text>
-      <Text style={styles.statusLine}>Hali: {cashStatusLabel(status)}</Text>
       <View style={styles.row}>
-        <Text style={styles.label}>Salio lako (carrier net)</Text>
-        <Text style={[styles.value, styles.net]}>{money(carrierNet)}</Text>
+        <View style={styles.lockLabel}>
+          <Ionicons name={locked ? 'lock-closed' : 'lock-open'} size={14} color={theme.muted} />
+          <Text style={styles.label}>Kamisheni</Text>
+        </View>
+        <Text style={styles.value}>{money(haulFee)}</Text>
       </View>
+      <View style={styles.row}>
+        <Text style={styles.label}>Salio</Text>
+        <Text style={styles.net}>{money(carrierNet)}</Text>
+      </View>
+      <Text style={styles.status}>{cashStatusLabel(status)}</Text>
       {canRequestPay ? (
-        <PrimaryButton label="Lipa kamisheni" loading={paying} onPress={() => onPayCommission?.()} />
+        <View style={styles.pay}>
+          <PrimaryButton label="Lipa kamisheni" loading={paying} onPress={() => onPayCommission?.()} />
+        </View>
       ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 10 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  wrap: { gap: 12 },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  lockLabel: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   label: {
     fontSize: 14,
     fontFamily: typography.body,
     color: theme.muted,
-    flex: 1,
   },
   value: {
     fontSize: 15,
@@ -78,35 +78,12 @@ const styles = StyleSheet.create({
   net: {
     fontFamily: typography.bold,
     fontSize: 17,
-  },
-  commissionRow: {
-    backgroundColor: theme.primarySoft,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#F3E7A3',
-  },
-  lockLabel: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  commissionText: {
-    fontSize: 14,
-    fontFamily: typography.bold,
-    color: theme.ink,
-    flexShrink: 1,
-  },
-  commissionValue: {
-    fontSize: 16,
-    fontFamily: typography.bold,
     color: theme.ink,
   },
-  hint: {
-    fontSize: 12,
+  status: {
+    fontSize: 13,
     fontFamily: typography.body,
     color: theme.muted,
-    lineHeight: 18,
   },
-  statusLine: {
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: theme.ink,
-  },
+  pay: { marginTop: 4 },
 });

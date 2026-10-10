@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { EmptyState, Header, PrimaryButton, Screen } from '@/components/ui';
+import { Header, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { applyManifestMark } from '@/lib/carrier-actions';
@@ -14,17 +14,13 @@ export default function ManifestScreen() {
   const { carrier, shipments, user } = useCarrierSession();
   const carrierId = carrier?.id || '';
   const groups = carrierId ? groupManifestByDrop(shipments, carrierId) : [];
-  const total = groups.reduce((n, [, rows]) => n + rows.length, 0);
 
   return (
     <Screen scroll edges="top">
-      <Header
-        title="Orodha"
-        subtitle={total > 0 ? `${total} mizigo · kwa marudio` : 'Mizigo ya leo inaonekana hapa.'}
-      />
+      <Header title="Orodha" />
 
       {groups.length === 0 ? (
-        <EmptyState title="Hakuna mizigo" body="Oda zinazokubaliwa zitaonekana kwenye orodha." />
+        <Text style={styles.empty}>Hakuna mizigo</Text>
       ) : (
         groups.map(([drop, rows]) => (
           <View key={drop} style={styles.group}>
@@ -34,28 +30,36 @@ export default function ManifestScreen() {
               </Text>
               <Text style={styles.dropCount}>{rows.length}</Text>
             </View>
-            {rows.map((item) => {
+            {rows.map((item, index) => {
               const next = manifestNextAction(item);
               return (
-                <View key={item.id} style={styles.card}>
-                  <Pressable onPress={() => router.push(`/order/${item.id}`)}>
-                    <Text style={styles.code}>{shipmentCode(item)}</Text>
-                    <Text style={styles.meta}>
-                      {item.weightKg || 0} kg · {money(item.cashExpected)}
-                    </Text>
+                <View
+                  key={item.id}
+                  style={[styles.row, index < rows.length - 1 && styles.rowBorder]}>
+                  <Pressable
+                    onPress={() => router.push(`/order/${item.id}`)}
+                    style={styles.rowPress}>
+                    <View style={styles.rowTop}>
+                      <Text style={styles.code}>{shipmentCode(item)}</Text>
+                      <Text style={styles.meta}>
+                        {item.weightKg || 0} kg · {money(item.cashExpected)}
+                      </Text>
+                    </View>
                     <Text style={styles.status}>{STATUS_LABEL[item.shipmentStatus] || '—'}</Text>
                   </Pressable>
-                  {next && user?.email ? (
-                    <View style={styles.action}>
-                      <PrimaryButton
-                        label={next.label}
+                  <View style={styles.actions}>
+                    {next && user?.email ? (
+                      <Pressable
                         onPress={() => void applyManifestMark(item.id, carrierId, next.act, user.email!)}
-                      />
-                    </View>
-                  ) : null}
-                  <Pressable onPress={() => router.push(`/receipt/${item.id}`)} style={styles.receipt}>
-                    <Text style={styles.receiptText}>Risiti</Text>
-                  </Pressable>
+                        hitSlop={6}
+                        style={styles.actionBtn}>
+                        <Text style={styles.actionText}>{next.label}</Text>
+                      </Pressable>
+                    ) : null}
+                    <Pressable onPress={() => router.push(`/receipt/${item.id}`)} hitSlop={6}>
+                      <Text style={styles.link}>Risiti</Text>
+                    </Pressable>
+                  </View>
                 </View>
               );
             })}
@@ -67,63 +71,85 @@ export default function ManifestScreen() {
 }
 
 const styles = StyleSheet.create({
-  group: { marginBottom: 20 },
+  group: { marginBottom: 28 },
   dropHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: 10,
-    marginBottom: 10,
-    paddingBottom: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.line,
+    marginBottom: 4,
   },
   dropTitle: {
     fontFamily: typography.bold,
-    fontSize: 15,
-    color: theme.ink,
-    letterSpacing: -0.2,
+    fontSize: 13,
+    color: theme.muted,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
     flex: 1,
   },
   dropCount: {
-    fontFamily: typography.semibold,
-    fontSize: 12,
-    color: theme.ink,
-    backgroundColor: theme.primarySoft,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    overflow: 'hidden',
+    fontFamily: typography.body,
+    fontSize: 13,
+    color: theme.muted,
   },
-  card: {
-    backgroundColor: theme.tile,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
+  row: {
+    paddingVertical: 14,
+  },
+  rowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
+  },
+  rowPress: { gap: 4 },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 10,
   },
   code: {
     fontFamily: typography.bold,
     fontSize: 16,
     color: theme.ink,
     letterSpacing: -0.2,
+    flexShrink: 1,
   },
   meta: {
     fontFamily: typography.body,
     fontSize: 13,
     color: theme.muted,
-    marginTop: 4,
   },
   status: {
-    fontFamily: typography.semibold,
+    fontFamily: typography.body,
     fontSize: 13,
-    color: theme.ink,
-    marginTop: 6,
+    color: theme.muted,
   },
-  action: { marginTop: 12 },
-  receipt: { marginTop: 10, alignItems: 'center', paddingVertical: 4 },
-  receiptText: {
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginTop: 10,
+  },
+  actionBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: theme.ink,
+  },
+  actionText: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    color: theme.white,
+  },
+  link: {
     fontFamily: typography.semibold,
     fontSize: 13,
     color: theme.ink,
+  },
+  empty: {
+    marginTop: 40,
+    textAlign: 'center',
+    fontFamily: typography.body,
+    fontSize: 14,
+    color: theme.muted,
   },
 });
