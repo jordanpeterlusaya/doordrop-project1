@@ -6,6 +6,8 @@ export type Carrier = {
   id: string;
   ownerUid?: string;
   companyName?: string;
+  /** Some carrier docs use `name` instead of / alongside `companyName`. */
+  name?: string;
   contactPerson?: string;
   phone?: string;
   email?: string;
@@ -110,3 +112,18 @@ export const STATUS_LABEL: Record<string, string> = {
 };
 
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+
+export type DayKey = (typeof DAYS)[number];
+
+/** Default: operates every day unless the agent changes it. */
+export const ALL_OPERATING_DAYS: DayKey[] = [...DAYS];
+
+export const DAY_LABEL_SW: Record<DayKey, string> = {
+  mon: 'Jt',
+  tue: 'Jn',
+  wed: 'Jtano',
+  thu: 'Al',
+  fri: 'Ij',
+  sat: 'Jms',
+  sun: 'Jp',
+};

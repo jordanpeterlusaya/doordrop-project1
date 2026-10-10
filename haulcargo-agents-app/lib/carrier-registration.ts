@@ -1,7 +1,7 @@
 import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 
 import type { CoverageSelection } from '@/constants/coverage';
-import { DAYS } from '@/lib/carrier-types';
+import { ALL_OPERATING_DAYS, DAYS } from '@/lib/carrier-types';
 import { darTodayKey } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 import type { User } from 'firebase/auth';
@@ -33,10 +33,6 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
   }
 
   const carrierId = user.uid;
-  const dayName = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Africa/Dar_es_Salaam' })
-    .format(new Date())
-    .slice(0, 3)
-    .toLowerCase();
 
   const coverage: CoverageSelection = {
     coverageRegions: input.coverageAllTanzania ? [] : [...(input.coverageRegions || [])],
@@ -81,7 +77,7 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     departureTime: input.routeDepart,
     arrivalTime: input.routeDepart,
     cargoCapacityKg: input.cargoCapacityKg,
-    operatingDays: [dayName],
+    operatingDays: [...ALL_OPERATING_DAYS],
     pickupKariakoo: true,
     active: true,
     serviceDate: darTodayKey(),

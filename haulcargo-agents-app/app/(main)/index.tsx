@@ -56,7 +56,7 @@ export default function HomeScreen() {
         <View style={styles.heroText}>
           <Text style={styles.eyebrow}>HAUL Cargo Desk</Text>
           <Text style={styles.company} numberOfLines={2}>
-            {carrier?.companyName || 'Kampuni yako'}
+            {carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni'}
           </Text>
           <Muted>{darTodayLabel()}</Muted>
           <Text style={styles.lead}>
