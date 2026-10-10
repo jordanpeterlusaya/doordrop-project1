@@ -86,6 +86,112 @@ function orderOrigin(order) {
   return order.outsideOriginCity || order.pickupLabel || order.origin || '';
 }
 
+/** Mainland + Zanzibar regions used for coverage matching. */
+const TZ_REGION_ALIASES = [
+  ['dar es salaam', 'dar', 'dsm', 'salaam', 'kariakoo'],
+  ['mwanza'],
+  ['arusha'],
+  ['dodoma'],
+  ['mbeya'],
+  ['morogoro'],
+  ['tanga'],
+  ['kilimanjaro', 'moshi'],
+  ['kigoma'],
+  ['tabora'],
+  ['shinyanga'],
+  ['singida'],
+  ['iringa'],
+  ['mtwara'],
+  ['lindi'],
+  ['ruvuma', 'songea'],
+  ['pwani', 'coast', 'kibaha'],
+  ['geita'],
+  ['kagera', 'bukoba'],
+  ['mara', 'musoma'],
+  ['manyara', 'babati'],
+  ['njombe'],
+  ['katavi', 'mpanda'],
+  ['rukwa', 'sumbawanga'],
+  ['simiyu'],
+  ['songwe'],
+  ['unguja', 'zanzibar', 'stone town'],
+  ['pemba'],
+];
+
+const INTL_HINTS = [
+  'kenya',
+  'nairobi',
+  'mombasa',
+  'uganda',
+  'kampala',
+  'rwanda',
+  'kigali',
+  'burundi',
+  'bujumbura',
+  'zambia',
+  'malawi',
+  'mozambique',
+  'congo',
+  'drc',
+  'south africa',
+  'dubai',
+  'abroad',
+  'nje ya nchi',
+  'international',
+];
+
+function looksInternational(value) {
+  const text = normalize(value);
+  if (!text) return false;
+  return INTL_HINTS.some((hint) => text.includes(hint));
+}
+
+function detectTzRegion(value) {
+  const text = normalize(value);
+  if (!text) return '';
+  for (const aliases of TZ_REGION_ALIASES) {
+    if (aliases.some((alias) => text.includes(alias))) return aliases[0];
+  }
+  return '';
+}
+
+function carrierHasCoverageDeclared(carrier) {
+  if (!carrier) return false;
+  if (carrier.coverageAllTanzania === true) return true;
+  if (carrier.coverageInternational === true) return true;
+  return Array.isArray(carrier.coverageRegions) && carrier.coverageRegions.length > 0;
+}
+
+/**
+ * Region coverage is an additional filter/score on top of route matching.
+ * Legacy carriers without coverage fields are not filtered out.
+ */
+function coverageForOrder(order, carrier) {
+  if (!carrierHasCoverageDeclared(carrier)) {
+    return { ok: true, bonus: 0, reason: 'legacy' };
+  }
+
+  const destination = orderDestination(order);
+  const international = looksInternational(destination);
+  if (international) {
+    if (carrier.coverageInternational) return { ok: true, bonus: 10, reason: 'international' };
+    return { ok: false, bonus: 0, reason: 'no-international' };
+  }
+
+  if (carrier.coverageAllTanzania) return { ok: true, bonus: 8, reason: 'all-tanzania' };
+
+  const destRegion = detectTzRegion(destination);
+  const regions = (carrier.coverageRegions || []).map((region) => normalize(region)).filter(Boolean);
+  if (!regions.length) return { ok: false, bonus: 0, reason: 'empty-regions' };
+
+  const hit = regions.some((region) => {
+    if (destRegion && (region.includes(destRegion) || destRegion.includes(region))) return true;
+    return placesMatch(region, destination);
+  });
+  if (hit) return { ok: true, bonus: 12, reason: 'region' };
+  return { ok: false, bonus: 0, reason: 'region-miss' };
+}
+
 function dayNameInDar(date) {
   const fmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: DAR_TIME_ZONE });
   return fmt.format(date).slice(0, 3).toLowerCase();
@@ -141,6 +247,10 @@ function scoreCarrier(order, carrier, routes, vehicles, options = {}) {
   const destination = orderDestination(order);
   const origin = orderOrigin(order);
   if (!normalize(destination)) return null;
+
+  const coverage = coverageForOrder(order, carrier);
+  if (!coverage.ok) return null;
+
   const weight = weightKg(order);
   const dayName = serviceDayName(order, options.now);
   const usedByRoute = options.usedByRoute || new Map();
@@ -164,6 +274,7 @@ function scoreCarrier(order, carrier, routes, vehicles, options = {}) {
   }
   score += 10;
   score += 8;
+  score += coverage.bonus;
   if (matchingRoute.departureTime) score += 4;
   if (limit > 0) score += Math.min(6, Math.round((remaining / limit) * 6));
   const activeVehicle = (vehicles || []).some((vehicle) => normalize(vehicle.status) === 'active');
@@ -186,6 +297,7 @@ function scoreCarrier(order, carrier, routes, vehicles, options = {}) {
     remainingKg: remaining,
     departureTime: matchingRoute.departureTime || '',
     arrivalTime: matchingRoute.arrivalTime || '',
+    coverageReason: coverage.reason,
   };
 }
 
@@ -527,6 +639,14 @@ async function matchOrderById(db, orderId) {
 async function syncCarrierShipment(db, orderId, before, after) {
   if (!after) return { skipped: true };
   await mirrorBusOnOrder(db, orderId, after);
+
+  try {
+    const { maybeNotifyRecipientOnShipmentChange } = require('./carrier-sms');
+    await maybeNotifyRecipientOnShipmentChange(db, orderId, before, after);
+  } catch (error) {
+    console.error('carrier recipient SMS hook failed', orderId, error?.message || error);
+  }
+
   const beforeStatus = normalize(before?.shipmentStatus);
   const afterStatus = normalize(after.shipmentStatus);
 
@@ -602,8 +722,11 @@ module.exports = {
   SHIPMENT_FLOW,
   advanceCarrierOffers,
   cashSplit,
+  coverageForOrder,
+  detectTzRegion,
   heldWeightByRoute,
   isBusParcel,
+  looksInternational,
   matchOrderById,
   rankCarriers,
   declaredValueTzs,

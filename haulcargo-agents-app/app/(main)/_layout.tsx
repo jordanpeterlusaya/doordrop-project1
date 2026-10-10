@@ -42,7 +42,7 @@ export default function MainTabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Muhtasari',
+          title: 'Nyumbani',
           tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} />,
         }}
       />
@@ -50,7 +50,7 @@ export default function MainTabsLayout() {
         name="orders"
         options={{
           title: 'Oda',
-          tabBarIcon: ({ color, size }) => <Ionicons name="notifications-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="cube-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen

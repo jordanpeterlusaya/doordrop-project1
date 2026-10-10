@@ -1,344 +1,185 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React from 'react';
-import {
-  Dimensions,
-  Image,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type ImageSourcePropType,
-} from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { OfferCountdown } from '@/components/offer-countdown';
-import { Card, Muted, PrimaryButton, Screen, SectionTitle } from '@/components/ui';
+import { OrderInboxCard } from '@/components/order-inbox-card';
+import { Card, Muted, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { acceptOffer, rejectOffer, setPickupMode } from '@/lib/carrier-actions';
-import { STATUS_LABEL } from '@/lib/carrier-types';
 import {
+  darTodayKey,
   darTodayLabel,
-  dropOffLabel,
+  fireTimeMs,
+  inboxShipments,
   isIncomingOffer,
-  manifestNextAction,
-  money,
-  offerStillValid,
-  primaryActiveJob,
-  shipmentCode,
-  todayCargoRows,
-  trackIndex,
 } from '@/lib/carrier-helpers';
-import { TRACK } from '@/lib/carrier-types';
 import { images } from '@/lib/images';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-const PAGE_PAD = 20;
-const TILE_GAP = 8;
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const TILE_WIDTH = (SCREEN_WIDTH - PAGE_PAD * 2) * 0.485;
+type FilterKey = 'all' | 'offers' | 'active' | 'today';
 
-type QuickTile = {
-  key: string;
-  title: string;
-  subtitle: string;
-  image?: ImageSourcePropType;
-  icon?: keyof typeof Ionicons.glyphMap;
-  onPress: () => void;
-};
-
-function ServiceTile({ tile }: { tile: QuickTile }) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={tile.title}
-      onPress={tile.onPress}
-      style={styles.tilePressable}>
-      <View style={styles.tile}>
-        {tile.image ? (
-          <Image source={tile.image} resizeMode="contain" style={styles.tileArt} />
-        ) : (
-          <View style={styles.tileIconWrap}>
-            <Ionicons name={tile.icon || 'ellipse'} size={22} color={theme.ink} />
-          </View>
-        )}
-        <Text style={styles.tileTitle} numberOfLines={1}>
-          {tile.title}
-        </Text>
-        <Text style={styles.tileSubtitle} numberOfLines={1}>
-          {tile.subtitle}
-        </Text>
-      </View>
-    </Pressable>
-  );
-}
+const FILTERS: { key: FilterKey; label: string }[] = [
+  { key: 'all', label: 'Zote' },
+  { key: 'offers', label: 'Mpya' },
+  { key: 'active', label: 'Hai' },
+  { key: 'today', label: 'Leo' },
+];
 
 export default function HomeScreen() {
-  const { carrier, shipments, user } = useCarrierSession();
+  const { carrier, shipments } = useCarrierSession();
   const carrierId = carrier?.id || '';
-  const job = carrierId ? primaryActiveJob(shipments, carrierId) : null;
-  const todayCount = carrierId
-    ? todayCargoRows(shipments, carrierId).filter((i) => i.shipmentStatus !== 'delivered').length
-    : 0;
+  const [filter, setFilter] = useState<FilterKey>('all');
 
-  const tiles: QuickTile[] = [
-    {
-      key: 'orders',
-      title: 'Oda',
-      subtitle: 'Pokea mizigo',
-      image: images.homeAvatarMizigo,
-      onPress: () => router.push('/(main)/orders'),
-    },
-    {
-      key: 'manifest',
-      title: 'Orodha',
-      subtitle: 'Manifesti',
-      image: images.homeTileTrack,
-      onPress: () => router.push('/(main)/manifest'),
-    },
-    {
-      key: 'fedha',
-      title: 'Fedha',
-      subtitle: 'Malipo',
-      icon: 'cash-outline',
-      onPress: () => router.push('/(main)/fedha'),
-    },
-    {
-      key: 'schedule',
-      title: 'Ratiba',
-      subtitle: 'Safari leo',
-      image: images.homeTileSchedule,
-      onPress: () => router.push('/schedule'),
-    },
-  ];
+  const inbox = useMemo(() => inboxShipments(shipments, carrierId), [shipments, carrierId]);
 
-  const renderJobActions = () => {
-    if (!job || !carrierId || !user?.email) return null;
-    if (isIncomingOffer(job, carrierId) && offerStillValid(job)) {
-      return (
-        <View style={styles.actions}>
-          <PrimaryButton
-            label="Kubali"
-            onPress={() => void acceptOffer(job.id, carrierId, user.email!).then(() => router.push(`/order/${job.id}`))}
-          />
-          <PrimaryButton label="Kataa" variant="outline" onPress={() => void rejectOffer(job.id, carrierId, user.email!)} />
-        </View>
-      );
-    }
-    if (!job.pickupMode && ['accepted', 'contacted'].includes(job.shipmentStatus)) {
-      return (
-        <View style={styles.actions}>
-          <PrimaryButton
-            label="Nitafuata kwa mteja"
-            onPress={() =>
-              void setPickupMode(job.id, carrierId, 'agent_collects', user.email!).then(() =>
-                router.push(`/directions/${job.id}`)
-              )
-            }
-          />
-          <PrimaryButton
-            label="Leteni ofisini"
-            variant="outline"
-            onPress={() => void setPickupMode(job.id, carrierId, 'haul_delivers_to_office', user.email!)}
-          />
-        </View>
-      );
-    }
-    if (job.pickupMode === 'agent_collects' && job.pickupLatitude && job.pickupLongitude) {
-      return <PrimaryButton label="Elekea eneo la oda" onPress={() => router.push(`/directions/${job.id}`)} />;
-    }
-    const manifest = manifestNextAction(job);
-    if (manifest) {
-      return <PrimaryButton label={manifest.label} onPress={() => router.push(`/order/${job.id}`)} />;
-    }
-    const idx = trackIndex(job);
-    const next = idx >= 0 ? TRACK[idx + 1] : null;
-    if (next) {
-      return <PrimaryButton label={next.label} onPress={() => router.push(`/order/${job.id}`)} />;
-    }
-    return <PrimaryButton label="Angalia oda" variant="outline" onPress={() => router.push(`/order/${job.id}`)} />;
-  };
+  const rows = useMemo(() => {
+    const today = darTodayKey();
+    return inbox.filter((item) => {
+      if (filter === 'offers') return isIncomingOffer(item, carrierId);
+      if (filter === 'active') return item.carrierId === carrierId && !isIncomingOffer(item, carrierId);
+      if (filter === 'today') {
+        const ms = fireTimeMs(item.offeredAt) || fireTimeMs(item.acceptedAt) || fireTimeMs(item.createdAt);
+        if (!ms) return isIncomingOffer(item, carrierId);
+        const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Dar_es_Salaam' }).format(new Date(ms));
+        return day === today;
+      }
+      return true;
+    });
+  }, [inbox, filter, carrierId]);
+
+  const offerCount = inbox.filter((item) => isIncomingOffer(item, carrierId)).length;
 
   return (
     <Screen scroll>
-      <Text style={styles.greeting}>Karibu tena.</Text>
-      <Text style={styles.company}>{carrier?.companyName || 'Haul Cargo Agents'}</Text>
-      <Muted>{darTodayLabel()}</Muted>
-
-      <View style={styles.grid}>
-        {tiles.map((tile) => (
-          <ServiceTile key={tile.key} tile={tile} />
-        ))}
+      <View style={styles.hero}>
+        <View style={styles.heroText}>
+          <Text style={styles.eyebrow}>HAUL Cargo Desk</Text>
+          <Text style={styles.company} numberOfLines={2}>
+            {carrier?.companyName || 'Kampuni yako'}
+          </Text>
+          <Muted>{darTodayLabel()}</Muted>
+          <Text style={styles.lead}>
+            {offerCount > 0
+              ? `${offerCount} oda mpya zinazosubiri kukubaliwa`
+              : 'Oda kutoka HAUL zitaonekana hapa'}
+          </Text>
+        </View>
+        <Image source={images.deskCargoTruck} style={styles.heroArt} resizeMode="contain" />
       </View>
 
-      <View style={styles.utilityBar}>
-        <View style={styles.utilityAction}>
-          <View style={styles.utilityIcon}>
-            <Ionicons name="cube-outline" size={16} color={theme.ink} />
-          </View>
-          <Text style={styles.utilityLabel}>{todayCount} mizigo leo</Text>
-        </View>
-        <View style={styles.utilityDivider} />
-        <Pressable style={styles.utilityAction} onPress={() => router.push('/schedule')}>
-          <View style={styles.utilityIcon}>
-            <Ionicons name="time-outline" size={16} color={theme.ink} />
-          </View>
-          <Text style={styles.utilityLabel}>Ratiba</Text>
+      <View style={styles.filters}>
+        {FILTERS.map((item) => {
+          const selected = filter === item.key;
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => setFilter(item.key)}
+              style={[styles.filterChip, selected && styles.filterChipOn]}>
+              <Text style={[styles.filterText, selected && styles.filterTextOn]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <View style={styles.quickRow}>
+        <Pressable style={styles.quick} onPress={() => router.push('/history')}>
+          <Ionicons name="time-outline" size={16} color={theme.ink} />
+          <Text style={styles.quickText}>Historia</Text>
+        </Pressable>
+        <Pressable style={styles.quick} onPress={() => router.push('/(main)/fedha')}>
+          <Ionicons name="wallet-outline" size={16} color={theme.ink} />
+          <Text style={styles.quickText}>Fedha</Text>
+        </Pressable>
+        <Pressable style={styles.quick} onPress={() => router.push('/schedule')}>
+          <Ionicons name="bus-outline" size={16} color={theme.ink} />
+          <Text style={styles.quickText}>Ratiba</Text>
         </Pressable>
       </View>
 
-      <SectionTitle>Kazi yako sasa</SectionTitle>
-      {!job ? (
-        <Card>
-          <Muted>Hakuna oda hai kwa sasa. Oda mpya itaonekana hapa na countdown ya dakika 5.</Muted>
+      {rows.length === 0 ? (
+        <Card style={styles.empty}>
+          <Image source={images.deskPackingBox} style={styles.emptyArt} resizeMode="contain" />
+          <Text style={styles.emptyTitle}>Hakuna oda kwenye inbox</Text>
+          <Muted style={styles.emptyBody}>
+            Mtuma mzigo kwenye HAUL anapoweka oda ya parcel, itaonekana hapa ikiwa coverage na njia yenu
+            inalingana.
+          </Muted>
         </Card>
       ) : (
-        <Card>
-          <Text style={styles.code}>{shipmentCode(job)}</Text>
-          <Text style={styles.dest}>{dropOffLabel(job)}</Text>
-          <Text style={styles.meta}>
-            {job.weightKg || 0} kg · {money(job.cashExpected)} · {STATUS_LABEL[job.shipmentStatus] || job.shipmentStatus}
-          </Text>
-          {isIncomingOffer(job, carrierId) ? <OfferCountdown shipment={job} /> : null}
-          <View style={styles.spacer} />
-          {renderJobActions()}
-          <Pressable onPress={() => router.push(`/order/${job.id}`)} style={styles.detailLink}>
-            <Text style={styles.detailText}>Maelezo kamili</Text>
-          </Pressable>
-        </Card>
+        rows.map((item) => <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />)
       )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  greeting: {
-    fontSize: 26,
-    lineHeight: 32,
-    fontFamily: typography.bold,
-    color: theme.ink,
-    letterSpacing: -0.5,
-    marginBottom: 4,
+  hero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+    backgroundColor: theme.primarySoft,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#F3E7A3',
+  },
+  heroText: { flex: 1 },
+  eyebrow: {
+    fontFamily: typography.semibold,
+    fontSize: 12,
+    color: theme.muted,
+    marginBottom: 2,
   },
   company: {
-    fontSize: 15,
-    lineHeight: 20,
-    fontFamily: typography.semibold,
+    fontFamily: typography.bold,
+    fontSize: 22,
+    lineHeight: 28,
     color: theme.ink,
-    marginBottom: 2,
+    letterSpacing: -0.4,
   },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: TILE_GAP,
-    marginTop: 16,
-    marginBottom: 10,
-  },
-  tilePressable: {
-    width: TILE_WIDTH,
-  },
-  tile: {
-    backgroundColor: theme.tile,
-    borderRadius: 16,
-    overflow: 'hidden',
-    height: 104,
-    paddingTop: 6,
-    paddingBottom: 8,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  tileArt: {
-    width: Math.round(TILE_WIDTH * 0.88),
-    height: 52,
-    marginBottom: 2,
-  },
-  tileIconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: theme.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 2,
-  },
-  tileTitle: {
-    fontSize: 13,
-    lineHeight: 16,
-    fontFamily: typography.semibold,
-    color: theme.ink,
-    textAlign: 'center',
-  },
-  tileSubtitle: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
+  lead: {
+    marginTop: 8,
     fontFamily: typography.body,
-    color: theme.muted,
-    textAlign: 'center',
+    fontSize: 14,
+    lineHeight: 20,
+    color: theme.ink,
   },
-  utilityBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
+  heroArt: { width: 88, height: 72 },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 12,
     backgroundColor: theme.tile,
-    borderRadius: 14,
-    marginBottom: 14,
-    overflow: 'hidden',
   },
-  utilityAction: {
+  filterChipOn: { backgroundColor: theme.ink },
+  filterText: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
+  filterTextOn: { color: theme.primary },
+  quickRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  quick: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    minHeight: 52,
-    paddingHorizontal: 10,
+    gap: 6,
+    backgroundColor: theme.white,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 12,
+    paddingVertical: 10,
   },
-  utilityIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: theme.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  utilityLabel: {
-    fontSize: 15,
-    lineHeight: 19,
-    fontFamily: typography.semibold,
-    color: theme.ink,
-  },
-  utilityDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 24,
-    backgroundColor: '#D1D5DB',
-  },
-  code: {
-    fontSize: 20,
+  quickText: { fontFamily: typography.semibold, fontSize: 12, color: theme.ink },
+  empty: { alignItems: 'center', paddingVertical: 28 },
+  emptyArt: { width: 120, height: 96, marginBottom: 12 },
+  emptyTitle: {
     fontFamily: typography.bold,
+    fontSize: 17,
     color: theme.ink,
-    letterSpacing: -0.3,
+    marginBottom: 6,
+    textAlign: 'center',
   },
-  dest: {
-    fontSize: 15,
-    fontFamily: typography.body,
-    color: theme.muted,
-    marginTop: 4,
-  },
-  meta: {
-    fontSize: 13,
-    fontFamily: typography.body,
-    color: theme.muted,
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  actions: { gap: 10 },
-  spacer: { height: 8 },
-  detailLink: { marginTop: 14, alignItems: 'center' },
-  detailText: {
-    color: theme.ink,
-    fontFamily: typography.semibold,
-  },
+  emptyBody: { textAlign: 'center', lineHeight: 20 },
 });

@@ -14,6 +14,9 @@ export type Carrier = {
   status?: 'pending' | 'verified' | 'rejected' | 'suspended' | string;
   rejectionReason?: string;
   documents?: Record<string, string>;
+  coverageRegions?: string[];
+  coverageAllTanzania?: boolean;
+  coverageInternational?: boolean;
 };
 
 export type CarrierRoute = {
@@ -51,6 +54,7 @@ export type CarrierShipment = {
   departureTime?: string;
   destination?: string;
   origin?: string;
+  pickupLabel?: string;
   customerName?: string;
   customerPhone?: string;
   recipientName?: string;
@@ -61,6 +65,12 @@ export type CarrierShipment = {
   haulFee?: number;
   carrierNet?: number;
   cashStatus?: string;
+  commissionPayRequest?: {
+    requestedAt?: FireTime;
+    requestedBy?: string;
+    method?: string;
+    amount?: number;
+  };
   pickupLatitude?: number | null;
   pickupLongitude?: number | null;
   offerExpiresAt?: FireTime;
@@ -68,8 +78,12 @@ export type CarrierShipment = {
   loadedAt?: FireTime;
   arrivedAt?: FireTime;
   deliveredAt?: FireTime;
+  createdAt?: FireTime;
+  acceptedAt?: FireTime;
+  offeredAt?: FireTime;
   manifestDate?: string;
   declaredValueTzs?: number;
+  recipientSmsEvents?: Array<{ event?: string; jobId?: string; at?: string; status?: string }>;
 };
 
 export const TRACK = [

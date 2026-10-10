@@ -59,9 +59,9 @@ export default function FedhaScreen() {
 
 const styles = StyleSheet.create({
   hint: { marginVertical: 12 },
-  history: { color: theme.green, fontWeight: '700', marginBottom: 16 },
+  history: { color: theme.ink, fontWeight: '700', marginBottom: 16 },
   code: { fontWeight: '800', fontSize: 15, color: theme.charcoal },
   line: { color: theme.muted, marginTop: 4, fontSize: 13 },
-  net: { color: theme.green, fontWeight: '700', marginTop: 6 },
+  net: { color: theme.ink, fontWeight: '700', marginTop: 6 },
   status: { marginTop: 4, fontSize: 12, color: theme.muted },
 });

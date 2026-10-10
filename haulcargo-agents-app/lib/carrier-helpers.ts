@@ -160,6 +160,34 @@ export function primaryActiveJob(shipments: CarrierShipment[], carrierId: string
   return active[0] || null;
 }
 
+/** Newest-first inbox: live offers + active accepted work (not delivered history). */
+export function inboxShipments(shipments: CarrierShipment[], carrierId: string): CarrierShipment[] {
+  if (!carrierId) return [];
+  return shipments
+    .filter((item) => {
+      if (isIncomingOffer(item, carrierId)) return true;
+      if (item.carrierId !== carrierId) return false;
+      if (isDelivered(item) || item.shipmentStatus === 'matching') return false;
+      return true;
+    })
+    .sort((left, right) => shipmentRecencyMs(right) - shipmentRecencyMs(left));
+}
+
+export function shipmentRecencyMs(item: CarrierShipment) {
+  return (
+    fireTimeMs(item.offeredAt) ||
+    fireTimeMs(item.acceptedAt) ||
+    fireTimeMs(item.createdAt) ||
+    fireTimeMs(item.offerExpiresAt) ||
+    0
+  );
+}
+
+export function telHref(phone?: string | null) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  return digits ? `tel:${digits}` : '';
+}
+
 export function manifestNextAction(item: CarrierShipment) {
   if (!isLoaded(item)) return { act: 'loaded' as const, label: 'Imepakiwa' };
   if (!isArrived(item)) return { act: 'arrived' as const, label: 'Imefika' };

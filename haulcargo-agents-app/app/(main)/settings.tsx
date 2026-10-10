@@ -4,6 +4,7 @@ import { StyleSheet, Text } from 'react-native';
 import { doc, updateDoc } from 'firebase/firestore';
 
 import { Field, Header, PrimaryButton, Screen, Card, Muted, SectionTitle } from '@/components/ui';
+import { coverageSummary } from '@/constants/coverage';
 import { ADMIN_EMAIL, theme } from '@/constants/theme';
 import { carrierStatusLabel } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
@@ -39,6 +40,14 @@ export default function SettingsScreen() {
           {carrier?.status === 'verified'
             ? 'Unaweza kupokea oda za mizigo kutoka HAUL.'
             : 'Timu ya HAUL inapitia taarifa za kampuni yako.'}
+        </Muted>
+        <Muted style={{ marginTop: 8 }}>
+          Coverage:{' '}
+          {coverageSummary({
+            coverageRegions: carrier?.coverageRegions || [],
+            coverageAllTanzania: Boolean(carrier?.coverageAllTanzania),
+            coverageInternational: Boolean(carrier?.coverageInternational),
+          })}
         </Muted>
         {carrier?.rejectionReason ? <Text style={styles.reject}>Sababu: {carrier.rejectionReason}</Text> : null}
       </Card>

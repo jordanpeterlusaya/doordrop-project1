@@ -161,3 +161,35 @@ export async function markCashCollected(shipmentId: string) {
 export async function requestReconciliation(shipmentId: string) {
   await updateDoc(doc(db, 'carrierShipments', shipmentId), { cashStatus: 'pending_reconciliation' });
 }
+
+/**
+ * Honest in-app commission pay request — marks pending_reconciliation for admin reconcile.
+ * Does not fake mobile-money success.
+ */
+export async function requestCommissionPayment(shipmentId: string, carrierId: string, actorEmail: string) {
+  const ref = doc(db, 'carrierShipments', shipmentId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Shipment not found.');
+  const current = snap.data();
+  if (current.carrierId !== carrierId) throw new Error('Not your shipment.');
+  const haulFee = Number(current.haulFee) || 0;
+  if (haulFee <= 0) throw new Error('Hakuna kamisheni ya kulipa.');
+  if (current.cashStatus === 'reconciled') throw new Error('Kamisheni tayari imelinganishwa.');
+
+  await updateDoc(ref, {
+    cashStatus: 'pending_reconciliation',
+    commissionPayRequest: {
+      requestedAt: serverTimestamp(),
+      requestedBy: actorEmail,
+      method: 'manual_pay_request',
+      amount: haulFee,
+      note: 'Carrier requested HAUL commission payment; awaiting admin reconciliation.',
+    },
+    statusHistory: arrayUnion({
+      status: 'commission_pay_requested',
+      label: 'Ombi la kulipa kamisheni',
+      at: stamp(),
+      actor: actorEmail,
+    }),
+  });
+}

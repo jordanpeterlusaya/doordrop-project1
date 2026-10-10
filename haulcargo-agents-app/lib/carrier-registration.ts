@@ -1,5 +1,6 @@
 import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 
+import type { CoverageSelection } from '@/constants/coverage';
 import { DAYS } from '@/lib/carrier-types';
 import { darTodayKey } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
@@ -15,6 +16,9 @@ export type RegisterCompanyInput = {
   routeDestination: string;
   routeDepart: string;
   cargoCapacityKg: number;
+  coverageRegions?: string[];
+  coverageAllTanzania?: boolean;
+  coverageInternational?: boolean;
 };
 
 export async function createCarrierFromRegistration(user: User, input: RegisterCompanyInput, email: string) {
@@ -34,6 +38,12 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     .slice(0, 3)
     .toLowerCase();
 
+  const coverage: CoverageSelection = {
+    coverageRegions: input.coverageAllTanzania ? [] : [...(input.coverageRegions || [])],
+    coverageAllTanzania: Boolean(input.coverageAllTanzania),
+    coverageInternational: Boolean(input.coverageInternational),
+  };
+
   await setDoc(doc(db, 'carriers', carrierId), {
     ownerUid: carrierId,
     companyName: input.companyName.trim(),
@@ -44,6 +54,9 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     businessDetails: input.businessDetails || '',
     status: 'pending',
     documents: {},
+    coverageRegions: coverage.coverageRegions,
+    coverageAllTanzania: coverage.coverageAllTanzania,
+    coverageInternational: coverage.coverageInternational,
     ordersReceived: 0,
     accepted: 0,
     rejected: 0,
