@@ -158,10 +158,28 @@ async function handleSendOtp(req) {
   let sent = false;
   let provider = 'none';
   if (smsConfigured()) {
-    const result = await sendSms(phone, message, { purpose: 'carrier_otp', event: 'otp' });
-    sent = true;
-    provider = result.provider;
-    console.info('carrier-otp sent', { toMasked: maskPhone(phone), provider, purpose });
+    try {
+      const result = await sendSms(phone, message, { purpose: 'carrier_otp', event: 'otp' });
+      sent = true;
+      provider = result.provider;
+      console.info('carrier-otp sent', { toMasked: maskPhone(phone), provider, purpose });
+    } catch (error) {
+      const code = String(error?.code || '');
+      const raw = String(error?.causeDetail || error?.message || '');
+      console.warn('carrier-otp send failed', {
+        toMasked: maskPhone(phone),
+        purpose,
+        code: code || undefined,
+        reason: raw.slice(0, 160),
+      });
+      if (Number.isInteger(error?.statusCode) && error.message && !/^mambo_\d+/.test(error.message)) {
+        throw error;
+      }
+      throw serviceUnavailable(
+        'Imeshindwa kutuma msimbo wa OTP. Hakikisha Sender ID imeidhinishwa kwenye Mambo SMS, kisha jaribu tena.',
+        code || 'sms_send_failed'
+      );
+    }
   } else if (allowDevWithoutSms()) {
     // Emulator-only path: code is never logged.
     console.info('carrier-otp queued emulator', { toMasked: maskPhone(phone), purpose });

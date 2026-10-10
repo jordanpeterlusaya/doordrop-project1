@@ -772,14 +772,11 @@ async function requestListener(req, res) {
     sendJson(res, 404, { error: 'Not found.' }, originHeader);
   } catch (error) {
     const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
-    sendJson(
-      res,
-      statusCode,
-      {
-        error: error instanceof Error ? error.message : 'Unexpected server error.',
-      },
-      originHeader
-    );
+    const payload = {
+      error: error instanceof Error ? error.message : 'Unexpected server error.',
+    };
+    if (error?.code) payload.code = error.code;
+    sendJson(res, statusCode, payload, originHeader);
   } finally {
     recordRequest(pathname, Date.now() - startedAt, res.statusCode || 200);
   }

@@ -128,7 +128,38 @@ async function sendViaMambo(to, body) {
 
   if (!ok) {
     const detail = String(payload?.message || payload?.error?.message || payload?.error || '').slice(0, 160);
-    throw new Error(`mambo_${response.status}${detail ? `:${detail}` : ''}`);
+    const lower = detail.toLowerCase();
+    const senderInvalid =
+      response.status === 403 ||
+      /sender\s*id/i.test(detail) ||
+      lower.includes('invalid sender') ||
+      lower.includes('sender id invalid');
+    if (senderInvalid) {
+      const error = new Error(
+        'Sender ID ya Mambo haijaidhinishwa. Ingia kwenye Mambo SMS → Sender ID, omba jina (mf. HAUL), subiri idhini, kisha weka MAMBO_SMS_SENDER_ID sawa na jina lililoidhinishwa.'
+      );
+      error.statusCode = 503;
+      error.code = 'mambo_sender_id_invalid';
+      error.causeDetail = `mambo_${response.status}${detail ? `:${detail}` : ''}`;
+      throw error;
+    }
+    if (response.status === 401 || /unauthenticated|invalid.?api.?key|unauthorized/i.test(detail)) {
+      const error = new Error('Uthibitisho wa Mambo SMS umeshindwa. Angalia MAMBO_SMS_API_TOKEN.');
+      error.statusCode = 503;
+      error.code = 'mambo_unauthorized';
+      throw error;
+    }
+    if (/insufficient|balance/i.test(detail) || response.status === 402) {
+      const error = new Error('Salio la SMS limeisha. Ongeza salio kwenye Mambo SMS.');
+      error.statusCode = 503;
+      error.code = 'mambo_insufficient_balance';
+      throw error;
+    }
+    const error = new Error('Imeshindwa kutuma SMS. Jaribu tena baadaye.');
+    error.statusCode = 503;
+    error.code = 'mambo_send_failed';
+    error.causeDetail = `mambo_${response.status}${detail ? `:${detail}` : ''}`;
+    throw error;
   }
   return { provider: 'mambo', messageId: payload?.message_id || null, mobileFormat: mobile };
 }
