@@ -612,6 +612,15 @@ async function requestListener(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
+      let smsConfigured = false;
+      let smsProvider = '';
+      try {
+        const sms = require('./sms-provider');
+        smsConfigured = Boolean(sms.smsConfigured());
+        smsProvider = String(process.env.SMS_PROVIDER || (smsConfigured ? 'auto' : '')).trim().toLowerCase() || '';
+      } catch {
+        smsConfigured = false;
+      }
       sendJson(
         res,
         200,
@@ -620,6 +629,8 @@ async function requestListener(req, res) {
           googlePlacesConfigured: Boolean(config.googlePlacesApiKey),
           googleRoutesConfigured: Boolean(config.googleRoutesApiKey),
           mongikeConfigured: Boolean(process.env.MONGIKE_API_KEY),
+          smsConfigured,
+          smsProvider: smsProvider || null,
           driverAccessFeeTzs,
           mongikeNetworks,
           supportedVehicleTypes: SUPPORTED_VEHICLE_TYPES,

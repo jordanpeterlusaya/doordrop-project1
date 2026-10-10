@@ -9,6 +9,11 @@ const { config } = require('./config');
 
 const mongikeApiKey = defineString('MONGIKE_API_KEY');
 const googleServerApiKey = defineString('GOOGLE_SERVER_API_KEY');
+const smsProvider = defineString('SMS_PROVIDER', { default: '' });
+const mamboSmsApiToken = defineString('MAMBO_SMS_API_TOKEN', { default: '' });
+const mamboSmsSenderId = defineString('MAMBO_SMS_SENDER_ID', { default: '' });
+const mamboSmsBaseUrl = defineString('MAMBO_SMS_BASE_URL', { default: '' });
+const mamboSmsMobileFormat = defineString('MAMBO_SMS_MOBILE_FORMAT', { default: '255' });
 
 let firestore = null;
 let cachedRequestListener = null;
@@ -126,17 +131,29 @@ async function sendExpoPushNotification(notificationId, notification, user) {
   });
 }
 
-function applyRuntimeSecrets() {
+function applyParam(envName, param) {
   try {
-    process.env.MONGIKE_API_KEY = mongikeApiKey.value();
+    const value = param.value();
+    if (value !== undefined && value !== null && String(value).length) {
+      process.env[envName] = String(value);
+    }
   } catch {
-    process.env.MONGIKE_API_KEY = process.env.MONGIKE_API_KEY || '';
+    // Keep any process.env value already present (local / dotenv).
   }
+}
 
-  try {
-    process.env.GOOGLE_SERVER_API_KEY = googleServerApiKey.value();
-  } catch {
-    process.env.GOOGLE_SERVER_API_KEY = process.env.GOOGLE_SERVER_API_KEY || '';
+function applyRuntimeSecrets() {
+  applyParam('MONGIKE_API_KEY', mongikeApiKey);
+  applyParam('GOOGLE_SERVER_API_KEY', googleServerApiKey);
+  applyParam('SMS_PROVIDER', smsProvider);
+  applyParam('MAMBO_SMS_API_TOKEN', mamboSmsApiToken);
+  applyParam('MAMBO_SMS_SENDER_ID', mamboSmsSenderId);
+  applyParam('MAMBO_SMS_BASE_URL', mamboSmsBaseUrl);
+  applyParam('MAMBO_SMS_MOBILE_FORMAT', mamboSmsMobileFormat);
+
+  // Production must never honor OTP bypass; strip if somehow injected.
+  if (process.env.FUNCTIONS_EMULATOR !== 'true' && !process.env.FIRESTORE_EMULATOR_HOST) {
+    delete process.env.SMS_OTP_ALLOW_DEV;
   }
 
   const googleKey = String(process.env.GOOGLE_SERVER_API_KEY || '').trim();

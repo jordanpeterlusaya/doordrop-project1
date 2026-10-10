@@ -1,7 +1,9 @@
 /**
- * Shared outbound SMS. Supports Africa's Talking, Twilio, generic SMS_API_*, or webhook.
- * Never logs full phone numbers — use maskPhone from carrier-sms.
+ * Shared outbound SMS. Supports Mambo SMS, Africa's Talking, Twilio, generic SMS_API_*, or webhook.
+ * Never logs full phone numbers — use maskPhone.
  */
+
+const MAMBO_DEFAULT_BASE_URL = 'https://mambosms.co.tz/api/v1';
 
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '');
@@ -13,6 +15,7 @@ function maskPhone(phone) {
   return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
 }
 
+/** Internal E.164-ish form used across OTP sessions (+255…). */
 function normalizeSmsPhone(phone) {
   const digits = digitsOnly(phone);
   if (digits.length < 9) return '';
@@ -23,8 +26,45 @@ function normalizeSmsPhone(phone) {
   return `+${digits}`;
 }
 
+/**
+ * Mambo docs show 0713XXXXXX; many TZ gateways also accept 2557XXXXXXXX.
+ * Default: 255… (no +) per product requirement; override with MAMBO_SMS_MOBILE_FORMAT=local|255.
+ */
+function toMamboMobile(phone) {
+  const normalized = normalizeSmsPhone(phone);
+  const digits = digitsOnly(normalized);
+  if (!digits) return '';
+  const format = String(process.env.MAMBO_SMS_MOBILE_FORMAT || '255').trim().toLowerCase();
+  if (digits.startsWith('255') && digits.length >= 12) {
+    if (format === 'local' || format === '0' || format === '07') {
+      return `0${digits.slice(3)}`;
+    }
+    return digits.slice(0, 12);
+  }
+  if (digits.startsWith('0') && digits.length === 10) {
+    if (format === 'local' || format === '0' || format === '07') return digits;
+    return `255${digits.slice(1)}`;
+  }
+  return digits;
+}
+
+function mamboToken() {
+  return String(process.env.MAMBO_SMS_API_TOKEN || process.env.SMS_API_KEY || '').trim();
+}
+
+function mamboSenderId() {
+  return String(process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || '').trim();
+}
+
+function mamboBaseUrl() {
+  return String(process.env.MAMBO_SMS_BASE_URL || MAMBO_DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
+}
+
 function smsConfigured() {
   const provider = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
+  if (provider === 'mambo' || provider === 'mambosms') {
+    return Boolean(mamboToken() && mamboSenderId());
+  }
   if (provider === 'africastalking') {
     return Boolean(process.env.SMS_API_KEY && process.env.SMS_API_USERNAME);
   }
@@ -34,9 +74,63 @@ function smsConfigured() {
   if (provider === 'http' || provider === 'api') {
     return Boolean(process.env.SMS_API_URL && process.env.SMS_API_KEY);
   }
+  // Auto-detect Mambo when dedicated env is present and no other provider is named.
+  if (!provider && mamboToken() && mamboSenderId()) return true;
   if (String(process.env.SMS_WEBHOOK_URL || '').trim()) return true;
   if (String(process.env.SMS_API_URL || '').trim() && String(process.env.SMS_API_KEY || '').trim()) return true;
   return false;
+}
+
+function resolveProvider() {
+  const named = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
+  if (named) return named === 'mambosms' ? 'mambo' : named;
+  if (mamboToken() && mamboSenderId()) return 'mambo';
+  if (String(process.env.SMS_WEBHOOK_URL || '').trim()) return 'http';
+  if (String(process.env.SMS_API_URL || '').trim() && String(process.env.SMS_API_KEY || '').trim()) return 'http';
+  return '';
+}
+
+async function sendViaMambo(to, body) {
+  const token = mamboToken();
+  const senderId = mamboSenderId();
+  if (!token || !senderId) {
+    throw new Error('mambo_credentials_missing');
+  }
+  const mobile = toMamboMobile(to);
+  if (!mobile) {
+    const error = new Error('Invalid phone number.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const response = await fetch(`${mamboBaseUrl()}/sms/single`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      sender_id: senderId,
+      message: body,
+      mobile,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  const ok =
+    response.ok &&
+    (payload?.status === 'success' ||
+      payload?.success === true ||
+      Boolean(payload?.message_id) ||
+      response.status === 200);
+
+  if (!ok) {
+    const detail = String(payload?.message || payload?.error?.message || payload?.error || '').slice(0, 160);
+    throw new Error(`mambo_${response.status}${detail ? `:${detail}` : ''}`);
+  }
+  return { provider: 'mambo', messageId: payload?.message_id || null, mobileFormat: mobile };
 }
 
 async function sendViaAfricasTalking(to, body) {
@@ -138,8 +232,11 @@ async function sendSms(toRaw, body, meta = {}) {
     throw error;
   }
 
-  const provider = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
+  const provider = resolveProvider();
   try {
+    if (provider === 'mambo') {
+      return { ...(await sendViaMambo(to, body)), to, toMasked: maskPhone(to) };
+    }
     if (provider === 'africastalking') {
       return { ...(await sendViaAfricasTalking(to, body)), to, toMasked: maskPhone(to) };
     }
@@ -153,9 +250,33 @@ async function sendSms(toRaw, body, meta = {}) {
   }
 }
 
+async function checkMamboBalance() {
+  const token = mamboToken();
+  if (!token) {
+    const error = new Error('mambo_credentials_missing');
+    error.statusCode = 503;
+    throw error;
+  }
+  const response = await fetch(`${mamboBaseUrl()}/sms/balance`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`mambo_balance_${response.status}`);
+  }
+  return payload;
+}
+
 module.exports = {
+  checkMamboBalance,
   maskPhone,
   normalizeSmsPhone,
   sendSms,
   smsConfigured,
+  toMamboMobile,
 };
