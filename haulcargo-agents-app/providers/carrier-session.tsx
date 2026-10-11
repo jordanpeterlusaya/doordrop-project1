@@ -4,7 +4,6 @@ import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   sendPasswordResetEmail,
-  signInWithCustomToken,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
@@ -19,13 +18,15 @@ import {
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ADMIN_EMAIL } from '@/constants/theme';
+import { applyAuthPersistence, getRememberMePreference } from '@/lib/auth-persistence';
 import { loginAuthErrorMessage } from '@/lib/auth-errors';
 import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/carrier-registration';
 import type { Carrier, CarrierRoute, CarrierShipment } from '@/lib/carrier-types';
 import { isIncomingOffer } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
-import { loginCarrierWithOtp } from '@/lib/otp-api';
 import { registerCarrierPushToken, vibrateForNewOffer } from '@/lib/push-notifications';
+
+type SignInOptions = { rememberMe?: boolean };
 
 type CarrierSessionValue = {
   user: User | null;
@@ -33,8 +34,7 @@ type CarrierSessionValue = {
   authenticating: boolean;
   authError: string;
   clearAuthError: () => void;
-  signIn: (email: string, password: string) => Promise<void>;
-  signInWithPhoneOtp: (phone: string, otpTicket: string) => Promise<void>;
+  signIn: (email: string, password: string, options?: SignInOptions) => Promise<void>;
   signUp: (email: string, password: string, company: RegisterCompanyInput) => Promise<void>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -47,6 +47,9 @@ type CarrierSessionValue = {
 };
 
 const CarrierSessionContext = createContext<CarrierSessionValue | undefined>(undefined);
+
+/** Survives provider remounts within the same JS runtime (avoids signing out a fresh session). */
+let authRememberBootstrapDone = false;
 
 export function CarrierSessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(auth.currentUser);
@@ -120,10 +123,27 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
-      setUser(nextUser);
-      resolveCarrier(nextUser)
-        .catch(console.error)
-        .finally(() => setInitializing(false));
+      void (async () => {
+        // Cold start safety net: if Remember me was off, drop any restored session.
+        if (!authRememberBootstrapDone) {
+          authRememberBootstrapDone = true;
+          if (nextUser) {
+            const remember = await getRememberMePreference();
+            if (!remember) {
+              await firebaseSignOut(auth);
+              setUser(null);
+              setCarrier(null);
+              setNeedsCompanySetup(false);
+              setInitializing(false);
+              return;
+            }
+          }
+        }
+        setUser(nextUser);
+        resolveCarrier(nextUser)
+          .catch(console.error)
+          .finally(() => setInitializing(false));
+      })();
     });
     return unsub;
   }, [resolveCarrier]);
@@ -179,32 +199,15 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     return () => unsubs.forEach((u) => u());
   }, [carrier?.id]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
+  const signIn = useCallback(async (email: string, password: string, options?: SignInOptions) => {
     setAuthenticating(true);
     setAuthError('');
     try {
+      await applyAuthPersistence(options?.rememberMe !== false);
       await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
     } catch (error) {
       const code = error instanceof FirebaseError ? error.code : '';
       setAuthError(loginAuthErrorMessage(code));
-      throw error;
-    } finally {
-      setAuthenticating(false);
-    }
-  }, []);
-
-  const signInWithPhoneOtp = useCallback(async (phone: string, otpTicket: string) => {
-    setAuthenticating(true);
-    setAuthError('');
-    try {
-      const result = await loginCarrierWithOtp(phone, otpTicket);
-      await signInWithCustomToken(auth, result.customToken);
-    } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Imeshindwa kuingia. Thibitisha OTP na jaribu tena.';
-      setAuthError(message);
       throw error;
     } finally {
       setAuthenticating(false);
@@ -245,7 +248,6 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       authError,
       clearAuthError,
       signIn,
-      signInWithPhoneOtp,
       signUp,
       signOut,
       resetPassword,
@@ -263,7 +265,6 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       authError,
       clearAuthError,
       signIn,
-      signInWithPhoneOtp,
       signUp,
       signOut,
       resetPassword,

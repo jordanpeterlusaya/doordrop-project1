@@ -40,22 +40,6 @@ export default function LandingScreen() {
 
   if (user) {
     if (needsCompanySetup) return <Redirect href="/register-company" />;
-    if (carrier && !carrier.phoneVerified) {
-      const phone = String(carrier.phone || '').trim();
-      if (!phone) return <Redirect href="/login" />;
-      return (
-        <Redirect
-          href={{
-            pathname: '/otp',
-            params: {
-              phone,
-              purpose: 'confirm',
-              carrierId: carrier.id,
-            },
-          }}
-        />
-      );
-    }
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     if (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com') {
       return <Redirect href="/(main)" />;

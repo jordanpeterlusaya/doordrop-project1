@@ -312,7 +312,7 @@ export default function RegisterScreen() {
             value={phone}
             onChangeText={setPhone}
             error={fieldErrors.phone}
-            hint="+255 / 07XX — we’ll SMS a real OTP next."
+            hint="+255 / 07XX — phone OTP is the last registration step."
           />
           <Field
             label="Region"

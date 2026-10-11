@@ -8,7 +8,7 @@ import { OtpUnderlineInput } from '@/components/otp-underline-input';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { confirmCarrierPhone, sendCarrierOtp, verifyCarrierOtp, type OtpPurpose } from '@/lib/otp-api';
+import { confirmCarrierPhone, sendCarrierOtp, verifyCarrierOtp } from '@/lib/otp-api';
 import { formatCountdown } from '@/lib/phone';
 import {
   clearRegistrationDraft,
@@ -17,12 +17,10 @@ import {
 import { uploadCarrierDocument } from '@/lib/document-upload';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-function resolvePurpose(raw: string): OtpPurpose {
-  if (raw === 'signup') return 'signup';
-  if (raw === 'confirm') return 'confirm';
-  return 'login';
-}
-
+/**
+ * Registration-only phone OTP (final step before Waiting for Approval).
+ * Login is email + password with no OTP.
+ */
 export default function OtpScreen() {
   const params = useLocalSearchParams<{
     phone?: string;
@@ -30,14 +28,12 @@ export default function OtpScreen() {
     phoneMasked?: string;
     cooldown?: string;
     expires?: string;
-    carrierId?: string;
     otpBypass?: string;
   }>();
-  const { signInWithPhoneOtp, signUp, authenticating, user, carrier, needsCompanySetup } =
-    useCarrierSession();
+  const { signUp, authenticating, user, carrier, needsCompanySetup } = useCarrierSession();
 
   const phone = String(params.phone || '');
-  const purpose = resolvePurpose(String(params.purpose || 'login'));
+  const purpose = String(params.purpose || 'signup');
   const [code, setCode] = useState('');
   const [phoneMasked, setPhoneMasked] = useState(String(params.phoneMasked || ''));
   const [cooldown, setCooldown] = useState(Number(params.cooldown || 60) || 60);
@@ -62,45 +58,17 @@ export default function OtpScreen() {
     return () => clearInterval(id);
   }, [expiresIn]);
 
-  // Session restore / deep link: send a real SMS if we landed without a fresh send.
-  useEffect(() => {
-    if (!phone || purpose === 'signup') return;
-    if (params.phoneMasked || Number(params.cooldown || 0) > 0) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const result = await sendCarrierOtp(phone, purpose);
-        if (cancelled) return;
-        setPhoneMasked(result.phoneMasked);
-        setCooldown(result.cooldownSeconds || 60);
-        setExpiresIn(result.expiresInSeconds || 300);
-        if (result.otpBypass) setOtpBypass(true);
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Could not send verification SMS.');
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // Intentionally once on mount for this phone/purpose.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Login/confirm OTP removed — only registration may use this screen.
+  if (purpose !== 'signup') {
+    return <Redirect href="/login" />;
+  }
 
   if (!phone) {
-    return <Redirect href={purpose === 'signup' ? '/register' : '/login'} />;
+    return <Redirect href="/register" />;
   }
 
-  if (user && purpose === 'login') {
-    if (needsCompanySetup) return <Redirect href="/register-company" />;
-    if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
-    if (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com') {
-      return <Redirect href="/(main)" />;
-    }
-  }
-
-  if (user && purpose === 'confirm' && carrier?.phoneVerified) {
+  // Already finished registration (e.g. back navigation after success).
+  if (user && !needsCompanySetup && carrier) {
     if (carrier.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }
@@ -170,25 +138,6 @@ export default function OtpScreen() {
     router.replace('/verification-pending');
   };
 
-  const completeConfirm = async (ticket: string) => {
-    const { auth } = await import('@/lib/firebase');
-    const current = auth.currentUser;
-    if (!current) throw new Error('Sign in again, then verify your phone.');
-    const idToken = await current.getIdToken();
-    await confirmCarrierPhone({
-      phone,
-      otpTicket: ticket,
-      idToken,
-      carrierId: String(params.carrierId || current.uid),
-    });
-    setSuccess('Phone verified');
-    const { doc, getDoc } = await import('firebase/firestore');
-    const { db } = await import('@/lib/firebase');
-    const snap = await getDoc(doc(db, 'carriers', String(params.carrierId || current.uid)));
-    const status = String(snap.data()?.status || 'pending');
-    router.replace(status === 'pending' ? '/verification-pending' : '/(main)');
-  };
-
   const verify = async () => {
     const digits = code.replace(/\D/g, '');
     if (digits.length < 6) {
@@ -201,15 +150,7 @@ export default function OtpScreen() {
     try {
       const result = await verifyCarrierOtp(phone, digits);
       setPhoneMasked(result.phoneMasked);
-      if (purpose === 'login') {
-        await signInWithPhoneOtp(phone, result.otpTicket);
-        return;
-      }
-      if (purpose === 'signup') {
-        await completeSignup(result.otpTicket);
-        return;
-      }
-      await completeConfirm(result.otpTicket);
+      await completeSignup(result.otpTicket);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Invalid code.');
     } finally {
@@ -222,7 +163,7 @@ export default function OtpScreen() {
     setResending(true);
     setError('');
     try {
-      const result = await sendCarrierOtp(phone, purpose);
+      const result = await sendCarrierOtp(phone, 'signup');
       setPhoneMasked(result.phoneMasked);
       setCooldown(result.cooldownSeconds || 60);
       setExpiresIn(result.expiresInSeconds || 300);
@@ -236,15 +177,7 @@ export default function OtpScreen() {
   };
 
   const changePhone = () => {
-    if (purpose === 'signup') {
-      router.replace('/register');
-      return;
-    }
-    if (purpose === 'confirm') {
-      router.replace('/login');
-      return;
-    }
-    router.replace('/login');
+    router.replace('/register');
   };
 
   return (
@@ -260,7 +193,7 @@ export default function OtpScreen() {
             : 'Enter the 6-digit code from SMS'
       }
       centered
-      stepLabel={purpose === 'signup' ? 'Phone verification' : undefined}
+      stepLabel="Phone verification"
       onBack={changePhone}
       footer={
         <View style={styles.footerCol}>

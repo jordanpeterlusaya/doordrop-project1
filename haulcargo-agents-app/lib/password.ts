@@ -10,7 +10,7 @@ export function passwordsMatch(password: string, confirm: string): string | null
   return null;
 }
 
-/** Strong random password for Firebase account bootstrap (phone OTP is primary login). */
+/** Strong random password for Firebase account bootstrap when needed. */
 export function generateAccountPassword() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
   let out = 'Ha1!';

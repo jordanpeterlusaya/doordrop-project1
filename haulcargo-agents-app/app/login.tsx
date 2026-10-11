@@ -1,13 +1,14 @@
 import { Redirect, router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
+import { Ionicons } from '@expo/vector-icons';
 
 import { AuthShell } from '@/components/auth-shell';
 import { Field, PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { sendCarrierOtp } from '@/lib/otp-api';
+import { getRememberMePreference } from '@/lib/auth-persistence';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function LoginScreen() {
@@ -23,24 +24,15 @@ export default function LoginScreen() {
   } = useCarrierSession();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [localError, setLocalError] = useState('');
-  const [sendingOtp, setSendingOtp] = useState(false);
+
+  useEffect(() => {
+    void getRememberMePreference().then(setRememberMe);
+  }, []);
 
   if (user && needsCompanySetup) return <Redirect href="/register-company" />;
-  if (user && carrier && !carrier.phoneVerified) {
-    const phone = String(carrier.phone || '').trim();
-    if (phone) {
-      return (
-        <Redirect
-          href={{
-            pathname: '/otp',
-            params: { phone, purpose: 'confirm', carrierId: carrier.id },
-          }}
-        />
-      );
-    }
-  }
   if (user && !needsCompanySetup && (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com')) {
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
@@ -56,7 +48,6 @@ export default function LoginScreen() {
 
   const continueAfterSignIn = async () => {
     await refreshCarrier();
-    // Re-read via a short delay — session state may still be settling.
     const { auth } = await import('@/lib/firebase');
     const current = auth.currentUser;
     if (!current) return;
@@ -72,39 +63,7 @@ export default function LoginScreen() {
       router.replace('/register-company');
       return;
     }
-    const data = carrierSnap.data();
-    const phone = String(data.phone || data.phoneNormalized || '').trim();
-    const phoneVerified = Boolean(data.phoneVerified);
-    const status = String(data.status || 'pending');
-
-    if (!phoneVerified) {
-      if (!phone) {
-        setLocalError('No phone on this account. Contact HAUL support or re-register.');
-        return;
-      }
-      setSendingOtp(true);
-      try {
-        const result = await sendCarrierOtp(phone, 'confirm');
-        router.replace({
-          pathname: '/otp',
-          params: {
-            phone,
-            purpose: 'confirm',
-            phoneMasked: result.phoneMasked,
-            cooldown: String(result.cooldownSeconds || 60),
-            expires: String(result.expiresInSeconds || 300),
-            carrierId,
-            ...(result.otpBypass ? { otpBypass: '1' } : {}),
-          },
-        });
-      } catch (e) {
-        setLocalError(e instanceof Error ? e.message : 'Could not send verification SMS.');
-      } finally {
-        setSendingOtp(false);
-      }
-      return;
-    }
-
+    const status = String(carrierSnap.data()?.status || 'pending');
     if (status === 'pending') {
       router.replace('/verification-pending');
       return;
@@ -117,7 +76,7 @@ export default function LoginScreen() {
     clearAuthError();
     setLocalError('');
     try {
-      await signIn(email.trim().toLowerCase(), password);
+      await signIn(email.trim().toLowerCase(), password, { rememberMe });
       await continueAfterSignIn();
     } catch {
       // authError already set by session
@@ -171,9 +130,22 @@ export default function LoginScreen() {
         error={fieldErrors.password}
       />
 
-      <Pressable onPress={() => router.push('/forgot-password')} style={styles.forgot}>
-        <Text style={styles.forgotText}>Forgot password?</Text>
-      </Pressable>
+      <View style={styles.rowBetween}>
+        <Pressable
+          onPress={() => setRememberMe((v) => !v)}
+          style={styles.rememberRow}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: rememberMe }}
+          accessibilityLabel="Remember me">
+          <View style={[styles.checkbox, rememberMe && styles.checkboxOn]}>
+            {rememberMe ? <Ionicons name="checkmark" size={14} color={theme.white} /> : null}
+          </View>
+          <Text style={styles.rememberLabel}>Remember me</Text>
+        </Pressable>
+        <Pressable onPress={() => router.push('/forgot-password')} style={styles.forgot}>
+          <Text style={styles.forgotText}>Forgot password?</Text>
+        </Pressable>
+      </View>
 
       {error ? (
         <Animated.Text entering={FadeIn.duration(200)} style={styles.error} accessibilityLiveRegion="polite">
@@ -182,18 +154,47 @@ export default function LoginScreen() {
       ) : null}
 
       <View style={styles.cta}>
-        <PrimaryButton
-          label="Sign in"
-          loading={authenticating || sendingOtp}
-          onPress={() => void onSignIn()}
-        />
+        <PrimaryButton label="Sign in" loading={authenticating} onPress={() => void onSignIn()} />
       </View>
     </AuthShell>
   );
 }
 
 const styles = StyleSheet.create({
-  forgot: { alignSelf: 'flex-end', marginBottom: 16, marginTop: -4 },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    marginTop: -4,
+    gap: 12,
+  },
+  rememberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    backgroundColor: theme.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: {
+    backgroundColor: theme.cta.backgroundColor,
+    borderColor: theme.cta.backgroundColor,
+  },
+  rememberLabel: {
+    fontFamily: typography.medium,
+    fontSize: 13,
+    color: theme.ink,
+  },
+  forgot: { paddingVertical: 2 },
   forgotText: {
     fontFamily: typography.semibold,
     fontSize: 13,
