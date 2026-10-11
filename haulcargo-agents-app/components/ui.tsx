@@ -126,8 +126,10 @@ export function PrimaryButton({
         resolved === 'primary' && styles.btnPrimary,
         resolved === 'outline' && styles.btnOutline,
         resolved === 'danger' && styles.btnDanger,
-        (disabled || loading) && styles.btnDisabled,
-        pressed && styles.btnPressed,
+        resolved === 'primary' && (disabled || loading) && styles.btnPrimaryDisabled,
+        resolved !== 'primary' && (disabled || loading) && styles.btnDisabled,
+        pressed && !disabled && !loading && resolved === 'primary' && styles.btnPrimaryPressed,
+        pressed && !disabled && !loading && resolved !== 'primary' && styles.btnPressed,
       ]}>
       {loading ? (
         <ActivityIndicator color={resolved === 'outline' ? theme.ink : theme.white} />
@@ -320,14 +322,23 @@ const styles = StyleSheet.create({
     backgroundColor: theme.cta.backgroundColor,
     borderColor: theme.cta.backgroundColor,
   },
+  btnPrimaryPressed: {
+    backgroundColor: theme.cta.pressedBackgroundColor,
+    borderColor: theme.cta.pressedBackgroundColor,
+  },
+  btnPrimaryDisabled: {
+    backgroundColor: theme.cta.disabledBackgroundColor,
+    borderColor: theme.cta.disabledBackgroundColor,
+    opacity: 1,
+  },
   btnOutline: {
     backgroundColor: theme.white,
     borderWidth: 1.5,
     borderColor: theme.border,
   },
   btnDanger: { backgroundColor: theme.danger, borderColor: theme.danger },
-  btnDisabled: { opacity: 0.5 },
-  btnPressed: { opacity: 0.9 },
+  btnDisabled: { opacity: 0.45 },
+  btnPressed: { opacity: 0.88 },
   btnText: {
     color: theme.white,
     fontSize: theme.cta.labelSize,

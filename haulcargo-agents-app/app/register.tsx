@@ -1,16 +1,22 @@
+import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { Redirect, router } from 'expo-router';
-import React, { useState } from 'react';
+import { Redirect, router, useFocusEffect } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 import { AuthShell } from '@/components/auth-shell';
-import { CoveragePicker } from '@/components/coverage-picker';
 import { StepProgress } from '@/components/step-progress';
 import { Field, PrimaryButton } from '@/components/ui';
-import { coverageIsValid, emptyCoverage, type CoverageSelection } from '@/constants/coverage';
+import {
+  coverageIsValid,
+  coverageSummary,
+  emptyCoverage,
+  type CoverageSelection,
+} from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { getCoverageDraft, getCoverageDraftStamp, setCoverageDraft } from '@/lib/coverage-draft';
 import { pickDocument, pickImageDocument, type PickedDoc } from '@/lib/document-upload';
 import { sendCarrierOtp } from '@/lib/otp-api';
 import { passwordsMatch, validatePassword } from '@/lib/password';
@@ -64,6 +70,14 @@ export default function RegisterScreen() {
   const [localError, setLocalError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (getCoverageDraftStamp() > 0) {
+        setCoverage(getCoverageDraft());
+      }
+    }, [])
+  );
 
   const error = localError || authError;
 
@@ -342,7 +356,23 @@ export default function RegisterScreen() {
           <Text style={styles.sectionHint}>
             Used for carrier matching — regions, all Tanzania, and/or international countries.
           </Text>
-          <CoveragePicker value={coverage} onChange={setCoverage} />
+          <Pressable
+            onPress={() => {
+              setCoverageDraft(coverage);
+              router.push({ pathname: '/operation-coverage', params: { mode: 'register' } });
+            }}
+            style={({ pressed }) => [styles.coverageCard, pressed && styles.coverageCardPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Open operation coverage">
+            <View style={styles.coverageCardTop}>
+              <Text style={styles.coverageCardTitle}>Eneo la operesheni</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </View>
+            <Text style={styles.coverageCardValue} numberOfLines={2}>
+              {coverageSummary(coverage)}
+            </Text>
+            <Text style={styles.coverageCardHint}>Tafuta na chagua mikoa, au mikoa yote</Text>
+          </Pressable>
           <Field label="Primary route from" value={routeOrigin} onChangeText={setRouteOrigin} />
           <Field
             label="Primary route to"
@@ -514,8 +544,40 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 2,
   },
-  checkboxOn: { backgroundColor: theme.accent, borderColor: theme.accent },
+  checkboxOn: { backgroundColor: '#000000', borderColor: '#000000' },
   checkMark: { color: theme.white, fontFamily: typography.bold, fontSize: 12 },
   termsText: { flex: 1, fontFamily: typography.body, fontSize: 14, lineHeight: 21, color: theme.ink },
-  termsLink: { fontFamily: typography.semibold, color: theme.accent, textDecorationLine: 'underline' },
+  termsLink: { fontFamily: typography.semibold, color: theme.ink, textDecorationLine: 'underline' },
+  coverageCard: {
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.white,
+    padding: 14,
+    marginBottom: 14,
+  },
+  coverageCardPressed: { opacity: 0.92, backgroundColor: theme.tile },
+  coverageCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  coverageCardTitle: {
+    fontFamily: typography.semibold,
+    fontSize: 14,
+    color: theme.ink,
+  },
+  coverageCardValue: {
+    fontFamily: typography.body,
+    fontSize: 14,
+    lineHeight: 20,
+    color: theme.ink,
+  },
+  coverageCardHint: {
+    marginTop: 6,
+    fontFamily: typography.body,
+    fontSize: 12,
+    color: theme.muted,
+  },
 });

@@ -1,14 +1,20 @@
-import { Redirect, router } from 'expo-router';
-import React, { useState } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Redirect, router, useFocusEffect } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AuthShell } from '@/components/auth-shell';
-import { CoveragePicker } from '@/components/coverage-picker';
 import { Field, PrimaryButton } from '@/components/ui';
-import { coverageIsValid, emptyCoverage, type CoverageSelection } from '@/constants/coverage';
+import {
+  coverageIsValid,
+  coverageSummary,
+  emptyCoverage,
+  type CoverageSelection,
+} from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { createCarrierFromRegistration } from '@/lib/carrier-registration';
+import { getCoverageDraft, getCoverageDraftStamp, setCoverageDraft } from '@/lib/coverage-draft';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function RegisterCompanyScreen() {
@@ -23,6 +29,14 @@ export default function RegisterCompanyScreen() {
   const [cargoCapacityKg, setCargoCapacityKg] = useState('500');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (getCoverageDraftStamp() > 0) {
+        setCoverage(getCoverageDraft());
+      }
+    }, [])
+  );
 
   if (!user) return <Redirect href="/login" />;
   // Avoid redirect ping-pong with (main) when carrier is missing but setup flag is false.
@@ -39,7 +53,25 @@ export default function RegisterCompanyScreen() {
         </>
       ) : null}
 
-      {step === 2 ? <CoveragePicker value={coverage} onChange={setCoverage} /> : null}
+      {step === 2 ? (
+        <Pressable
+          onPress={() => {
+            setCoverageDraft(coverage);
+            router.push({ pathname: '/operation-coverage', params: { mode: 'register-company' } });
+          }}
+          style={({ pressed }) => [styles.coverageCard, pressed && styles.coverageCardPressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Open operation coverage">
+          <View style={styles.coverageCardTop}>
+            <Text style={styles.coverageCardTitle}>Eneo la operesheni</Text>
+            <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+          </View>
+          <Text style={styles.coverageCardValue} numberOfLines={2}>
+            {coverageSummary(coverage)}
+          </Text>
+          <Text style={styles.coverageCardHint}>Tafuta na chagua mikoa, au mikoa yote</Text>
+        </Pressable>
+      ) : null}
 
       {step === 3 ? (
         <>
@@ -67,7 +99,7 @@ export default function RegisterCompanyScreen() {
           }
           if (step === 2) {
             if (!coverageIsValid(coverage)) {
-              setError('Chagua coverage: mikoa, mikoa yote, na/au nje ya nchi.');
+              setError('Chagua coverage: fungua eneo la operesheni.');
               return;
             }
             setError('');
@@ -90,7 +122,7 @@ export default function RegisterCompanyScreen() {
                 routeDestination,
                 routeDepart,
                 cargoCapacityKg: Number(cargoCapacityKg) || 0,
-                coverageRegions: coverage.coverageRegions,
+                coverageRegions: coverage.coverageAllTanzania ? [] : coverage.coverageRegions,
                 coverageAllTanzania: coverage.coverageAllTanzania,
                 coverageInternational: coverage.coverageInternational,
                 coverageInternationalCountries: coverage.coverageInternationalCountries,
@@ -116,5 +148,37 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontFamily: typography.semibold,
     fontSize: 13,
+  },
+  coverageCard: {
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.white,
+    padding: 14,
+    marginBottom: 14,
+  },
+  coverageCardPressed: { opacity: 0.92, backgroundColor: theme.tile },
+  coverageCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  coverageCardTitle: {
+    fontFamily: typography.semibold,
+    fontSize: 14,
+    color: theme.ink,
+  },
+  coverageCardValue: {
+    fontFamily: typography.body,
+    fontSize: 14,
+    lineHeight: 20,
+    color: theme.ink,
+  },
+  coverageCardHint: {
+    marginTop: 6,
+    fontFamily: typography.body,
+    fontSize: 12,
+    color: theme.muted,
   },
 });

@@ -59,6 +59,7 @@ export default function RootLayout() {
             <Stack.Screen name="receipt/[id]" />
             <Stack.Screen name="edit-company" />
             <Stack.Screen name="edit-coverage" />
+            <Stack.Screen name="operation-coverage" />
             <Stack.Screen name="edit-documents" />
           </Stack>
         </View>

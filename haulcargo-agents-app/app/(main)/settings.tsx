@@ -94,9 +94,9 @@ export default function SettingsScreen() {
         />
         <SettingsRow
           icon="map-outline"
-          title="Coverage / maeneo"
+          title="Eneo la operesheni"
           value={coverage}
-          onPress={() => router.push('/edit-coverage')}
+          onPress={() => router.push({ pathname: '/operation-coverage', params: { mode: 'edit' } })}
         />
         <SettingsRow
           icon="document-text-outline"

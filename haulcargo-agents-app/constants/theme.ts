@@ -42,7 +42,10 @@ export const theme = {
   cta: {
     minHeight: 48,
     borderRadius: 10,
-    backgroundColor: '#2563EB',
+    /** Solid black primary CTAs (Stripe / Linear / Ramp). */
+    backgroundColor: '#000000',
+    pressedBackgroundColor: '#1A1A1A',
+    disabledBackgroundColor: '#A3A3A3',
     paddingHorizontal: 18,
     labelSize: 15,
     labelLineHeight: 20,
