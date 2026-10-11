@@ -83,10 +83,7 @@ export function isDelivered(item: CarrierShipment) {
   return item.shipmentStatus === 'delivered' || item.trackStep === 'handed';
 }
 
-export function trackLabel(stepKey: string, pickupMode?: string) {
-  if (stepKey === 'pickup') {
-    return pickupMode === 'haul_delivers_to_office' ? 'Leteni ofisini' : 'Nitafuata';
-  }
+export function trackLabel(stepKey: string) {
   const step = DESK_RAIL.find((s) => s.key === stepKey);
   return step?.label || stepKey;
 }
@@ -223,8 +220,6 @@ export function primaryActiveJob(shipments: CarrierShipment[], carrierId: string
   );
   const offer = shipments.find((item) => isIncomingOffer(item, carrierId) && offerStillValid(item));
   if (offer) return offer;
-  const needsPickup = active.filter((item) => !item.pickupMode && ['accepted', 'contacted'].includes(item.shipmentStatus));
-  if (needsPickup.length) return needsPickup[0];
   return active[0] || null;
 }
 
@@ -254,6 +249,34 @@ export function shipmentRecencyMs(item: CarrierShipment) {
 export function telHref(phone?: string | null) {
   const digits = String(phone || '').replace(/\D/g, '');
   return digits ? `tel:${digits}` : '';
+}
+
+function contactBits(name?: string, phone?: string) {
+  return [String(name || '').trim(), String(phone || '').trim()].filter(Boolean).join(' ');
+}
+
+/** Tight WhatsApp/share text. Omits any fact the shipment does not have. */
+export function orderShareMessage(item: CarrierShipment) {
+  const lines = [shipmentCode(item)];
+  const type = String(item.parcelDescription || '').trim();
+  const kg = Number(item.weightKg) || 0;
+  const cargo = [type, kg ? `${kg} kg` : ''].filter(Boolean).join(', ');
+  if (cargo) lines.push(`Mzigo: ${cargo}`);
+  const pickup = String(item.pickupLabel || item.origin || '').trim();
+  if (pickup) lines.push(`Kuchukua: ${pickup}`);
+  const destination = String(item.destination || '').trim();
+  if (destination) lines.push(`Kwenda: ${destination}`);
+  const sender = contactBits(item.customerName, item.customerPhone);
+  if (sender) lines.push(`Mtumaji: ${sender}`);
+  const recipient = contactBits(item.recipientName, item.recipientPhone);
+  if (recipient) lines.push(`Mpokeaji: ${recipient}`);
+  const price = [
+    item.cashExpected != null ? `Mteja ${money(item.cashExpected)}` : '',
+    item.carrierNet != null ? `Mapato ${money(item.carrierNet)}` : '',
+    item.haulFee != null ? `Kamisheni ${money(item.haulFee)}` : '',
+  ].filter(Boolean);
+  if (price.length) lines.push(price.join(' · '));
+  return lines.join('\n');
 }
 
 export function tripArrivalMs(trip: Pick<CarrierTrip, 'serviceDate' | 'arrivalTime'>) {

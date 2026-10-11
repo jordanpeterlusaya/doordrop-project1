@@ -5,15 +5,14 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { EmptyState, FilterChip, Header, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { fireTimeMs, formatWhen, isShipmentLate, money, shipmentCode } from '@/lib/carrier-helpers';
+import { fireTimeMs, formatWhen, money, shipmentCode } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-type Chip = 'done' | 'rejected' | 'late';
+type Chip = 'done' | 'rejected';
 
 export default function HistoryScreen() {
-  const { carrier, shipments, decisions, trips } = useCarrierSession();
+  const { carrier, shipments, decisions } = useCarrierSession();
   const carrierId = carrier?.id || '';
-  const lateEnabled = trips.some((trip) => String(trip.arrivalTime || '').trim());
   const [chip, setChip] = useState<Chip>('done');
 
   const done = useMemo(
@@ -30,32 +29,19 @@ export default function HistoryScreen() {
         .sort((a, b) => String(b.atIso || '').localeCompare(String(a.atIso || ''))),
     [decisions]
   );
-  const late = useMemo(
-    () =>
-      shipments
-        .filter((item) => item.carrierId === carrierId && isShipmentLate(item, trips))
-        .sort((a, b) => fireTimeMs(b.arrivedAt) - fireTimeMs(a.arrivedAt)),
-    [shipments, carrierId, trips]
-  );
-
-  const active = lateEnabled || chip !== 'late' ? chip : 'done';
-
   return (
     <Screen scroll>
-      <Header title="Historia" subtitle="Hesabu ndogo za kazi iliyopita." back />
+      <Header title="Historia" back />
       <View style={styles.chips}>
-        <FilterChip label={`Zimekamilika ${done.length}`} selected={active === 'done'} onPress={() => setChip('done')} />
+        <FilterChip label={`Zimekamilika ${done.length}`} selected={chip === 'done'} onPress={() => setChip('done')} />
         <FilterChip
           label={`Zimekataliwa ${rejected.length}`}
-          selected={active === 'rejected'}
+          selected={chip === 'rejected'}
           onPress={() => setChip('rejected')}
         />
-        {lateEnabled ? (
-          <FilterChip label={`Zimechelewa ${late.length}`} selected={active === 'late'} onPress={() => setChip('late')} />
-        ) : null}
       </View>
 
-      {active === 'done' ? (
+      {chip === 'done' ? (
         done.length === 0 ? (
           <EmptyState title="Hakuna iliyokamilika" body="Mizigo iliyokabidhiwa itaonekana hapa." />
         ) : (
@@ -71,9 +57,9 @@ export default function HistoryScreen() {
         )
       ) : null}
 
-      {active === 'rejected' ? (
+      {chip === 'rejected' ? (
         rejected.length === 0 ? (
-          <EmptyState title="Hakuna iliyokataliwa" body="Ukatayo mpya utaandikwa hapa. Hakuna rekodi za zamani zilizobuniwa." />
+          <EmptyState title="Hakuna iliyokataliwa" />
         ) : (
           rejected.map((item) => (
             <View key={item.id} style={styles.row}>
@@ -85,21 +71,6 @@ export default function HistoryScreen() {
                 </Text>
               </View>
             </View>
-          ))
-        )
-      ) : null}
-
-      {active === 'late' ? (
-        late.length === 0 ? (
-          <EmptyState title="Hakuna iliyochelewa" body="Inalinganisha muda wa kufika uliowekwa na kampuni." />
-        ) : (
-          late.map((item) => (
-            <Pressable key={item.id} style={styles.row} onPress={() => router.push(`/order/${item.id}`)}>
-              <View style={styles.copy}>
-                <Text style={styles.code}>{shipmentCode(item)}</Text>
-                <Text style={styles.meta}>Imefika {formatWhen(item.arrivedAt)}</Text>
-              </View>
-            </Pressable>
           ))
         )
       ) : null}

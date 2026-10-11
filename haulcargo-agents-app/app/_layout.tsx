@@ -56,7 +56,6 @@ export default function RootLayout() {
             <Stack.Screen name="(main)" />
             <Stack.Screen name="schedule" options={{ presentation: 'modal' }} />
             <Stack.Screen name="history" />
-            <Stack.Screen name="safari" />
             <Stack.Screen name="order/[id]" />
             <Stack.Screen name="directions/[id]" />
             <Stack.Screen name="receipt/[id]" />

@@ -6,7 +6,7 @@ import { typography } from '@/constants/typography';
 import { formatCountdown, offerExpiresMs } from '@/lib/carrier-helpers';
 import type { CarrierShipment } from '@/lib/carrier-types';
 
-export function OfferCountdown({ shipment }: { shipment: CarrierShipment }) {
+export function OfferCountdown({ shipment, compact }: { shipment: CarrierShipment; compact?: boolean }) {
   const [left, setLeft] = useState(() => offerExpiresMs(shipment) - Date.now());
 
   const expiresAt = offerExpiresMs(shipment);
@@ -20,6 +20,14 @@ export function OfferCountdown({ shipment }: { shipment: CarrierShipment }) {
 
   const expired = left <= 0;
   const urgent = left > 0 && left <= 60000;
+
+  if (compact) {
+    return (
+      <Text style={[styles.compact, urgent && styles.compactUrgent, expired && styles.compactExpired]}>
+        {expired ? 'Muda umeisha' : formatCountdown(left)}
+      </Text>
+    );
+  }
 
   return (
     <View style={[styles.box, urgent && styles.urgent, expired && styles.expired]}>
@@ -51,4 +59,12 @@ const styles = StyleSheet.create({
     color: theme.ink,
     fontVariant: ['tabular-nums'],
   },
+  compact: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    color: theme.ink,
+    fontVariant: ['tabular-nums'],
+  },
+  compactUrgent: { color: theme.warning },
+  compactExpired: { color: theme.muted },
 });

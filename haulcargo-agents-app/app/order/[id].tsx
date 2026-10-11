@@ -1,63 +1,54 @@
+import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DeskRail } from '@/components/desk-rail';
 import { OfferCountdown } from '@/components/offer-countdown';
 import { ProofSheet } from '@/components/proof-sheet';
-import { Header, PrimaryButton } from '@/components/ui';
+import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { acceptOffer, advanceDeskStep, rejectOffer, requestCommissionPayment } from '@/lib/carrier-actions';
 import {
-  acceptOffer,
-  advanceDeskStep,
-  attachShipmentToTrip,
-  rejectOffer,
-  requestCommissionPayment,
-  setPickupMode,
-} from '@/lib/carrier-actions';
-import {
-  capacitySnapshot,
+  cashStatusLabel,
   deskIndex,
   deskStatusLabel,
   isIncomingOffer,
   money,
   nextDeskStep,
   offerStillValid,
+  orderShareMessage,
   shipmentCode,
   telHref,
 } from '@/lib/carrier-helpers';
-import { sameRegion } from '@/lib/regions';
-import type { CarrierTrip } from '@/lib/carrier-types';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-function Fact({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
-  const body = (
-    <View style={styles.fact}>
-      <Text style={styles.factLabel}>{label}</Text>
-      <Text style={styles.factValue}>{value}</Text>
-    </View>
-  );
-  if (!onPress) return body;
-  return (
-    <Pressable onPress={onPress} accessibilityRole="button">
-      {body}
-    </Pressable>
-  );
+async function shareOrder(message: string) {
+  const url = `whatsapp://send?text=${encodeURIComponent(message)}`;
+  try {
+    const can = await Linking.canOpenURL('whatsapp://send');
+    if (can) {
+      await Linking.openURL(url);
+      return;
+    }
+  } catch {
+    // WhatsApp is not available — use the system sheet.
+  }
+  await Share.share({ message });
 }
 
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { shipments, shipmentsReady, carrier, user, trips } = useCarrierSession();
+  const { shipments, shipmentsReady, carrier, user } = useCarrierSession();
   const insets = useSafeAreaInsets();
   const carrierId = carrier?.id || '';
   const item = useMemo(() => shipments.find((s) => s.id === id), [shipments, id]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [proofOpen, setProofOpen] = useState(false);
-  const [tripOpen, setTripOpen] = useState(false);
   const [error, setError] = useState('');
 
   const email = user?.email || '';
@@ -74,18 +65,18 @@ export default function OrderDetailScreen() {
     }
   };
 
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
+  };
+
   if (!item) {
     return (
-      <View style={[styles.page, { paddingTop: insets.top + 8 }]}>
-        <Header
-          title={shipmentsReady ? 'Muda umeisha' : 'Oda'}
-          subtitle={
-            shipmentsReady
-              ? 'Oda hii haipo tena kwako. Muda wa kukubali umeisha, au imekwenda kampuni nyingine.'
-              : 'Inapakia…'
-          }
-          back
-        />
+      <View style={[styles.page, { paddingTop: insets.top + 8, paddingHorizontal: 20 }]}>
+        <Pressable onPress={goBack} hitSlop={8} style={styles.back} accessibilityRole="button" accessibilityLabel="Rudi">
+          <Ionicons name="chevron-back" size={22} color={theme.ink} />
+        </Pressable>
+        <Text style={styles.code}>{shipmentsReady ? 'Haipo' : 'Oda'}</Text>
       </View>
     );
   }
@@ -95,24 +86,31 @@ export default function OrderDetailScreen() {
   const expiredOffer = offer && !offerStillValid(item);
   const owned = item.carrierId === carrierId;
   const code = shipmentCode(item);
-  const senderTel = telHref(item.customerPhone);
-  const recipientTel = telHref(item.recipientPhone);
-  const photos = (item.parcelPhotoUrls || []).filter((url) => /^https?:\/\//i.test(url));
   const next = owned ? nextDeskStep(item) : null;
-  const capacity = capacitySnapshot(carrier, shipments, carrierId, item.id);
-  const weight = Number(item.weightKg) || 0;
-  const overCapacity = capacity.open != null && weight > capacity.open;
-  const matchingTrips = trips.filter((trip) => sameRegion(item.destination || '', trip.destinationRegion));
   const onRail = deskIndex(item) >= 0;
+  const pickup = String(item.pickupLabel || item.origin || '').trim();
+  const destination = String(item.destination || '').trim();
+  const cargoType = String(item.parcelDescription || '').trim();
+  const weight = Number(item.weightKg) || 0;
+  const cargoLine = [cargoType, weight ? `${weight} kg` : ''].filter(Boolean).join(' · ');
+  const priceLine = [
+    item.carrierNet != null ? money(item.carrierNet) : '',
+    item.haulFee != null ? `kamisheni ${money(item.haulFee)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const cash = String(item.cashStatus || '').toLowerCase();
+  const canRequestPay =
+    owned && item.shipmentStatus === 'delivered' && (cash === 'unpaid' || cash === 'collected') && Number(item.haulFee) > 0;
 
   const copyCode = async () => {
     await Clipboard.setStringAsync(code);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => setCopied(false), 1200);
   };
 
   const confirmReject = () => {
-    Alert.alert('Kataa oda', 'Oda itarudi kwenye matching. Unathibitisha mara moja.', [
+    Alert.alert('Kataa oda', undefined, [
       { text: 'Ghairi', style: 'cancel' },
       {
         text: 'Kataa',
@@ -124,42 +122,18 @@ export default function OrderDetailScreen() {
 
   const goNext = () => {
     if (!next || next === 'proof') return;
-    if (next.key === 'transit' && !item.tripId) {
-      setTripOpen(true);
-      return;
-    }
-    void run(() =>
-      advanceDeskStep(item.id, carrierId, next.key, email, {
-        tripId: item.tripId,
-        tripName: item.tripName,
-      })
-    );
-  };
-
-  const sendOnTrip = (trip: CarrierTrip) => {
-    void run(async () => {
-      await attachShipmentToTrip(item.id, carrierId, { id: trip.id, name: trip.name });
-      await advanceDeskStep(item.id, carrierId, 'transit', email, { tripId: trip.id, tripName: trip.name });
-      setTripOpen(false);
-    });
+    void run(() => advanceDeskStep(item.id, carrierId, next.key, email));
   };
 
   const payCommission = () => {
-    Alert.alert(
-      'Lipa kamisheni',
-      `Ombi la ${money(item.haulFee)} litatumwa kwa HAUL. Hii si malipo yaliyokamilika.`,
-      [
-        { text: 'Ghairi', style: 'cancel' },
-        {
-          text: 'Tuma ombi',
-          onPress: () => void run(() => requestCommissionPayment(item.id, carrierId, email)),
-        },
-      ]
-    );
+    Alert.alert('Lipa kamisheni', `Ombi la ${money(item.haulFee)}. Si malipo yaliyokamilika.`, [
+      { text: 'Ghairi', style: 'cancel' },
+      {
+        text: 'Tuma ombi',
+        onPress: () => void run(() => requestCommissionPayment(item.id, carrierId, email)),
+      },
+    ]);
   };
-
-  const cash = String(item.cashStatus || '').toLowerCase();
-  const canRequestPay = owned && item.shipmentStatus === 'delivered' && (cash === 'unpaid' || cash === 'collected') && Number(item.haulFee) > 0;
 
   let primaryLabel = '';
   let primaryPress: () => void = () => undefined;
@@ -170,7 +144,7 @@ export default function OrderDetailScreen() {
     primaryLabel = next.label;
     primaryPress = goNext;
   } else if (next === 'proof') {
-    primaryLabel = 'Thibitisha ukabidhi';
+    primaryLabel = 'Imekabidhiwa';
     primaryPress = () => setProofOpen(true);
   } else if (canRequestPay) {
     primaryLabel = 'Lipa kamisheni';
@@ -180,130 +154,87 @@ export default function OrderDetailScreen() {
   if (expiredOffer || (!owned && !offer)) {
     return (
       <View style={[styles.page, { paddingTop: insets.top + 8, paddingHorizontal: 20 }]}>
-        <Header title="Muda umeisha" subtitle={`${code} haiwezi kukubaliwa tena.`} back />
+        <Pressable onPress={goBack} hitSlop={8} style={styles.back} accessibilityRole="button" accessibilityLabel="Rudi">
+          <Ionicons name="chevron-back" size={22} color={theme.ink} />
+        </Pressable>
+        <Text style={styles.code}>{code}</Text>
+        <Text style={styles.status}>Muda umeisha</Text>
       </View>
     );
   }
+
+  const statusLine = copied ? 'Imenakiliwa' : liveOffer ? 'Oda mpya' : deskStatusLabel(item);
+  const cashNote =
+    item.shipmentStatus === 'delivered' && (cash === 'pending_reconciliation' || cash === 'reconciled')
+      ? cashStatusLabel(item.cashStatus)
+      : '';
 
   return (
     <View style={styles.page}>
       <ScrollView
         contentContainerStyle={{ paddingTop: insets.top + 8, paddingHorizontal: 20, paddingBottom: 24 }}
         keyboardShouldPersistTaps="handled">
-        <Header title={copied ? 'Imenakiliwa' : code} subtitle={deskStatusLabel(item)} back />
-        <Pressable onPress={() => void copyCode()} accessibilityRole="button">
-          <Text style={styles.copyHint}>Gusa msimbo kunakili</Text>
+        <Pressable onPress={goBack} hitSlop={8} style={styles.back} accessibilityRole="button" accessibilityLabel="Rudi">
+          <Ionicons name="chevron-back" size={22} color={theme.ink} />
         </Pressable>
+
+        <Pressable onPress={() => void copyCode()} accessibilityRole="button">
+          <Text style={styles.code}>{code}</Text>
+        </Pressable>
+        <View style={styles.statusRow}>
+          <Text style={styles.status}>{statusLine}</Text>
+          {liveOffer ? <OfferCountdown shipment={item} compact /> : null}
+        </View>
 
         {onRail ? <DeskRail item={item} /> : null}
-        {liveOffer ? (
-          <View style={styles.countdownWrap}>
-            <OfferCountdown shipment={item} />
+
+        {pickup || destination ? (
+          <View style={styles.block}>
+            <Text style={styles.kicker}>Njia</Text>
+            {pickup ? <Text style={styles.line}>{pickup}</Text> : null}
+            {destination ? <Text style={styles.line}>→ {destination}</Text> : null}
           </View>
         ) : null}
 
-        <View style={styles.panel}>
-          <Fact label="Njia" value={item.routeLabel || `${item.origin || '—'} → ${item.destination || '—'}`} />
-          <Fact label="Mzigo" value={item.parcelDescription || '—'} />
-          <Fact label="Uzito" value={weight ? `${weight} kg` : 'Uzito wazi'} />
-          <Fact label="Thamani" value={item.declaredValueTzs ? money(item.declaredValueTzs) : '—'} />
-          <Fact label="Kuchukua" value={item.pickupLabel || item.origin || '—'} />
-          {item.tripName ? <Fact label="Safari" value={item.tripName} /> : null}
-        </View>
-
-        {photos.length ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photos}>
-            {photos.map((url) => (
-              <Image key={url} source={{ uri: url }} style={styles.photo} />
-            ))}
-          </ScrollView>
-        ) : null}
-
-        {owned && deskIndex(item) >= 0 && deskIndex(item) < 2 ? (
-          <View style={styles.panel}>
-            <Text style={styles.factLabel}>Uchukuzi</Text>
-            <Text style={styles.pickupCurrent}>
-              {item.pickupMode === 'agent_collects'
-                ? 'Nitafuata'
-                : item.pickupMode === 'haul_delivers_to_office'
-                  ? 'Leteni ofisini'
-                  : 'Chagua jinsi mzigo utakavyoingia'}
-            </Text>
-            <View style={styles.pickupRow}>
-              <Pressable
-                style={[styles.pickupChip, item.pickupMode === 'agent_collects' && styles.pickupChipOn]}
-                onPress={() => void run(() => setPickupMode(item.id, carrierId, 'agent_collects', email))}>
-                <Text style={[styles.pickupText, item.pickupMode === 'agent_collects' && styles.pickupTextOn]}>
-                  Nitafuata
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.pickupChip, item.pickupMode === 'haul_delivers_to_office' && styles.pickupChipOn]}
-                onPress={() => void run(() => setPickupMode(item.id, carrierId, 'haul_delivers_to_office', email))}>
-                <Text
-                  style={[
-                    styles.pickupText,
-                    item.pickupMode === 'haul_delivers_to_office' && styles.pickupTextOn,
-                  ]}>
-                  Leteni ofisini
-                </Text>
-              </Pressable>
-            </View>
+        {cargoLine ? (
+          <View style={styles.block}>
+            <Text style={styles.kicker}>Mzigo</Text>
+            <Text style={styles.line}>{cargoLine}</Text>
           </View>
         ) : null}
 
-        {senderTel || recipientTel ? (
-          <View style={styles.panel}>
-            {senderTel ? (
-              <Fact
-                label="Mtumaji"
-                value={`${item.customerName || 'Mtumaji'} · ${item.customerPhone}`}
-                onPress={() => void Linking.openURL(senderTel)}
-              />
-            ) : null}
-            {recipientTel ? (
-              <Fact
-                label="Mpokeaji"
-                value={`${item.recipientName || 'Mpokeaji'} · ${item.recipientPhone}`}
-                onPress={() => void Linking.openURL(recipientTel)}
-              />
-            ) : null}
-            <Text style={styles.callHint}>Gusa simu kupiga.</Text>
+        <People
+          senderName={item.customerName}
+          senderPhone={item.customerPhone}
+          recipientName={item.recipientName}
+          recipientPhone={item.recipientPhone}
+        />
+
+        {priceLine ? (
+          <View style={styles.block}>
+            <Text style={styles.kicker}>Bei</Text>
+            <Text style={styles.line}>{priceLine}</Text>
+            {cashNote ? <Text style={styles.note}>{cashNote}</Text> : null}
           </View>
         ) : null}
 
-        <View style={styles.panel}>
-          <Fact label="Mteja analipa" value={money(item.cashExpected)} />
-          <Fact label="Kamisheni" value={money(item.haulFee)} />
-          <Fact label="Mapato yako" value={money(item.carrierNet)} />
-        </View>
+        {owned ? (
+          <Pressable
+            style={styles.share}
+            onPress={() => void shareOrder(orderShareMessage(item)).catch(() => setError('Imeshindwa kushiriki.'))}
+            accessibilityRole="button">
+            <Ionicons name="logo-whatsapp" size={18} color={theme.ink} />
+            <Text style={styles.shareLabel}>Shiriki</Text>
+          </Pressable>
+        ) : null}
 
-        <Pressable onPress={() => router.push(`/receipt/${item.id}`)}>
-          <Text style={styles.link}>Risiti</Text>
-        </Pressable>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </ScrollView>
 
-      {primaryLabel || item.shipmentStatus === 'delivered' ? (
+      {primaryLabel ? (
         <View style={[styles.dock, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          {liveOffer ? (
-            <Text style={[styles.capacity, overCapacity && styles.capacityOver]}>
-              {weight
-                ? `${weight} kg · uwezo wazi ${capacity.open == null ? 'haujawekwa' : `${Math.max(0, Math.round(capacity.open))} kg`}`
-                : 'Uzito haujawekwa (wazi).'}
-              {overCapacity ? ' Unazidi uwezo — bado unaweza kukubali.' : ''}
-            </Text>
-          ) : null}
-          {primaryLabel ? <PrimaryButton label={primaryLabel} loading={busy} onPress={primaryPress} /> : null}
-          {liveOffer ? (
-            <PrimaryButton label="Kataa" variant="outline" disabled={busy} onPress={confirmReject} />
-          ) : null}
-          {item.shipmentStatus === 'delivered' && cash === 'pending_reconciliation' ? (
-            <Text style={styles.pending}>Inasubiri ulinganifu</Text>
-          ) : null}
-          {item.shipmentStatus === 'delivered' && cash === 'reconciled' ? (
-            <Text style={styles.pending}>Imelinganishwa</Text>
-          ) : null}
+          <PrimaryButton label={primaryLabel} loading={busy} onPress={primaryPress} />
+          {liveOffer ? <PrimaryButton label="Kataa" variant="outline" disabled={busy} onPress={confirmReject} /> : null}
         </View>
       ) : null}
 
@@ -315,80 +246,145 @@ export default function OrderDetailScreen() {
           onDone={() => setProofOpen(false)}
         />
       ) : null}
-
-      {tripOpen ? (
-        <View style={styles.sheetBackdrop}>
-          <Pressable style={styles.sheetDismiss} onPress={() => setTripOpen(false)} />
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>Imetumwa</Text>
-            {matchingTrips.length === 0 ? (
-              <>
-                <Text style={styles.sheetBody}>
-                  Hakuna safari inayokwenda {item.destination || 'eneo hili'}. Unda safari kwanza, kisha tuma mzigo.
-                </Text>
-                <PrimaryButton
-                  label="Unda safari"
-                  onPress={() => {
-                    setTripOpen(false);
-                    router.push({ pathname: '/safari/new', params: { destination: item.destination || '' } });
-                  }}
-                />
-              </>
-            ) : (
-              matchingTrips.map((trip) => (
-                <Pressable key={trip.id} style={styles.tripRow} onPress={() => sendOnTrip(trip)}>
-                  <Text style={styles.tripName}>{trip.name}</Text>
-                  <Text style={styles.tripMeta}>
-                    {trip.serviceDate} · {trip.destinationRegion}
-                  </Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-        </View>
-      ) : null}
     </View>
+  );
+}
+
+function People({
+  senderName,
+  senderPhone,
+  recipientName,
+  recipientPhone,
+}: {
+  senderName?: string;
+  senderPhone?: string;
+  recipientName?: string;
+  recipientPhone?: string;
+}) {
+  const sender = [String(senderName || '').trim(), String(senderPhone || '').trim()].filter(Boolean).join(' · ');
+  const recipient = [String(recipientName || '').trim(), String(recipientPhone || '').trim()].filter(Boolean).join(' · ');
+  if (!sender && !recipient) return null;
+  return (
+    <View style={styles.block}>
+      <Text style={styles.kicker}>Watu</Text>
+      {sender ? <PersonRow role="Mtumaji" value={sender} phone={senderPhone} /> : null}
+      {recipient ? <PersonRow role="Mpokeaji" value={recipient} phone={recipientPhone} /> : null}
+    </View>
+  );
+}
+
+function PersonRow({ role, value, phone }: { role: string; value: string; phone?: string }) {
+  const tel = telHref(phone);
+  const row = (
+    <View style={styles.person}>
+      <Text style={styles.personRole}>{role}</Text>
+      <Text style={styles.personValue}>{value}</Text>
+      {tel ? <Ionicons name="call-outline" size={16} color={theme.ink} /> : null}
+    </View>
+  );
+  if (!tel) return row;
+  return (
+    <Pressable onPress={() => void Linking.openURL(tel)} accessibilityRole="button">
+      {row}
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: theme.white },
-  copyHint: {
-    marginTop: -8,
-    marginBottom: 14,
-    fontFamily: typography.body,
-    fontSize: 12,
-    color: theme.muted,
-  },
-  countdownWrap: { marginBottom: 14 },
-  panel: {
-    backgroundColor: theme.tile,
-    borderRadius: theme.radius.md,
-    padding: 16,
-    marginBottom: 12,
-  },
-  fact: { marginBottom: 12 },
-  factLabel: { fontSize: 12, fontFamily: typography.semibold, color: theme.muted },
-  factValue: { fontSize: 15, lineHeight: 21, fontFamily: typography.body, color: theme.ink, marginTop: 3 },
-  photos: { marginBottom: 12 },
-  photo: { width: 120, height: 90, borderRadius: 12, marginRight: 8 },
-  pickupCurrent: { marginTop: 4, marginBottom: 10, fontFamily: typography.body, fontSize: 15, color: theme.ink },
-  pickupRow: { flexDirection: 'row', gap: 8 },
-  pickupChip: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    backgroundColor: theme.white,
+  back: {
+    width: 36,
+    height: 36,
+    marginLeft: -8,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
   },
-  pickupChipOn: { backgroundColor: theme.ink },
-  pickupText: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  pickupTextOn: { color: theme.white },
-  callHint: { fontFamily: typography.body, fontSize: 12, color: theme.muted },
-  link: { fontFamily: typography.semibold, fontSize: 14, color: theme.ink, marginBottom: 8 },
-  error: { fontFamily: typography.semibold, fontSize: 13, color: theme.danger, marginBottom: 8 },
+  code: {
+    fontFamily: typography.bold,
+    fontSize: 20,
+    lineHeight: 26,
+    color: theme.ink,
+    letterSpacing: -0.3,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 2,
+    marginBottom: 12,
+  },
+  status: {
+    fontFamily: typography.body,
+    fontSize: 14,
+    lineHeight: 18,
+    color: theme.muted,
+  },
+  block: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.line,
+    paddingVertical: 12,
+    gap: 2,
+  },
+  kicker: {
+    fontFamily: typography.semibold,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    color: theme.muted,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  line: {
+    fontFamily: typography.body,
+    fontSize: 15,
+    lineHeight: 21,
+    color: theme.ink,
+  },
+  note: {
+    marginTop: 4,
+    fontFamily: typography.body,
+    fontSize: 13,
+    color: theme.muted,
+  },
+  person: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 32,
+  },
+  personRole: {
+    width: 78,
+    fontFamily: typography.body,
+    fontSize: 13,
+    color: theme.muted,
+  },
+  personValue: {
+    flex: 1,
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    color: theme.ink,
+  },
+  share: {
+    marginTop: 8,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.line,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  shareLabel: {
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    color: theme.ink,
+  },
+  error: {
+    marginTop: 10,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    color: theme.danger,
+  },
   dock: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.line,
@@ -397,30 +393,4 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: theme.white,
   },
-  capacity: { fontFamily: typography.body, fontSize: 13, lineHeight: 18, color: theme.muted },
-  capacityOver: { color: theme.warning },
-  pending: { textAlign: 'center', fontFamily: typography.semibold, fontSize: 13, color: theme.muted },
-  sheetBackdrop: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15, 23, 42, 0.35)',
-  },
-  sheetDismiss: { flex: 1 },
-  sheet: {
-    backgroundColor: theme.white,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 28,
-    gap: 10,
-  },
-  sheetTitle: { fontFamily: typography.bold, fontSize: 20, color: theme.ink },
-  sheetBody: { fontFamily: typography.body, fontSize: 14, lineHeight: 20, color: theme.muted },
-  tripRow: { paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line },
-  tripName: { fontFamily: typography.semibold, fontSize: 16, color: theme.ink },
-  tripMeta: { marginTop: 2, fontFamily: typography.body, fontSize: 13, color: theme.muted },
 });

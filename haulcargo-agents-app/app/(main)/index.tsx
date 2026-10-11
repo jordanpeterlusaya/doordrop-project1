@@ -59,26 +59,14 @@ export default function HomeScreen() {
       </Text>
       <Text style={styles.dateLine}>{darTodayLabel()}</Text>
       <Text style={styles.lead}>
-        {offerCount > 0
-          ? `${offerCount} oda mpya zinazosubiri kukubaliwa`
-          : 'Oda kutoka HAUL zitaonekana hapa'}
+        {offerCount > 0 ? `${offerCount} oda mpya` : 'Hakuna oda mpya'}
       </Text>
 
-      <View style={styles.utilityBar}>
-        <Pressable style={styles.utilityAction} onPress={() => router.push('/history')}>
-          <View style={styles.utilityIcon}>
-            <Ionicons name="time-outline" size={16} color={theme.ink} />
-          </View>
-          <Text style={styles.utilityLabel}>Historia</Text>
-        </Pressable>
-        <View style={styles.utilityDivider} />
-        <Pressable style={styles.utilityAction} onPress={() => router.push('/safari')}>
-          <View style={styles.utilityIcon}>
-            <Ionicons name="bus-outline" size={16} color={theme.ink} />
-          </View>
-          <Text style={styles.utilityLabel}>Safari</Text>
-        </Pressable>
-      </View>
+      <Pressable style={styles.historyLink} onPress={() => router.push('/history')} accessibilityRole="button">
+        <Ionicons name="time-outline" size={18} color={theme.ink} />
+        <Text style={styles.historyLabel}>Historia</Text>
+        <Ionicons name="chevron-forward" size={16} color={theme.muted} />
+      </Pressable>
 
       {offerBanner ? (
         <Pressable
@@ -108,9 +96,7 @@ export default function HomeScreen() {
       </View>
 
       {rows.length === 0 ? (
-        <EmptyState
-          title="Hakuna oda kwenye inbox"
-          body="Mtuma mzigo kwenye HAUL anapoweka oda inayotoka mkoa wenu na kwenda kwenye coverage yenu, itaonekana hapa.">
+        <EmptyState title="Hakuna oda">
           <Image source={images.deskPackingBox} style={styles.emptyArt} resizeMode="contain" />
         </EmptyState>
       ) : (
@@ -152,42 +138,23 @@ const styles = StyleSheet.create({
     color: theme.ink,
     marginBottom: 14,
   },
-  utilityBar: {
+  historyLink: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 52,
-    backgroundColor: theme.tile,
-    borderRadius: 14,
-    marginBottom: 14,
-    overflow: 'hidden',
-  },
-  utilityAction: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
-    minHeight: 52,
-    paddingHorizontal: 8,
+    minHeight: 44,
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
   },
-  utilityIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: theme.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  utilityLabel: {
+  historyLabel: {
+    flex: 1,
     fontSize: 14,
     lineHeight: 18,
     fontFamily: typography.semibold,
     color: theme.ink,
-  },
-  utilityDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 24,
-    backgroundColor: '#D1D5DB',
   },
   banner: {
     backgroundColor: theme.ink,

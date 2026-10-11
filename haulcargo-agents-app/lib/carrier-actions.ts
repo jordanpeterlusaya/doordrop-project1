@@ -72,32 +72,6 @@ export async function rejectOffer(shipmentId: string, carrierId: string, actorEm
   await batch.commit();
 }
 
-export async function setPickupMode(
-  shipmentId: string,
-  carrierId: string,
-  mode: 'agent_collects' | 'haul_delivers_to_office',
-  actorEmail: string
-) {
-  const ref = doc(db, 'carrierShipments', shipmentId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Shipment not found.');
-  const current = snap.data();
-  if (current.carrierId !== carrierId) throw new Error('Not your shipment.');
-  if (['in_transit', 'arrived', 'delivered'].includes(String(current.shipmentStatus || ''))) {
-    throw new Error('Huwezi kubadili uchukuzi sasa.');
-  }
-  const label = mode === 'haul_delivers_to_office' ? 'Leteni ofisini' : 'Nitafuata';
-  await updateDoc(ref, {
-    pickupMode: mode,
-    statusHistory: arrayUnion({
-      status: mode === 'haul_delivers_to_office' ? 'inaletwa_ofisini' : 'inafuatwa',
-      label,
-      at: stamp(),
-      actor: actorEmail,
-    }),
-  });
-}
-
 const FORWARD: Record<string, string> = {
   received: 'packed',
   packed: 'transit',
@@ -108,8 +82,7 @@ export async function advanceDeskStep(
   shipmentId: string,
   carrierId: string,
   stepKey: string,
-  actorEmail: string,
-  trip?: { tripId?: string; tripName?: string }
+  actorEmail: string
 ) {
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
@@ -135,50 +108,9 @@ export async function advanceDeskStep(
     }),
   };
   if (step.key === 'packed') patch.pickedUpAt = serverTimestamp();
-  if (step.key === 'transit') {
-    const tripId = String(trip?.tripId || current.tripId || '').trim();
-    if (!tripId) throw new Error('Chagua safari kwanza.');
-    patch.tripId = tripId;
-    if (trip?.tripName) patch.tripName = trip.tripName;
-  }
   if (step.key === 'arrived') patch.arrivedAt = serverTimestamp();
   await updateDoc(ref, patch);
   if (step.key === 'packed') await updateDoc(doc(db, 'carriers', carrierId), { pickups: increment(1) });
-}
-
-/** Sets tripId only. Does not change carrierId or shipment status. */
-export async function attachShipmentToTrip(
-  shipmentId: string,
-  carrierId: string,
-  trip: { id: string; name: string }
-) {
-  const ref = doc(db, 'carrierShipments', shipmentId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
-  const current = snap.data();
-  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
-  if (current.shipmentStatus === 'assigned' || current.shipmentStatus === 'matching' || !current.carrierId) {
-    throw new Error('Kubali oda kwanza.');
-  }
-  await updateDoc(ref, {
-    tripId: trip.id,
-    tripName: trip.name,
-  });
-}
-
-export async function detachShipmentFromTrip(shipmentId: string, carrierId: string) {
-  const ref = doc(db, 'carrierShipments', shipmentId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
-  const current = snap.data();
-  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
-  if (['in_transit', 'arrived', 'delivered'].includes(String(current.shipmentStatus || ''))) {
-    throw new Error('Mzigo tayari umetumwa.');
-  }
-  await updateDoc(ref, {
-    tripId: deleteField(),
-    tripName: deleteField(),
-  });
 }
 
 export async function markCashCollected(shipmentId: string) {
