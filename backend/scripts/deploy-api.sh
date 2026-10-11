@@ -8,9 +8,10 @@ API_URL="https://us-central1-${PROJECT}.cloudfunctions.net/api"
 echo "==> Preparing Firebase env for ${PROJECT}"
 bash "$ROOT/scripts/prepare-firebase-env.sh"
 
-echo "==> Deploying Cloud Function: api"
+echo "==> Deploying Cloud Functions: api + carrier matching"
 cd "$ROOT/.."
-npx firebase-tools deploy --only functions:api --project "$PROJECT"
+export FUNCTIONS_DISCOVERY_TIMEOUT="${FUNCTIONS_DISCOVERY_TIMEOUT:-90}"
+npx firebase-tools deploy --only functions:api,functions:onParcelOrderMatchCarrier,functions:advanceCarrierOffers,functions:onCarrierShipmentRematch --project "$PROJECT"
 
 echo "==> Checking /health"
 for attempt in 1 2 3 4 5; do

@@ -86,10 +86,13 @@ function orderOrigin(order) {
   return order.outsideOriginCity || order.pickupLabel || order.origin || '';
 }
 
-/** Mainland + Zanzibar regions used for coverage matching. */
+/**
+ * Canonical region id is aliases[0]. Short names match whole tokens only so
+ * "Dar" matches Dar es Salaam and "Darajani" does not.
+ */
 const TZ_REGION_ALIASES = [
-  ['dar es salaam', 'dar', 'dsm', 'salaam', 'kariakoo'],
-  ['mwanza'],
+  ['dar es salaam', 'dar', 'dsm', 'salaam', 'kariakoo', 'ilala', 'kinondoni', 'temeke', 'ubungo', 'kigamboni'],
+  ['mwanza', 'ilemela', 'nyamagana', 'nyegezi', 'nyakato'],
   ['arusha'],
   ['dodoma'],
   ['mbeya'],
@@ -98,13 +101,13 @@ const TZ_REGION_ALIASES = [
   ['kilimanjaro', 'moshi'],
   ['kigoma'],
   ['tabora'],
-  ['shinyanga'],
+  ['shinyanga', 'kahama'],
   ['singida'],
   ['iringa'],
-  ['mtwara'],
+  ['mtwara', 'mikindani'],
   ['lindi'],
   ['ruvuma', 'songea'],
-  ['pwani', 'coast', 'kibaha'],
+  ['pwani', 'coast', 'kibaha', 'bagamoyo'],
   ['geita'],
   ['kagera', 'bukoba'],
   ['mara', 'musoma'],
@@ -149,46 +152,88 @@ function looksInternational(value) {
 function detectTzRegion(value) {
   const text = normalize(value);
   if (!text) return '';
+  const tokens = new Set(text.split(' ').filter(Boolean));
+  let bestId = '';
+  let bestLen = 0;
   for (const aliases of TZ_REGION_ALIASES) {
-    if (aliases.some((alias) => text.includes(alias))) return aliases[0];
+    const id = aliases[0];
+    for (const alias of aliases) {
+      const key = normalize(alias);
+      if (!key) continue;
+      const hit = key.includes(' ') ? text.includes(key) : tokens.has(key);
+      if (!hit || key.length <= bestLen) continue;
+      bestLen = key.length;
+      bestId = id;
+    }
   }
-  return '';
+  return bestId;
+}
+
+/** Home region from registration. Location text is only a fallback when region is empty. */
+function carrierBaseRegion(carrier) {
+  if (!carrier) return '';
+  return (
+    detectTzRegion(carrier.region) ||
+    detectTzRegion(carrier.location) ||
+    detectTzRegion(carrier.physicalAddress) ||
+    ''
+  );
 }
 
 function carrierHasCoverageDeclared(carrier) {
   if (!carrier) return false;
+  if (carrier.coverageIntraCity === true) return true;
   if (carrier.coverageAllTanzania === true) return true;
   if (carrier.coverageInternational === true) return true;
   return Array.isArray(carrier.coverageRegions) && carrier.coverageRegions.length > 0;
 }
 
+function selectedDestinationRegions(carrier) {
+  return (carrier.coverageRegions || []).map((region) => detectTzRegion(region)).filter(Boolean);
+}
+
 /**
- * Region coverage is an additional filter/score on top of route matching.
- * Legacy carriers without coverage fields are not filtered out.
+ * Origin must be the carrier's base region. Destination follows coverage:
+ * nationwide = any destination, selected regions = those regions only,
+ * within-city = destination region equals the base region.
+ * Stored routes and dispatch times are ignored.
  */
 function coverageForOrder(order, carrier) {
-  if (!carrierHasCoverageDeclared(carrier)) {
-    return { ok: true, bonus: 0, reason: 'legacy' };
+  const base = carrierBaseRegion(carrier);
+  if (!base) return { ok: false, bonus: 0, reason: 'no-base-region' };
+
+  const originRegion = detectTzRegion(orderOrigin(order));
+  if (!originRegion || originRegion !== base) {
+    return { ok: false, bonus: 0, reason: 'origin-miss' };
   }
 
   const destination = orderDestination(order);
-  const international = looksInternational(destination);
+  if (!normalize(destination)) return { ok: false, bonus: 0, reason: 'no-destination' };
+
+  const destRegion = detectTzRegion(destination);
+  const international = looksInternational(destination) && !destRegion;
+
+  if (carrier.coverageIntraCity === true) {
+    if (international || !destRegion || destRegion !== base) {
+      return { ok: false, bonus: 0, reason: 'city-miss' };
+    }
+    return { ok: true, bonus: 14, reason: 'intra-city' };
+  }
+
+  if (carrier.coverageAllTanzania === true) {
+    return { ok: true, bonus: 8, reason: 'all-tanzania' };
+  }
+
   if (international) {
-    if (carrier.coverageInternational) return { ok: true, bonus: 10, reason: 'international' };
+    if (carrier.coverageInternational === true) return { ok: true, bonus: 10, reason: 'international' };
     return { ok: false, bonus: 0, reason: 'no-international' };
   }
 
-  if (carrier.coverageAllTanzania) return { ok: true, bonus: 8, reason: 'all-tanzania' };
-
-  const destRegion = detectTzRegion(destination);
-  const regions = (carrier.coverageRegions || []).map((region) => normalize(region)).filter(Boolean);
-  if (!regions.length) return { ok: false, bonus: 0, reason: 'empty-regions' };
-
-  const hit = regions.some((region) => {
-    if (destRegion && (region.includes(destRegion) || destRegion.includes(region))) return true;
-    return placesMatch(region, destination);
-  });
-  if (hit) return { ok: true, bonus: 12, reason: 'region' };
+  const selected = selectedDestinationRegions(carrier);
+  if (!selected.length) return { ok: false, bonus: 0, reason: 'no-coverage' };
+  if (destRegion && selected.includes(destRegion)) {
+    return { ok: true, bonus: 12, reason: 'region' };
+  }
   return { ok: false, bonus: 0, reason: 'region-miss' };
 }
 
@@ -243,40 +288,14 @@ function routeCanTake(route, weight, usedByRoute) {
   return used + (Number(weight) || 0) <= limit;
 }
 
-function scoreCarrier(order, carrier, routes, vehicles, options = {}) {
-  const destination = orderDestination(order);
-  const origin = orderOrigin(order);
-  if (!normalize(destination)) return null;
-
+function scoreCarrier(order, carrier, routes, vehicles) {
+  void routes;
   const coverage = coverageForOrder(order, carrier);
   if (!coverage.ok) return null;
 
-  const weight = weightKg(order);
-  const dayName = serviceDayName(order, options.now);
-  const usedByRoute = options.usedByRoute || new Map();
-  const activeRoutes = (routes || []).filter((route) => route.active !== false);
-  const fitting = activeRoutes.filter((route) => {
-    if (!placesMatch(route.destination, destination)) return false;
-    if (origin && !placesMatch(route.origin, origin)) return false;
-    if (!routeOperatesOn(route, dayName)) return false;
-    return routeCanTake(route, weight, usedByRoute);
-  });
-  if (!fitting.length) return null;
-  fitting.sort((left, right) => remainingCapacityKg(right, usedByRoute) - remainingCapacityKg(left, usedByRoute));
-  const matchingRoute = fitting[0];
-  const remaining = remainingCapacityKg(matchingRoute, usedByRoute);
-  const limit = Number(matchingRoute.cargoCapacityKg) || 0;
-
-  let score = 48;
-  if (origin && placesMatch(matchingRoute.origin, origin)) score += 18;
-  if (isDarHub(origin) && (matchingRoute.pickupKariakoo || isDarHub(matchingRoute.origin) || isDarHub(carrier.location))) {
-    score += 12;
-  }
-  score += 10;
-  score += 8;
-  score += coverage.bonus;
-  if (matchingRoute.departureTime) score += 4;
-  if (limit > 0) score += Math.min(6, Math.round((remaining / limit) * 6));
+  const origin = orderOrigin(order);
+  const destination = orderDestination(order);
+  let score = 60 + coverage.bonus;
   const activeVehicle = (vehicles || []).some((vehicle) => normalize(vehicle.status) === 'active');
   if (activeVehicle) score += 6;
   else score -= 10;
@@ -292,11 +311,11 @@ function scoreCarrier(order, carrier, routes, vehicles, options = {}) {
     carrierId: carrier.id,
     companyName: carrier.companyName || '',
     score,
-    routeId: matchingRoute.id,
-    routeLabel: `${matchingRoute.origin} → ${matchingRoute.destination}`,
-    remainingKg: remaining,
-    departureTime: matchingRoute.departureTime || '',
-    arrivalTime: matchingRoute.arrivalTime || '',
+    routeId: '',
+    routeLabel: `${origin} → ${destination}`,
+    remainingKg: 0,
+    departureTime: '',
+    arrivalTime: '',
     coverageReason: coverage.reason,
   };
 }
@@ -529,10 +548,8 @@ async function mirrorBusOnOrder(db, orderId, shipment) {
 }
 
 async function offerNext(db, orderId, order, shipmentHint) {
-  const weight = weightKg(order);
   const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db);
-  const usedByRoute = await loadHeldWeight(db, orderId);
-  const ranked = rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, { usedByRoute });
+  const ranked = rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier);
   const ref = db.collection('carrierShipments').doc(orderId);
 
   const result = await db.runTransaction(async (tx) => {
@@ -542,22 +559,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
     if (offerIsOpen(shipment)) return { skipped: true, reason: 'offer-open' };
 
     const declined = declinedCarrierIds(shipment);
-    const candidates = ranked.filter((entry) => !declined.has(entry.carrierId));
-    const routeSnaps = [];
-    for (const entry of candidates) {
-      routeSnaps.push(await tx.get(db.collection('carrierRoutes').doc(entry.routeId)));
-    }
-
-    let chosen = null;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const routeSnap = routeSnaps[index];
-      const route = routeSnap.exists ? { id: routeSnap.id, ...routeSnap.data() } : null;
-      if (!route || route.active === false) continue;
-      const summed = usedByRoute.get(route.id) || 0;
-      if (!routeCanTake(route, weight, new Map([[route.id, summed]]))) continue;
-      chosen = { ...candidates[index], routeLabel: `${route.origin} → ${route.destination}` };
-      break;
-    }
+    const chosen = ranked.find((entry) => !declined.has(entry.carrierId)) || null;
 
     const base = shipmentPayload(order, orderId, shipment);
     if (!chosen) {
@@ -587,15 +589,15 @@ async function offerNext(db, orderId, order, shipmentHint) {
         pickupStatus: 'assigned',
         offeredCarrierId: chosen.carrierId,
         offerScore: chosen.score,
-        routeId: chosen.routeId,
+        routeId: null,
         routeLabel: chosen.routeLabel,
-        departureTime: chosen.departureTime || '',
-        arrivalTime: chosen.arrivalTime || '',
+        departureTime: FieldValue.delete(),
+        arrivalTime: FieldValue.delete(),
         pickupMode: FieldValue.delete(),
         trackStep: FieldValue.delete(),
         offerExpiresAt: new Date(Date.now() + OFFER_TIMEOUT_MS),
         offeredAt: FieldValue.serverTimestamp(),
-        capacityReserved: true,
+        capacityReserved: false,
         declinedCarrierIds: [...declined],
         statusHistory: FieldValue.arrayUnion(historyEntry('assigned', 'system')),
       },
