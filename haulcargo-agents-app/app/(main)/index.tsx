@@ -28,7 +28,7 @@ const FILTERS: { key: FilterKey; label: string }[] = [
 ];
 
 export default function HomeScreen() {
-  const { carrier, shipments } = useCarrierSession();
+  const { carrier, shipments, offerBanner, dismissOfferBanner } = useCarrierSession();
   const carrierId = carrier?.id || '';
   const [filter, setFilter] = useState<FilterKey>('all');
 
@@ -72,20 +72,29 @@ export default function HomeScreen() {
           <Text style={styles.utilityLabel}>Historia</Text>
         </Pressable>
         <View style={styles.utilityDivider} />
-        <Pressable style={styles.utilityAction} onPress={() => router.push('/(main)/fedha')}>
-          <View style={styles.utilityIcon}>
-            <Ionicons name="wallet-outline" size={16} color={theme.ink} />
-          </View>
-          <Text style={styles.utilityLabel}>Fedha</Text>
-        </Pressable>
-        <View style={styles.utilityDivider} />
-        <Pressable style={styles.utilityAction} onPress={() => router.push('/schedule')}>
+        <Pressable style={styles.utilityAction} onPress={() => router.push('/safari')}>
           <View style={styles.utilityIcon}>
             <Ionicons name="bus-outline" size={16} color={theme.ink} />
           </View>
-          <Text style={styles.utilityLabel}>Uwezo</Text>
+          <Text style={styles.utilityLabel}>Safari</Text>
         </Pressable>
       </View>
+
+      {offerBanner ? (
+        <Pressable
+          style={styles.banner}
+          onPress={() => {
+            const shipmentId = offerBanner.shipmentId;
+            dismissOfferBanner();
+            router.push(`/order/${shipmentId}`);
+          }}>
+          <Text style={styles.bannerKicker}>ODA MPYA</Text>
+          <Text style={styles.bannerBody} numberOfLines={2}>
+            {offerBanner.code}
+            {offerBanner.destination ? ` · ${offerBanner.destination}` : ''}
+          </Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.filters}>
         {FILTERS.map((item) => (
@@ -107,7 +116,13 @@ export default function HomeScreen() {
       ) : (
         <View style={styles.list}>
           {rows.map((item) => (
-            <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />
+            <OrderInboxCard
+              key={item.id}
+              item={item}
+              carrierId={carrierId}
+              carrier={carrier}
+              shipments={shipments}
+            />
           ))}
         </View>
       )}
@@ -173,6 +188,26 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
     height: 24,
     backgroundColor: '#D1D5DB',
+  },
+  banner: {
+    backgroundColor: theme.ink,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 14,
+  },
+  bannerKicker: {
+    fontFamily: typography.bold,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    color: theme.white,
+    marginBottom: 2,
+  },
+  bannerBody: {
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    lineHeight: 20,
+    color: theme.white,
   },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
   list: { gap: 0 },

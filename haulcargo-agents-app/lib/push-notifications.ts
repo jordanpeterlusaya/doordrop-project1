@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Haptics from 'expo-haptics';
@@ -91,6 +92,44 @@ export async function registerCarrierPushToken(opts: {
   }
 
   return token;
+}
+
+const HANDLED_TAP_KEY = 'haul.agents.lastOfferTap';
+
+type OfferTap = {
+  notification?: {
+    request?: {
+      identifier?: string;
+      content?: { data?: Record<string, unknown> };
+    };
+  };
+};
+
+function orderIdFromTap(response: OfferTap | null) {
+  const data = response?.notification?.request?.content?.data;
+  return String(data?.orderId || '').trim();
+}
+
+/** Notification tap opens the order. Expired offers are handled by the order screen. */
+export function listenForOfferTaps(onOrder: (orderId: string) => void) {
+  const Notifications = loadNotifications();
+  if (!Notifications) return () => undefined;
+
+  const handle = async (response: OfferTap | null) => {
+    const orderId = orderIdFromTap(response);
+    if (!orderId || !response) return;
+    const token = `${response.notification?.request?.identifier || ''}:${orderId}`;
+    const seen = await AsyncStorage.getItem(HANDLED_TAP_KEY);
+    if (seen === token) return;
+    await AsyncStorage.setItem(HANDLED_TAP_KEY, token);
+    onOrder(orderId);
+  };
+
+  const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+    void handle(response as OfferTap);
+  });
+  void Notifications.getLastNotificationResponseAsync().then((response) => handle(response as OfferTap | null));
+  return () => sub.remove();
 }
 
 export function vibrateForNewOffer() {

@@ -7,20 +7,24 @@ import { OfferCountdown } from '@/components/offer-countdown';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import {
+  capacitySnapshot,
+  deskStatusLabel,
   dropOffLabel,
   isIncomingOffer,
   money,
   offerStillValid,
   shipmentCode,
 } from '@/lib/carrier-helpers';
-import { STATUS_LABEL, type CarrierShipment } from '@/lib/carrier-types';
+import type { Carrier, CarrierShipment } from '@/lib/carrier-types';
 
 type Props = {
   item: CarrierShipment;
   carrierId: string;
+  carrier?: Carrier | null;
+  shipments?: CarrierShipment[];
 };
 
-export function OrderInboxCard({ item, carrierId }: Props) {
+export function OrderInboxCard({ item, carrierId, carrier, shipments }: Props) {
   const offer = isIncomingOffer(item, carrierId);
   const liveOffer = offer && offerStillValid(item);
 
@@ -37,7 +41,7 @@ export function OrderInboxCard({ item, carrierId }: Props) {
           </View>
         ) : (
           <View style={styles.badge}>
-            <Text style={styles.badgeText}>{STATUS_LABEL[item.shipmentStatus] || item.shipmentStatus}</Text>
+            <Text style={styles.badgeText}>{deskStatusLabel(item)}</Text>
           </View>
         )}
       </View>
@@ -66,9 +70,33 @@ export function OrderInboxCard({ item, carrierId }: Props) {
       {liveOffer ? (
         <View style={styles.countdown}>
           <OfferCountdown shipment={item} />
+          <WeightHint item={item} carrierId={carrierId} carrier={carrier} shipments={shipments} />
         </View>
       ) : null}
     </Pressable>
+  );
+}
+
+function WeightHint({
+  item,
+  carrierId,
+  carrier,
+  shipments,
+}: {
+  item: CarrierShipment;
+  carrierId: string;
+  carrier?: Carrier | null;
+  shipments?: CarrierShipment[];
+}) {
+  const weight = Number(item.weightKg) || 0;
+  const snap = capacitySnapshot(carrier, shipments || [], carrierId, item.id);
+  const over = snap.open != null && weight > snap.open;
+  const openLabel = snap.open == null ? 'uwezo haujawekwa' : `uwezo wazi ${Math.max(0, Math.round(snap.open))} kg`;
+  return (
+    <Text style={[styles.hint, over && styles.hintOver]}>
+      {weight ? `${weight} kg · ${openLabel}` : `Uzito wazi · ${openLabel}`}
+      {over ? '. Bado unaweza kukubali.' : ''}
+    </Text>
   );
 }
 
@@ -128,5 +156,7 @@ const styles = StyleSheet.create({
   metaText: { fontFamily: typography.body, fontSize: 13, color: theme.muted },
   people: { marginTop: 10, gap: 4 },
   person: { fontFamily: typography.body, fontSize: 13, color: theme.ink },
-  countdown: { marginTop: 12 },
+  countdown: { marginTop: 12, gap: 8 },
+  hint: { fontFamily: typography.body, fontSize: 12, lineHeight: 16, color: theme.muted },
+  hintOver: { color: theme.warning },
 });

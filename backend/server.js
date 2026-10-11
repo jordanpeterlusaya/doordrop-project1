@@ -33,6 +33,12 @@ const {
   handleSendOtp,
   handleVerifyOtp,
 } = require('./carrier-otp');
+const {
+  handleCompleteDeliveryProof,
+  handleDeliveryProofOptions,
+  handleDeliveryProofUpload,
+  handleSendDeliveryOtp,
+} = require('./carrier-delivery-proof');
 
 function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -604,6 +610,10 @@ async function requestListener(req, res) {
             'POST /carrier-auth/otp/verify',
             'POST /carrier-auth/otp/login',
             'POST /carrier-auth/confirm-phone',
+            'GET /carrier/delivery-proof/options',
+            'POST /carrier/delivery-proof/otp/send',
+            'POST /carrier/delivery-proof/upload',
+            'POST /carrier/delivery-proof/complete',
             'POST /driver-payments/webhook/mongike',
           ],
         },
@@ -728,6 +738,30 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/login') {
       const payload = await handleLoginWithOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/carrier/delivery-proof/options') {
+      const payload = await handleDeliveryProofOptions(req, url);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/delivery-proof/otp/send') {
+      const payload = await handleSendDeliveryOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/delivery-proof/upload') {
+      const payload = await handleDeliveryProofUpload(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/delivery-proof/complete') {
+      const payload = await handleCompleteDeliveryProof(req);
       sendJson(res, 200, payload, originHeader);
       return;
     }

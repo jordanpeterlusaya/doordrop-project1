@@ -1,5 +1,11 @@
 import { HAUL_FEE_RATE } from '@/constants/theme';
-import { TRACK, type Carrier, type CarrierShipment, type FireTime } from '@/lib/carrier-types';
+import {
+  DESK_RAIL,
+  type Carrier,
+  type CarrierShipment,
+  type CarrierTrip,
+  type FireTime,
+} from '@/lib/carrier-types';
 
 const DAR = 'Africa/Dar_es_Salaam';
 
@@ -73,40 +79,57 @@ export function shipmentCode(item: CarrierShipment) {
   return String(item.orderNumber || item.id.slice(0, 8)).trim().toUpperCase();
 }
 
-export function isLoaded(item: CarrierShipment) {
-  return Boolean(item.loadedAt) || ['at_bus', 'in_transit', 'arrived', 'delivered'].includes(item.shipmentStatus);
-}
-
-export function isArrived(item: CarrierShipment) {
-  return Boolean(item.arrivedAt) || ['arrived', 'delivered'].includes(item.shipmentStatus);
-}
-
 export function isDelivered(item: CarrierShipment) {
-  return item.shipmentStatus === 'delivered';
+  return item.shipmentStatus === 'delivered' || item.trackStep === 'handed';
 }
 
 export function trackLabel(stepKey: string, pickupMode?: string) {
-  const step = TRACK.find((s) => s.key === stepKey);
-  if (!step) return stepKey;
-  if (step.key === 'pickup') {
-    return pickupMode === 'haul_delivers_to_office' ? 'Kuleta ofisini' : 'Wakala anachukua';
+  if (stepKey === 'pickup') {
+    return pickupMode === 'haul_delivers_to_office' ? 'Leteni ofisini' : 'Nitafuata';
   }
-  return step.label;
+  const step = DESK_RAIL.find((s) => s.key === stepKey);
+  return step?.label || stepKey;
 }
 
-export function trackIndex(item: CarrierShipment) {
-  if (item.trackStep) {
-    const found = TRACK.findIndex((step) => step.key === item.trackStep);
-    if (found >= 0) return found;
+/** Index on the five-step desk rail. Pickup mode does not move this. */
+export function deskIndex(item: CarrierShipment) {
+  const step = String(item.trackStep || '');
+  if (step === 'handed' || item.shipmentStatus === 'delivered') return 4;
+  if (step === 'arrived' || item.shipmentStatus === 'arrived') return 3;
+  if (step === 'transit' || item.shipmentStatus === 'in_transit') return 2;
+  if (step === 'packed' || item.shipmentStatus === 'picked_up' || item.shipmentStatus === 'at_bus') return 1;
+  if (
+    step === 'received' ||
+    step === 'pickup' ||
+    item.shipmentStatus === 'accepted' ||
+    item.shipmentStatus === 'contacted' ||
+    item.shipmentStatus === 'pickup_scheduled'
+  ) {
+    return 0;
   }
-  const status = item.shipmentStatus;
-  if (status === 'accepted') return 0;
-  if (status === 'contacted' || status === 'pickup_scheduled') return item.pickupMode ? 1 : 0;
-  if (status === 'picked_up' || status === 'at_bus') return 2;
-  if (status === 'in_transit') return 3;
-  if (status === 'arrived') return 4;
-  if (status === 'delivered') return 5;
   return -1;
+}
+
+function railAt(index: number) {
+  return DESK_RAIL.find((_, stepIndex) => stepIndex === index);
+}
+
+export function deskStatusLabel(item: CarrierShipment) {
+  const step = railAt(deskIndex(item));
+  if (step) return step.label;
+  if (item.shipmentStatus === 'assigned') return 'Oda mpya';
+  return item.shipmentStatus;
+}
+
+/** Next forward step, or proof once the desk is on Imefika. Never skips. */
+export function nextDeskStep(item: CarrierShipment) {
+  if (isDelivered(item)) return null;
+  const index = deskIndex(item);
+  if (index < 0) return null;
+  if (index >= 3) return 'proof' as const;
+  const next = railAt(index + 1);
+  if (!next || next.key === 'handed') return 'proof' as const;
+  return next;
 }
 
 export function carrierStatusLabel(status?: string) {
@@ -138,8 +161,42 @@ export function isIncomingOffer(item: CarrierShipment, carrierId: string) {
 }
 
 export function offerStillValid(item: CarrierShipment) {
+  if (item.shipmentStatus !== 'assigned') return false;
   const until = offerExpiresMs(item);
+  if (!until) return true;
   return until > Date.now();
+}
+
+const HELD_STATUSES = new Set([
+  'accepted',
+  'contacted',
+  'pickup_scheduled',
+  'picked_up',
+  'at_bus',
+  'in_transit',
+  'arrived',
+]);
+
+/** Open kg is capacity minus weight already on this company's active shipments. */
+export function capacitySnapshot(
+  carrier: Pick<Carrier, 'cargoCapacityKg'> | null | undefined,
+  shipments: CarrierShipment[],
+  carrierId: string,
+  excludeId?: string
+) {
+  const limit = Number(carrier?.cargoCapacityKg) || 0;
+  let held = 0;
+  for (const item of shipments) {
+    if (item.id === excludeId) continue;
+    if (item.carrierId !== carrierId) continue;
+    if (!HELD_STATUSES.has(item.shipmentStatus)) continue;
+    held += Number(item.weightKg) || 0;
+  }
+  return {
+    limit,
+    held,
+    open: limit > 0 ? limit - held : null,
+  };
 }
 
 export function todayCargoRows(shipments: CarrierShipment[], carrierId: string) {
@@ -199,21 +256,21 @@ export function telHref(phone?: string | null) {
   return digits ? `tel:${digits}` : '';
 }
 
-export function manifestNextAction(item: CarrierShipment) {
-  if (!isLoaded(item)) return { act: 'loaded' as const, label: 'Imepakiwa' };
-  if (!isArrived(item)) return { act: 'arrived' as const, label: 'Imefika' };
-  if (!isDelivered(item)) return { act: 'delivered' as const, label: 'Imekabidhiwa' };
-  return null;
+export function tripArrivalMs(trip: Pick<CarrierTrip, 'serviceDate' | 'arrivalTime'>) {
+  const clock = String(trip.arrivalTime || '').trim();
+  const day = String(trip.serviceDate || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(clock) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return 0;
+  const ms = new Date(`${day}T${clock}:00+03:00`).getTime();
+  return Number.isFinite(ms) ? ms : 0;
 }
 
-export function groupManifestByDrop(shipments: CarrierShipment[], carrierId: string) {
-  const rows = todayCargoRows(shipments, carrierId).filter((item) => item.shipmentStatus !== 'delivered');
-  const groups = new Map<string, CarrierShipment[]>();
-  for (const item of rows) {
-    const key = dropOffLabel(item);
-    const list = groups.get(key) || [];
-    list.push(item);
-    groups.set(key, list);
-  }
-  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+/** Late only when the company set a trip arrival time and arrivedAt is after it. */
+export function isShipmentLate(item: CarrierShipment, trips: CarrierTrip[]) {
+  if (!item.tripId) return false;
+  const trip = trips.find((entry) => entry.id === item.tripId);
+  if (!trip?.arrivalTime) return false;
+  const deadline = tripArrivalMs(trip);
+  const arrived = fireTimeMs(item.arrivedAt);
+  if (!deadline || !arrived) return false;
+  return arrived > deadline;
 }

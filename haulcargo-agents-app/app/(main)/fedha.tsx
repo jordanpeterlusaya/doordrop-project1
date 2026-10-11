@@ -1,148 +1,133 @@
 import { router } from 'expo-router';
-import React, { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { CommissionLock } from '@/components/commission-lock';
 import { Header, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { cashStatusLabel, money, shipmentCode } from '@/lib/carrier-helpers';
+import { requestCommissionPayment } from '@/lib/carrier-actions';
+import { isDelivered, money, shipmentCode } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-function shortCash(status?: string) {
-  const s = String(status || '').toLowerCase();
-  if (s === 'reconciled') return 'Sawa';
-  if (s === 'pending_reconciliation') return 'Inasubiri';
-  if (s === 'collected') return 'Imekusanywa';
-  if (s === 'unpaid') return 'Bado';
-  return cashStatusLabel(status);
+function cashLine(status?: string) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'reconciled') return 'Imelinganishwa';
+  if (value === 'pending_reconciliation') return 'Inasubiri ulinganifu';
+  return 'Inasubiri';
 }
 
 export default function FedhaScreen() {
-  const { carrier, shipments } = useCarrierSession();
+  const { carrier, shipments, user } = useCarrierSession();
   const carrierId = carrier?.id || '';
-  const rows = useMemo(
-    () => shipments.filter((s) => s.carrierId === carrierId && s.shipmentStatus !== 'matching'),
+  const [payingId, setPayingId] = useState('');
+  const delivered = useMemo(
+    () => shipments.filter((item) => item.carrierId === carrierId && isDelivered(item)),
     [shipments, carrierId]
   );
 
   const totals = useMemo(() => {
-    let expected = 0;
-    let haulFee = 0;
-    let net = 0;
-    let unpaid = 0;
-    for (const r of rows) {
-      expected += Number(r.cashExpected) || 0;
-      haulFee += Number(r.haulFee) || 0;
-      net += Number(r.carrierNet) || 0;
-      if (r.cashStatus !== 'reconciled') unpaid += 1;
+    let mapato = 0;
+    let kamisheni = 0;
+    let inasubiri = 0;
+    for (const item of delivered) {
+      mapato += Number(item.carrierNet) || 0;
+      kamisheni += Number(item.haulFee) || 0;
+      if (String(item.cashStatus || '').toLowerCase() !== 'reconciled') inasubiri += 1;
     }
-    return { expected, haulFee, net, unpaid };
-  }, [rows]);
+    return { mapato, kamisheni, inasubiri };
+  }, [delivered]);
+
+  const askPay = (shipmentId: string, haulFee: number) => {
+    Alert.alert('Lipa kamisheni', `Ombi la ${money(haulFee)} litasubiri ulinganifu wa HAUL. Hii si "Umelipwa".`, [
+      { text: 'Ghairi', style: 'cancel' },
+      {
+        text: 'Tuma ombi',
+        onPress: () => {
+          setPayingId(shipmentId);
+          void requestCommissionPayment(shipmentId, carrierId, user?.email || '')
+            .catch((error) => Alert.alert('Imeshindwa', error instanceof Error ? error.message : 'Jaribu tena'))
+            .finally(() => setPayingId(''));
+        },
+      },
+    ]);
+  };
 
   return (
     <Screen scroll edges="top">
-      <Header title="Fedha" />
-
-      <View style={styles.summary}>
-        <CommissionLock
-          cashExpected={totals.expected}
-          haulFee={totals.haulFee}
-          carrierNet={totals.net}
-          cashStatus={totals.unpaid ? 'unpaid' : 'reconciled'}
-        />
+      <Header title="Fedha" subtitle="Mizigo iliyokabidhiwa pekee." />
+      <View style={styles.stats}>
+        <Stat label="Mapato" value={money(totals.mapato)} />
+        <Stat label="Kamisheni" value={money(totals.kamisheni)} />
+        <Stat label="Inasubiri" value={String(totals.inasubiri)} />
       </View>
 
-      <View style={styles.metaRow}>
-        <Text style={styles.metaText}>
-          {totals.unpaid > 0 ? `${totals.unpaid} bado` : rows.length ? 'Sawa' : '—'}
-        </Text>
-        <Pressable onPress={() => router.push('/history')} hitSlop={8}>
-          <Text style={styles.link}>Historia</Text>
-        </Pressable>
-      </View>
-
-      {rows.length === 0 ? (
-        <Text style={styles.empty}>Hakuna oda</Text>
+      {delivered.length === 0 ? (
+        <Text style={styles.empty}>Hakuna mzigo uliokabidhiwa bado.</Text>
       ) : (
-        <View style={styles.list}>
-          {rows.map((item, index) => (
+        delivered.map((item, index) => {
+          const status = String(item.cashStatus || '').toLowerCase();
+          const canPay = (status === 'unpaid' || status === 'collected') && Number(item.haulFee) > 0;
+          return (
             <Pressable
               key={item.id}
               onPress={() => router.push(`/order/${item.id}`)}
-              style={[styles.row, index < rows.length - 1 && styles.rowBorder]}>
+              style={[styles.row, index < delivered.length - 1 && styles.rowBorder]}>
               <View style={styles.rowMain}>
                 <Text style={styles.code}>{shipmentCode(item)}</Text>
-                <Text style={styles.status}>{shortCash(item.cashStatus)}</Text>
+                <Text style={styles.status}>{cashLine(item.cashStatus)}</Text>
               </View>
-              <Text style={styles.amt}>{money(item.carrierNet)}</Text>
+              <View style={styles.amounts}>
+                <Text style={styles.amt}>{money(item.carrierNet)}</Text>
+                {canPay ? (
+                  <Pressable disabled={payingId === item.id} onPress={() => askPay(item.id, Number(item.haulFee) || 0)}>
+                    <Text style={styles.pay}>{payingId === item.id ? 'Inatuma…' : 'Lipa kamisheni'}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
             </Pressable>
-          ))}
-        </View>
+          );
+        })
       )}
     </Screen>
   );
 }
 
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={styles.statValue}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  summary: {
-    paddingBottom: 18,
-    marginBottom: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.line,
-  },
-  metaRow: {
+  stats: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-    gap: 12,
+    gap: 8,
+    marginBottom: 18,
   },
-  metaText: {
+  stat: {
     flex: 1,
-    fontFamily: typography.body,
-    fontSize: 13,
-    color: theme.muted,
+    backgroundColor: theme.tile,
+    borderRadius: 14,
+    padding: 12,
   },
-  link: {
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    color: theme.ink,
-  },
-  list: { marginTop: 4 },
+  statLabel: { fontFamily: typography.body, fontSize: 12, color: theme.muted },
+  statValue: { marginTop: 6, fontFamily: typography.bold, fontSize: 14, color: theme.ink },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    paddingVertical: 16,
+    paddingVertical: 14,
   },
-  rowBorder: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.line,
-  },
+  rowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line },
   rowMain: { flex: 1, gap: 2 },
-  code: {
-    fontFamily: typography.bold,
-    fontSize: 15,
-    color: theme.ink,
-    letterSpacing: -0.2,
-  },
-  status: {
-    fontFamily: typography.body,
-    fontSize: 13,
-    color: theme.muted,
-  },
-  amt: {
-    fontFamily: typography.semibold,
-    fontSize: 14,
-    color: theme.ink,
-  },
-  empty: {
-    marginTop: 40,
-    textAlign: 'center',
-    fontFamily: typography.body,
-    fontSize: 14,
-    color: theme.muted,
-  },
+  code: { fontFamily: typography.bold, fontSize: 15, color: theme.ink },
+  status: { fontFamily: typography.body, fontSize: 13, color: theme.muted },
+  amounts: { alignItems: 'flex-end', gap: 4 },
+  amt: { fontFamily: typography.semibold, fontSize: 14, color: theme.ink },
+  pay: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
+  empty: { marginTop: 28, textAlign: 'center', fontFamily: typography.body, fontSize: 14, color: theme.muted },
 });

@@ -243,6 +243,10 @@ async function handleCarrierDocumentUpload(req) {
 
 module.exports = {
   MEDIA_BUCKET,
+  ensureFirebaseAdmin,
   handleCarrierDocumentUpload,
   handleNinunuliePhotoUpload,
+  readJsonBodyLimited,
+  requireAuthenticatedUser,
+  sanitizePathPart,
 };

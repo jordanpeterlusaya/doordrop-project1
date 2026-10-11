@@ -419,8 +419,19 @@ function declaredValueTzs(order) {
   return Number.isFinite(parsed) ? Math.round(parsed) : 0;
 }
 
+/** Only URLs the customer order actually stored. Never invent a photo list. */
+function storedParcelPhotoUrls(order) {
+  const raw = order?.parcelPhotoUrls;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((url) => String(url || '').trim())
+    .filter((url) => /^https?:\/\//i.test(url))
+    .slice(0, 6);
+}
+
 function shipmentPayload(order, orderId, shipment) {
   const split = cashSplit(moneyFromOrder(order));
+  const parcelPhotoUrls = storedParcelPhotoUrls(order);
   return {
     orderId,
     orderNumber: order.orderNumber || order.parcelCode || orderId.slice(0, 6).toUpperCase(),
@@ -436,6 +447,7 @@ function shipmentPayload(order, orderId, shipment) {
     origin: orderOrigin(order),
     destination: orderDestination(order),
     parcelDescription: order.parcelTypeLabel || order.serviceLabel || 'Parcel',
+    ...(parcelPhotoUrls.length ? { parcelPhotoUrls } : {}),
     quantity: 1,
     weightKg: weightKg(order),
     cashExpected: split.amount,
@@ -654,6 +666,28 @@ async function matchOrderById(db, orderId) {
 
 async function syncCarrierShipment(db, orderId, before, after) {
   if (!after) return { skipped: true };
+
+  const beforeStatus = normalize(before?.shipmentStatus);
+  const afterStatus = normalize(after.shipmentStatus);
+  if (beforeStatus !== 'delivered' && afterStatus === 'delivered') {
+    const { hasDeliveryProof } = require('./carrier-delivery-proof');
+    const receipt = await db.collection('deliveryProofReceipts').doc(orderId).get();
+    const proof = after.proofOfDelivery || {};
+    const receiptOk = receipt.exists && String(receipt.data()?.method || '') === String(proof.method || '');
+    if (!hasDeliveryProof({ ...after, id: orderId }) || !receiptOk) {
+      await db.collection('carrierShipments').doc(orderId).set(
+        {
+          shipmentStatus: 'arrived',
+          trackStep: 'arrived',
+          deliveredAt: FieldValue.delete(),
+          proofOfDelivery: FieldValue.delete(),
+        },
+        { merge: true }
+      );
+      return { reverted: true, reason: 'delivered-without-proof' };
+    }
+  }
+
   await mirrorBusOnOrder(db, orderId, after);
 
   try {
@@ -662,9 +696,6 @@ async function syncCarrierShipment(db, orderId, before, after) {
   } catch (error) {
     console.error('carrier recipient SMS hook failed', orderId, error?.message || error);
   }
-
-  const beforeStatus = normalize(before?.shipmentStatus);
-  const afterStatus = normalize(after.shipmentStatus);
 
   const rejectedOrReleased = beforeStatus === 'assigned' && afterStatus === 'matching' && !after.carrierId;
   if (!rejectedOrReleased) return { skipped: true };
@@ -748,5 +779,6 @@ module.exports = {
   declaredValueTzs,
   scoreCarrier,
   shipmentPayload,
+  storedParcelPhotoUrls,
   syncCarrierShipment,
 };

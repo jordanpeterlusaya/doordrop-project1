@@ -10,8 +10,6 @@ import { useCarrierSession } from '@/providers/carrier-session';
 
 const TAB_ICONS = {
   index: { idle: 'home-outline', active: 'home' },
-  orders: { idle: 'cube-outline', active: 'cube' },
-  manifest: { idle: 'list-outline', active: 'list' },
   fedha: { idle: 'wallet-outline', active: 'wallet' },
   settings: { idle: 'person-outline', active: 'person' },
 } as const;
@@ -53,8 +51,8 @@ export default function MainTabsLayout() {
         },
       })}>
       <Tabs.Screen name="index" options={{ title: 'Nyumbani' }} />
-      <Tabs.Screen name="orders" options={{ title: 'Oda' }} />
-      <Tabs.Screen name="manifest" options={{ title: 'Orodha' }} />
+      <Tabs.Screen name="orders" options={{ href: null }} />
+      <Tabs.Screen name="manifest" options={{ href: null }} />
       <Tabs.Screen name="fedha" options={{ title: 'Fedha' }} />
       <Tabs.Screen name="settings" options={{ title: 'Akaunti' }} />
     </Tabs>

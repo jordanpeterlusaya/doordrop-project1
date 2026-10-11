@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet, View } from 'react-native';
 
+import { OfferNotificationRouter } from '@/components/offer-notification-router';
 import { CarrierSessionProvider } from '@/providers/carrier-session';
 
 function hideNativeSplash() {
@@ -41,6 +42,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <CarrierSessionProvider>
+        <OfferNotificationRouter />
         <View style={styles.canvas}>
           <StatusBar style="dark" />
           <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right', contentStyle: styles.stack }}>
@@ -54,6 +56,7 @@ export default function RootLayout() {
             <Stack.Screen name="(main)" />
             <Stack.Screen name="schedule" options={{ presentation: 'modal' }} />
             <Stack.Screen name="history" />
+            <Stack.Screen name="safari" />
             <Stack.Screen name="order/[id]" />
             <Stack.Screen name="directions/[id]" />
             <Stack.Screen name="receipt/[id]" />

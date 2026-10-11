@@ -6,22 +6,31 @@ import {
   increment,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 
-import { TRACK, type CarrierShipment } from '@/lib/carrier-types';
-import { darTodayKey, isArrived, isLoaded, trackIndex, trackLabel } from '@/lib/carrier-helpers';
+import { DESK_RAIL, type CarrierShipment } from '@/lib/carrier-types';
+import { darTodayKey, deskIndex, offerExpiresMs } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 
 function stamp() {
   return new Date().toISOString();
 }
 
+function assertOfferedTo(current: Record<string, unknown>, carrierId: string) {
+  if (current.offeredCarrierId !== carrierId || current.shipmentStatus !== 'assigned' || current.carrierId) {
+    throw new Error('Oda hii si yako tena.');
+  }
+  const expires = offerExpiresMs({ offerExpiresAt: current.offerExpiresAt } as CarrierShipment);
+  if (expires && expires <= Date.now()) throw new Error('Muda umeisha.');
+}
+
 export async function acceptOffer(shipmentId: string, carrierId: string, actorEmail: string) {
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Shipment not found.');
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
   const current = snap.data();
-  if (current.offeredCarrierId !== carrierId) throw new Error('Not your shipment.');
+  assertOfferedTo(current, carrierId);
   await updateDoc(ref, {
     carrierId,
     shipmentStatus: 'accepted',
@@ -29,14 +38,19 @@ export async function acceptOffer(shipmentId: string, carrierId: string, actorEm
     pickupStatus: 'assigned',
     acceptedAt: serverTimestamp(),
     manifestDate: darTodayKey(),
-    statusHistory: arrayUnion({ status: 'received', label: 'Imepokelewa', at: stamp(), actor: actorEmail }),
+    statusHistory: arrayUnion({ status: 'received', label: 'Imekubaliwa', at: stamp(), actor: actorEmail }),
   });
   await updateDoc(doc(db, 'carriers', carrierId), { accepted: increment(1) });
 }
 
 export async function rejectOffer(shipmentId: string, carrierId: string, actorEmail: string) {
   const ref = doc(db, 'carrierShipments', shipmentId);
-  await updateDoc(ref, {
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
+  const current = snap.data();
+  assertOfferedTo(current, carrierId);
+  const batch = writeBatch(db);
+  batch.update(ref, {
     shipmentStatus: 'matching',
     offeredCarrierId: null,
     pickupMode: deleteField(),
@@ -44,7 +58,18 @@ export async function rejectOffer(shipmentId: string, carrierId: string, actorEm
     declinedCarrierIds: arrayUnion(carrierId),
     statusHistory: arrayUnion({ status: 'matching', label: 'Imekataliwa', at: stamp(), actor: actorEmail }),
   });
-  await updateDoc(doc(db, 'carriers', carrierId), { rejected: increment(1) });
+  batch.set(doc(db, 'carriers', carrierId, 'decisions', shipmentId), {
+    shipmentId,
+    decision: 'rejected',
+    parcelCode: String(current.parcelCode || current.orderNumber || ''),
+    destination: String(current.destination || ''),
+    weightKg: Number(current.weightKg) || 0,
+    actor: actorEmail,
+    atIso: stamp(),
+    at: serverTimestamp(),
+  });
+  batch.update(doc(db, 'carriers', carrierId), { rejected: increment(1) });
+  await batch.commit();
 }
 
 export async function setPickupMode(
@@ -58,14 +83,12 @@ export async function setPickupMode(
   if (!snap.exists()) throw new Error('Shipment not found.');
   const current = snap.data();
   if (current.carrierId !== carrierId) throw new Error('Not your shipment.');
+  if (['in_transit', 'arrived', 'delivered'].includes(String(current.shipmentStatus || ''))) {
+    throw new Error('Huwezi kubadili uchukuzi sasa.');
+  }
   const label = mode === 'haul_delivers_to_office' ? 'Leteni ofisini' : 'Nitafuata';
   await updateDoc(ref, {
     pickupMode: mode,
-    shipmentStatus: 'contacted',
-    trackStep: 'pickup',
-    manifestDate: darTodayKey(),
-    stickerReady: true,
-    stickerCreatedAt: serverTimestamp(),
     statusHistory: arrayUnion({
       status: mode === 'haul_delivers_to_office' ? 'inaletwa_ofisini' : 'inafuatwa',
       label,
@@ -75,75 +98,87 @@ export async function setPickupMode(
   });
 }
 
-export async function advanceTrackStep(shipmentId: string, carrierId: string, stepKey: string, actorEmail: string) {
+const FORWARD: Record<string, string> = {
+  received: 'packed',
+  packed: 'transit',
+  transit: 'arrived',
+};
+
+export async function advanceDeskStep(
+  shipmentId: string,
+  carrierId: string,
+  stepKey: string,
+  actorEmail: string,
+  trip?: { tripId?: string; tripName?: string }
+) {
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Shipment not found.');
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
   const current = { id: shipmentId, ...snap.data() } as CarrierShipment;
-  if (current.carrierId !== carrierId || !current.pickupMode) throw new Error('Not your shipment.');
-  const step = TRACK.find((item) => item.key === stepKey);
-  const nextIndex = step ? TRACK.findIndex((item) => item.key === step.key) : -1;
-  const nowIndex = trackIndex(current);
-  if (!step || nextIndex !== nowIndex + 1) return;
+  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
+  if (stepKey === 'handed' || stepKey === 'delivered') {
+    throw new Error('Imekabidhiwa inahitaji uthibitisho.');
+  }
+  const nowKey = DESK_RAIL.find((_, index) => index === deskIndex(current))?.key || '';
+  if (!nowKey || FORWARD[nowKey] !== stepKey) throw new Error('Hatua moja tu mbele.');
+  const step = DESK_RAIL.find((item) => item.key === stepKey);
+  if (!step || step.key === 'handed') throw new Error('Hatua haijulikani.');
+
   const patch: Record<string, unknown> = {
     trackStep: step.key,
     shipmentStatus: step.status,
     statusHistory: arrayUnion({
       status: step.key,
-      label: trackLabel(step.key, current.pickupMode),
+      label: step.label,
       at: stamp(),
       actor: actorEmail,
     }),
   };
   if (step.key === 'packed') patch.pickedUpAt = serverTimestamp();
-  if (step.key === 'handed') patch.deliveredAt = serverTimestamp();
+  if (step.key === 'transit') {
+    const tripId = String(trip?.tripId || current.tripId || '').trim();
+    if (!tripId) throw new Error('Chagua safari kwanza.');
+    patch.tripId = tripId;
+    if (trip?.tripName) patch.tripName = trip.tripName;
+  }
+  if (step.key === 'arrived') patch.arrivedAt = serverTimestamp();
   await updateDoc(ref, patch);
   if (step.key === 'packed') await updateDoc(doc(db, 'carriers', carrierId), { pickups: increment(1) });
-  if (step.key === 'handed') await updateDoc(doc(db, 'carriers', carrierId), { deliveries: increment(1) });
 }
 
-export async function applyManifestMark(
+/** Sets tripId only. Does not change carrierId or shipment status. */
+export async function attachShipmentToTrip(
   shipmentId: string,
   carrierId: string,
-  stage: 'loaded' | 'arrived' | 'delivered',
-  actorEmail: string
+  trip: { id: string; name: string }
 ) {
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Shipment not found.');
-  const current = { id: shipmentId, ...snap.data() } as CarrierShipment;
-  if (current.carrierId !== carrierId) throw new Error('Not your shipment.');
-  if (stage === 'loaded') {
-    if (isLoaded(current)) return;
-    await updateDoc(ref, {
-      shipmentStatus: 'at_bus',
-      trackStep: 'packed',
-      loadedAt: serverTimestamp(),
-      statusHistory: arrayUnion({ status: 'packed', label: 'Imepakiwa', at: stamp(), actor: actorEmail }),
-    });
-    return;
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
+  const current = snap.data();
+  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
+  if (current.shipmentStatus === 'assigned' || current.shipmentStatus === 'matching' || !current.carrierId) {
+    throw new Error('Kubali oda kwanza.');
   }
-  if (stage === 'arrived') {
-    if (!isLoaded(current)) throw new Error('Mark loaded first.');
-    if (isArrived(current)) return;
-    await updateDoc(ref, {
-      shipmentStatus: 'arrived',
-      trackStep: 'arrived',
-      arrivedAt: serverTimestamp(),
-      statusHistory: arrayUnion({ status: 'arrived', label: 'Imefika', at: stamp(), actor: actorEmail }),
-    });
-    return;
+  await updateDoc(ref, {
+    tripId: trip.id,
+    tripName: trip.name,
+  });
+}
+
+export async function detachShipmentFromTrip(shipmentId: string, carrierId: string) {
+  const ref = doc(db, 'carrierShipments', shipmentId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
+  const current = snap.data();
+  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
+  if (['in_transit', 'arrived', 'delivered'].includes(String(current.shipmentStatus || ''))) {
+    throw new Error('Mzigo tayari umetumwa.');
   }
-  if (stage === 'delivered') {
-    if (!isArrived(current)) throw new Error('Mark arrived first.');
-    await updateDoc(ref, {
-      shipmentStatus: 'delivered',
-      trackStep: 'handed',
-      deliveredAt: serverTimestamp(),
-      statusHistory: arrayUnion({ status: 'handed', label: 'Imewasili', at: stamp(), actor: actorEmail }),
-    });
-    await updateDoc(doc(db, 'carriers', carrierId), { deliveries: increment(1) });
-  }
+  await updateDoc(ref, {
+    tripId: deleteField(),
+    tripName: deleteField(),
+  });
 }
 
 export async function markCashCollected(shipmentId: string) {
@@ -171,7 +206,8 @@ export async function requestCommissionPayment(shipmentId: string, carrierId: st
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('Shipment not found.');
   const current = snap.data();
-  if (current.carrierId !== carrierId) throw new Error('Not your shipment.');
+  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
+  if (current.shipmentStatus !== 'delivered') throw new Error('Lipa kamisheni baada ya kukabidhi.');
   const haulFee = Number(current.haulFee) || 0;
   if (haulFee <= 0) throw new Error('Hakuna kamisheni ya kulipa.');
   if (current.cashStatus === 'reconciled') throw new Error('Kamisheni tayari imelinganishwa.');

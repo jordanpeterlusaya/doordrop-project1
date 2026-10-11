@@ -106,7 +106,7 @@ export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw'
     return sw ? 'Mzigo uko njiani' : 'Parcel is on the way';
   }
   if (step === 'packed') {
-    return sw ? 'Mzigo umepakiwa' : 'Parcel is packed';
+    return sw ? 'Kampuni imepokea mzigo' : 'Company received the parcel';
   }
   if (step === 'pickup') {
     return order.carrierPickupMode === 'haul_delivers_to_office'

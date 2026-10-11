@@ -77,6 +77,15 @@ export type CarrierShipment = {
   haulFee?: number;
   carrierNet?: number;
   cashStatus?: string;
+  parcelPhotoUrls?: string[];
+  tripId?: string;
+  tripName?: string;
+  proofOfDelivery?: {
+    method?: 'photo' | 'otp' | 'signature' | string;
+    url?: string;
+    verified?: boolean;
+    at?: string;
+  };
   commissionPayRequest?: {
     requestedAt?: FireTime;
     requestedBy?: string;
@@ -98,27 +107,53 @@ export type CarrierShipment = {
   recipientSmsEvents?: Array<{ event?: string; jobId?: string; at?: string; status?: string }>;
 };
 
-export const TRACK = [
-  { key: 'received', label: 'Imepokelewa', status: 'accepted' },
-  { key: 'pickup', label: 'Uchukuzi', status: 'contacted' },
-  { key: 'packed', label: 'Imepakiwa', status: 'at_bus' },
-  { key: 'transit', label: 'Safarini', status: 'in_transit' },
+/** Desk rail. Keys stay the ones the customer app and SMS already read. */
+export const DESK_RAIL = [
+  { key: 'received', label: 'Imekubaliwa', status: 'accepted' },
+  { key: 'packed', label: 'Imepokelewa', status: 'picked_up' },
+  { key: 'transit', label: 'Imetumwa', status: 'in_transit' },
   { key: 'arrived', label: 'Imefika', status: 'arrived' },
-  { key: 'handed', label: 'Imewasili', status: 'delivered' },
+  { key: 'handed', label: 'Imekabidhiwa', status: 'delivered' },
 ] as const;
+
+export type DeskStepKey = (typeof DESK_RAIL)[number]['key'];
 
 export const STATUS_LABEL: Record<string, string> = {
   new: 'Mpya',
   matching: 'Inatafutwa',
-  assigned: 'Oda',
+  assigned: 'Oda mpya',
   accepted: 'Imekubaliwa',
-  contacted: 'Uchukuzi',
-  pickup_scheduled: 'Pickup imewekwa',
-  picked_up: 'Imechukuliwa',
-  at_bus: 'Imepakiwa',
-  in_transit: 'Safarini',
+  contacted: 'Imekubaliwa',
+  pickup_scheduled: 'Imekubaliwa',
+  picked_up: 'Imepokelewa',
+  at_bus: 'Imepokelewa',
+  in_transit: 'Imetumwa',
   arrived: 'Imefika',
-  delivered: 'Imewasili',
+  delivered: 'Imekabidhiwa',
+};
+
+export type CarrierTrip = {
+  id: string;
+  carrierId: string;
+  name: string;
+  serviceDate: string;
+  destinationRegion: string;
+  vehicleNote?: string;
+  /** Clock time HH:mm on serviceDate. Late chip uses this only when the company set it. */
+  arrivalTime?: string;
+  createdAt?: FireTime;
+};
+
+export type CarrierDecision = {
+  id: string;
+  shipmentId?: string;
+  decision?: string;
+  parcelCode?: string;
+  destination?: string;
+  weightKg?: number;
+  actor?: string;
+  at?: FireTime;
+  atIso?: string;
 };
 
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
