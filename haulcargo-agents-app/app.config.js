@@ -26,6 +26,10 @@ const googleMapsApiKey =
   process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_SDK_KEY ||
   '';
 
+const googleServicesFile = path.join(__dirname, 'google-services.json');
+const hasGoogleServices = fs.existsSync(googleServicesFile);
+const easProjectId = String(process.env.HAUL_AGENTS_EAS_PROJECT_ID || '').trim();
+
 module.exports = {
   expo: {
     name: 'Haul Cargo Agents',
@@ -53,6 +57,7 @@ module.exports = {
         backgroundColor: '#FFE500',
       },
       package: 'com.haulcargo.agents',
+      googleServicesFile: hasGoogleServices ? './google-services.json' : undefined,
       config: googleMapsApiKey ? { googleMaps: { apiKey: googleMapsApiKey } } : undefined,
     },
     web: {
@@ -60,6 +65,7 @@ module.exports = {
       bundler: 'metro',
     },
     plugins: [
+      'expo-dev-client',
       'expo-router',
       'expo-font',
       'expo-sharing',
@@ -90,6 +96,7 @@ module.exports = {
       firebaseMessagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '',
       googleMapsApiKey,
+      eas: easProjectId ? { projectId: easProjectId } : undefined,
       apiBaseUrl:
         process.env.EXPO_PUBLIC_API_BASE_URL ||
         'https://us-central1-efootball-app-9d175.cloudfunctions.net/api',
