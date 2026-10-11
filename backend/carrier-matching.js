@@ -112,7 +112,8 @@ const TZ_REGION_ALIASES = [
   ['kagera', 'bukoba'],
   ['mara', 'musoma'],
   ['manyara', 'babati'],
-  ['njombe'],
+  // Makambako is the main cargo/bus town in Njombe region.
+  ['njombe', 'makambako'],
   ['katavi', 'mpanda'],
   ['rukwa', 'sumbawanga'],
   ['simiyu'],
@@ -169,13 +170,17 @@ function detectTzRegion(value) {
   return bestId;
 }
 
-/** Home region from registration. Location text is only a fallback when region is empty. */
+/** Home region from registration. Location / address are fallbacks when region is empty. */
 function carrierBaseRegion(carrier) {
   if (!carrier) return '';
   return (
     detectTzRegion(carrier.region) ||
     detectTzRegion(carrier.location) ||
     detectTzRegion(carrier.physicalAddress) ||
+    // Legacy profiles created before region was required sometimes only have a town in the name.
+    detectTzRegion(carrier.companyName) ||
+    detectTzRegion(carrier.tradingName) ||
+    detectTzRegion(carrier.name) ||
     ''
   );
 }

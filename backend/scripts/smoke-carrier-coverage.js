@@ -65,7 +65,20 @@ assert(detectTzRegion('DSM') === 'dar es salaam', 'detect dsm');
 assert(detectTzRegion('Darajani Market, Zanzibar') === 'unguja', 'darajani is not dar');
 assert(detectTzRegion('Kahama') === 'shinyanga', 'kahama region');
 assert(detectTzRegion('Mwanza City') === 'mwanza', 'detect mwanza');
+assert(detectTzRegion('Makambako') === 'njombe', 'makambako is njombe');
+assert(detectTzRegion('Makambako cargo') === 'njombe', 'makambako in company name');
 assert(looksInternational('Nairobi Kenya') === true, 'intl');
+
+// Legacy verified carrier with nationwide coverage but empty region — name still yields a base.
+const makambakoLegacy = {
+  id: 'mak-legacy',
+  status: 'verified',
+  companyName: 'Makambako cargo',
+  region: '',
+  coverageAllTanzania: true,
+};
+assert(coverageForOrder({ outsideOriginCity: 'Makambako', outsideDestinationCity: 'Dar es Salaam' }, makambakoLegacy).ok, 'name fallback base + nationwide');
+assert(coverageForOrder({ outsideOriginCity: 'Dar es Salaam', outsideDestinationCity: 'Mwanza' }, makambakoLegacy).reason === 'origin-miss', 'name fallback still requires origin in base');
 
 const darToMwanza = { outsideOriginCity: 'Dar es Salaam', outsideDestinationCity: 'Mwanza' };
 const darToArusha = { outsideOriginCity: 'Dar', outsideDestinationCity: 'Arusha' };
