@@ -8,6 +8,7 @@ import { StepProgress } from '@/components/step-progress';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { carrierDisplayName } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 const STEPS = ['Company', 'Verification', 'Approval'] as const;
@@ -26,6 +27,8 @@ export default function VerificationPendingScreen() {
     if (!carrier?.id) return '—';
     return `HAUL-${carrier.id.slice(0, 8).toUpperCase()}`;
   }, [carrier?.id]);
+
+  const companyLabel = carrierDisplayName(carrier);
 
   if (!user) return <Redirect href="/login" />;
   if (carrier?.status === 'verified') return <Redirect href="/(main)" />;
@@ -66,9 +69,7 @@ export default function VerificationPendingScreen() {
         <Text style={styles.refValue} selectable>
           {reference}
         </Text>
-        {carrier?.companyName ? (
-          <Text style={styles.refCompany}>{carrier.companyName}</Text>
-        ) : null}
+        {companyLabel !== 'Kampuni' ? <Text style={styles.refCompany}>{companyLabel}</Text> : null}
       </Animated.View>
 
       <Animated.View entering={FadeInUp.delay(100).duration(360)} style={styles.timeline}>

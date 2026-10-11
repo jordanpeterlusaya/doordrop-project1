@@ -60,10 +60,15 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     coverageInternationalCountries: input.coverageInternationalCountries?.trim() || '',
   };
 
+  const registeredName = input.companyName.trim();
+  const trading = input.tradingName?.trim() || '';
+
   await setDoc(doc(db, 'carriers', carrierId), {
     ownerUid: carrierId,
-    companyName: input.companyName.trim(),
-    tradingName: input.tradingName?.trim() || '',
+    companyName: registeredName,
+    tradingName: trading,
+    /** Legacy alias used by older readers / portal docs. */
+    name: trading || registeredName,
     brelaNumber: input.brelaNumber?.trim() || '',
     tin: input.tin?.trim() || '',
     businessLicence: input.businessLicence?.trim() || '',

@@ -8,6 +8,7 @@ import { EmptyState, FilterChip, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import {
+  carrierDisplayName,
   darTodayKey,
   darTodayLabel,
   fireTimeMs,
@@ -49,11 +50,11 @@ export default function HomeScreen() {
   }, [inbox, filter, carrierId]);
 
   const offerCount = inbox.filter((item) => isIncomingOffer(item, carrierId)).length;
-  const company = carrier?.companyName?.trim() || carrier?.name?.trim() || 'Kampuni';
+  const company = carrierDisplayName(carrier);
 
   return (
     <Screen scroll edges="top">
-      <Text style={styles.greeting} numberOfLines={2}>
+      <Text style={styles.greeting} numberOfLines={2} accessibilityRole="header">
         {company}
       </Text>
       <Text style={styles.dateLine}>{darTodayLabel()}</Text>

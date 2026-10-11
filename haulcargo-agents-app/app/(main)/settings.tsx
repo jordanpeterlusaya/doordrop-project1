@@ -6,7 +6,7 @@ import { Screen, SectionTitle, SettingsRow } from '@/components/ui';
 import { coverageSummary } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { carrierStatusLabel } from '@/lib/carrier-helpers';
+import { carrierDisplayName, carrierStatusLabel } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function SettingsScreen() {
@@ -41,7 +41,7 @@ export default function SettingsScreen() {
     coverageInternational: Boolean(carrier.coverageInternational),
     coverageInternationalCountries: String(carrier.coverageInternationalCountries || ''),
   });
-  const displayName = carrier.companyName?.trim() || carrier.name?.trim() || 'Kampuni';
+  const displayName = carrierDisplayName(carrier);
   const phone = carrier.phone || '';
   const initials =
     displayName

@@ -1,7 +1,18 @@
 import { HAUL_FEE_RATE } from '@/constants/theme';
-import { TRACK, type CarrierShipment, type FireTime } from '@/lib/carrier-types';
+import { TRACK, type Carrier, type CarrierShipment, type FireTime } from '@/lib/carrier-types';
 
 const DAR = 'Africa/Dar_es_Salaam';
+
+/** Desk-facing company label: trading name when set, else registered company name. */
+export function carrierDisplayName(carrier?: Pick<Carrier, 'tradingName' | 'companyName' | 'name'> | null) {
+  const trading = carrier?.tradingName?.trim();
+  if (trading) return trading;
+  const registered = carrier?.companyName?.trim();
+  if (registered) return registered;
+  const legacy = carrier?.name?.trim();
+  if (legacy) return legacy;
+  return 'Kampuni';
+}
 
 export function darTodayKey() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: DAR }).format(new Date());

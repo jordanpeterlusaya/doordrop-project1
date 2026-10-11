@@ -5,7 +5,10 @@ export type FireTime = Timestamp | Date | { seconds: number } | string | null | 
 export type Carrier = {
   id: string;
   ownerUid?: string;
+  /** Registered / legal company name (BRELA). */
   companyName?: string;
+  /** Optional trading / DBA / brand name shown on the desk when set. */
+  tradingName?: string;
   /** Some carrier docs use `name` instead of / alongside `companyName`. */
   name?: string;
   contactPerson?: string;
