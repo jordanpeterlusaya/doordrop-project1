@@ -8,6 +8,7 @@ import { OtpUnderlineInput } from '@/components/otp-underline-input';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { isExplicitSignOutActive } from '@/lib/auth-persistence';
 import { confirmCarrierPhone, sendCarrierOtp, verifyCarrierOtp } from '@/lib/otp-api';
 import { formatCountdown } from '@/lib/phone';
 import {
@@ -68,7 +69,7 @@ export default function OtpScreen() {
   }
 
   // Already finished registration (e.g. back navigation after success).
-  if (user && !needsCompanySetup && carrier) {
+  if (!isExplicitSignOutActive() && user && !needsCompanySetup && carrier) {
     if (carrier.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }

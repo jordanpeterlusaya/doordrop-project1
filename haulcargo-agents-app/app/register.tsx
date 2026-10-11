@@ -18,6 +18,7 @@ import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { getCoverageDraft, getCoverageDraftStamp, setCoverageDraft } from '@/lib/coverage-draft';
 import { pickDocument, pickImageDocument, type PickedDoc } from '@/lib/document-upload';
+import { isExplicitSignOutActive } from '@/lib/auth-persistence';
 import { sendCarrierOtp } from '@/lib/otp-api';
 import { passwordsMatch, validatePassword } from '@/lib/password';
 import { isValidTzPhone } from '@/lib/phone';
@@ -81,8 +82,8 @@ export default function RegisterScreen() {
 
   const error = localError || authError;
 
-  if (user && carrier?.status === 'verified') return <Redirect href="/(main)" />;
-  if (user && carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
+  if (!isExplicitSignOutActive() && user && carrier?.status === 'verified') return <Redirect href="/(main)" />;
+  if (!isExplicitSignOutActive() && user && carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
 
   const setDoc = async (key: DocKey, mode: 'file' | 'image') => {
     const picked = mode === 'image' ? await pickImageDocument(key) : await pickDocument(key);

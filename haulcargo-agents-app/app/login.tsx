@@ -8,7 +8,7 @@ import { AuthShell } from '@/components/auth-shell';
 import { Field, PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { getRememberMePreference } from '@/lib/auth-persistence';
+import { getRememberMePreference, isExplicitSignOutActive } from '@/lib/auth-persistence';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function LoginScreen() {
@@ -32,8 +32,8 @@ export default function LoginScreen() {
     void getRememberMePreference().then(setRememberMe);
   }, []);
 
-  if (user && needsCompanySetup) return <Redirect href="/register-company" />;
-  if (user && !needsCompanySetup && (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com')) {
+  if (!isExplicitSignOutActive() && user && needsCompanySetup) return <Redirect href="/register-company" />;
+  if (!isExplicitSignOutActive() && user && !needsCompanySetup && (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com')) {
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }

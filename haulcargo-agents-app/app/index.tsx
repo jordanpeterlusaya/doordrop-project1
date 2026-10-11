@@ -16,6 +16,7 @@ import { HaulLetterIntro } from '@/components/haul-letter-intro';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { isExplicitSignOutActive } from '@/lib/auth-persistence';
 import { images } from '@/lib/images';
 import { useCarrierSession } from '@/providers/carrier-session';
 
@@ -38,7 +39,7 @@ export default function LandingScreen() {
     );
   }
 
-  if (user) {
+  if (user && !isExplicitSignOutActive()) {
     if (needsCompanySetup) return <Redirect href="/register-company" />;
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     if (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com') {

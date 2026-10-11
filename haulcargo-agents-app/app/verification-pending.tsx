@@ -42,7 +42,7 @@ export default function VerificationPendingScreen() {
         <PrimaryButton
           label="Sign out"
           variant="outline"
-          onPress={() => void signOut().then(() => router.replace('/'))}
+          onPress={() => void signOut().finally(() => router.replace('/login'))}
         />
       </AuthShell>
     );
@@ -85,7 +85,7 @@ export default function VerificationPendingScreen() {
       <PrimaryButton
         label="Sign out"
         variant="outline"
-        onPress={() => void signOut().then(() => router.replace('/'))}
+        onPress={() => void signOut().finally(() => router.replace('/login'))}
       />
     </AuthShell>
   );

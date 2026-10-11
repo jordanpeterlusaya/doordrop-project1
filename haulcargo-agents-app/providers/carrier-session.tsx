@@ -18,7 +18,19 @@ import {
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ADMIN_EMAIL } from '@/constants/theme';
-import { applyAuthPersistence, getRememberMePreference } from '@/lib/auth-persistence';
+import {
+  allowNextSignedInUser,
+  applyAuthPersistence,
+  beginExplicitSignOut,
+  cancelPendingSignIn,
+  clearExplicitLogout,
+  getRememberMePreference,
+  isExplicitSignOutActive,
+  markExplicitLogout,
+  purgePersistedFirebaseAuth,
+  shouldRejectRestoredUser,
+  wasExplicitLogout,
+} from '@/lib/auth-persistence';
 import { loginAuthErrorMessage } from '@/lib/auth-errors';
 import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/carrier-registration';
 import type { Carrier, CarrierRoute, CarrierShipment } from '@/lib/carrier-types';
@@ -62,21 +74,27 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   const [routes, setRoutes] = useState<CarrierRoute[]>([]);
   const knownOfferIds = useRef<Set<string>>(new Set());
   const offersReady = useRef(false);
+  const sessionEpoch = useRef(0);
 
   const isAdmin = user?.email?.toLowerCase() === ADMIN_EMAIL;
 
   const clearAuthError = useCallback(() => setAuthError(''), []);
 
   const resolveCarrier = useCallback(async (nextUser: User | null) => {
+    const epoch = sessionEpoch.current;
+    const current = () => epoch === sessionEpoch.current;
     if (!nextUser) {
+      if (!current()) return;
       setCarrier(null);
       setNeedsCompanySetup(false);
       return;
     }
     if (isAdmin && nextUser.email?.toLowerCase() === ADMIN_EMAIL) {
       const memberSnap = await getDoc(doc(db, 'carrierMembers', nextUser.uid));
+      if (!current()) return;
       if (!memberSnap.exists()) {
         const owned = await getDoc(doc(db, 'carriers', nextUser.uid));
+        if (!current()) return;
         if (!owned.exists()) {
           setCarrier(null);
           setNeedsCompanySetup(false);
@@ -85,14 +103,17 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       }
     }
     const memberSnap = await getDoc(doc(db, 'carrierMembers', nextUser.uid));
+    if (!current()) return;
     if (!memberSnap.exists() && nextUser.email?.toLowerCase() !== ADMIN_EMAIL) {
       const ownedCarrierSnap = await getDoc(doc(db, 'carriers', nextUser.uid));
+      if (!current()) return;
       if (!ownedCarrierSnap.exists()) {
         setCarrier(null);
         setNeedsCompanySetup(true);
         return;
       }
     }
+    if (!current()) return;
     setNeedsCompanySetup(false);
     const carrierId = memberSnap.exists()
       ? String(memberSnap.data().carrierId || '').trim()
@@ -107,6 +128,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       return;
     }
     const carrierSnap = await getDoc(doc(db, 'carriers', carrierId));
+    if (!current()) return;
     if (!carrierSnap.exists()) {
       setCarrier(null);
       if (nextUser.email?.toLowerCase() !== ADMIN_EMAIL) {
@@ -122,23 +144,50 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   }, [resolveCarrier, user]);
 
   useEffect(() => {
+    let rejectingRestoredUser = false;
     const unsub = onAuthStateChanged(auth, (nextUser) => {
       void (async () => {
-        // Cold start safety net: if Remember me was off, drop any restored session.
+        const dropSession = () => {
+          setUser(null);
+          setCarrier(null);
+          setNeedsCompanySetup(false);
+          setShipments([]);
+          setRoutes([]);
+          setInitializing(false);
+        };
+
+        // Cold start: Remember me off, or an explicit logout, must not revive a saved session.
         if (!authRememberBootstrapDone) {
           authRememberBootstrapDone = true;
-          if (nextUser) {
+          const explicitLogout = await wasExplicitLogout();
+          if (explicitLogout) beginExplicitSignOut();
+          if (nextUser && !explicitLogout && !isExplicitSignOutActive()) {
             const remember = await getRememberMePreference();
             if (!remember) {
-              await firebaseSignOut(auth);
-              setUser(null);
-              setCarrier(null);
-              setNeedsCompanySetup(false);
-              setInitializing(false);
+              await firebaseSignOut(auth).catch(() => undefined);
+              await purgePersistedFirebaseAuth();
+              dropSession();
               return;
             }
           }
         }
+
+        if (shouldRejectRestoredUser(nextUser)) {
+          dropSession();
+          if (!rejectingRestoredUser) {
+            rejectingRestoredUser = true;
+            try {
+              if (isExplicitSignOutActive() && auth.currentUser) {
+                await firebaseSignOut(auth).catch(() => undefined);
+              }
+              if (isExplicitSignOutActive()) await purgePersistedFirebaseAuth();
+            } finally {
+              rejectingRestoredUser = false;
+            }
+          }
+          return;
+        }
+
         setUser(nextUser);
         resolveCarrier(nextUser)
           .catch(console.error)
@@ -202,10 +251,15 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   const signIn = useCallback(async (email: string, password: string, options?: SignInOptions) => {
     setAuthenticating(true);
     setAuthError('');
+    sessionEpoch.current += 1;
+    allowNextSignedInUser();
     try {
       await applyAuthPersistence(options?.rememberMe !== false);
       await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+      await clearExplicitLogout();
     } catch (error) {
+      cancelPendingSignIn();
+      if (!auth.currentUser && isExplicitSignOutActive()) beginExplicitSignOut();
       const code = error instanceof FirebaseError ? error.code : '';
       setAuthError(loginAuthErrorMessage(code));
       throw error;
@@ -217,12 +271,17 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   const signUp = useCallback(async (email: string, password: string, company: RegisterCompanyInput) => {
     setAuthenticating(true);
     setAuthError('');
+    sessionEpoch.current += 1;
+    allowNextSignedInUser();
     try {
       const credential = await createUserWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+      await clearExplicitLogout();
       await createCarrierFromRegistration(credential.user, company, email.trim().toLowerCase());
       setNeedsCompanySetup(false);
       await resolveCarrier(credential.user);
     } catch (error) {
+      cancelPendingSignIn();
+      if (!auth.currentUser && isExplicitSignOutActive()) beginExplicitSignOut();
       const code = error instanceof FirebaseError ? error.code : '';
       setAuthError(error instanceof Error && !code.startsWith('auth/') ? error.message : loginAuthErrorMessage(code));
       throw error;
@@ -232,8 +291,26 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   }, [resolveCarrier]);
 
   const signOut = useCallback(async () => {
+    sessionEpoch.current += 1;
+    const epoch = sessionEpoch.current;
+    const stillSigningOut = () => epoch === sessionEpoch.current && isExplicitSignOutActive();
+    beginExplicitSignOut();
     setNeedsCompanySetup(false);
-    await firebaseSignOut(auth);
+    setUser(null);
+    setCarrier(null);
+    setShipments([]);
+    setRoutes([]);
+    setAuthError('');
+    setInitializing(false);
+    await markExplicitLogout();
+    if (!stillSigningOut()) return;
+    try {
+      if (auth.currentUser) await firebaseSignOut(auth);
+    } catch (error) {
+      console.error(error);
+    }
+    if (!stillSigningOut()) return;
+    await purgePersistedFirebaseAuth();
   }, []);
 
   const resetPassword = useCallback(async (email: string) => {

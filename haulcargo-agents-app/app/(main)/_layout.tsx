@@ -29,7 +29,7 @@ export default function MainTabsLayout() {
     );
   }
 
-  if (!user) return <Redirect href="/" />;
+  if (!user) return <Redirect href="/login" />;
   if (needsCompanySetup || !carrier) return <Redirect href="/register-company" />;
 
   return (

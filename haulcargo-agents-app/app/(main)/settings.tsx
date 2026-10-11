@@ -27,7 +27,7 @@ export default function SettingsScreen() {
             title="Toka"
             destructive
             last
-            onPress={() => void signOut().then(() => router.replace('/'))}
+            onPress={() => void signOut().finally(() => router.replace('/login'))}
           />
         </View>
       </Screen>
@@ -122,7 +122,7 @@ export default function SettingsScreen() {
           title="Toka"
           destructive
           last
-          onPress={() => void signOut().then(() => router.replace('/'))}
+          onPress={() => void signOut().finally(() => router.replace('/login'))}
         />
       </View>
     </Screen>
