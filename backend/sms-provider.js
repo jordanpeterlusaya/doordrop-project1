@@ -15,14 +15,34 @@ function maskPhone(phone) {
   return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
 }
 
+const SMS_COUNTRY_CODES = ['255', '254', '256', '250', '257', '265', '260', '258', '243', '971'];
+
+/**
+ * Collapse doubled country codes (+255255…) and a trunk 0 kept after the code (+2550…).
+ * Returns digits only, with Tanzania local 07… rewritten to 255….
+ */
+function canonicalSmsDigits(phone) {
+  let digits = digitsOnly(phone);
+  if (!digits) return '';
+  for (const code of SMS_COUNTRY_CODES) {
+    const doubled = `${code}${code}`;
+    while (digits.startsWith(doubled) && digits.length > code.length + 9) {
+      digits = digits.slice(code.length);
+    }
+    if (digits.startsWith(`${code}0`) && digits.length === code.length + 10) {
+      digits = `${code}${digits.slice(code.length + 1)}`;
+    }
+  }
+  if (digits.startsWith('0') && digits.length === 10) {
+    digits = `255${digits.slice(1)}`;
+  }
+  return digits;
+}
+
 /** Internal E.164-ish form used across OTP sessions (+255…). */
 function normalizeSmsPhone(phone) {
-  const digits = digitsOnly(phone);
+  const digits = canonicalSmsDigits(phone);
   if (digits.length < 9) return '';
-  if (digits.startsWith('0') && digits.length === 10) return `+255${digits.slice(1)}`;
-  if (digits.startsWith('255') || digits.startsWith('254') || digits.startsWith('256') || digits.startsWith('250')) {
-    return `+${digits}`;
-  }
   return `+${digits}`;
 }
 
@@ -143,7 +163,7 @@ async function sendViaMambo(to, body) {
       lower.includes('sender id invalid');
     if (senderInvalid) {
       const error = new Error(
-        'Sender ID ya Mambo haijaidhinishwa. Ingia kwenye Mambo SMS → Sender ID, omba jina (mf. HAUL), subiri idhini, kisha weka MAMBO_SMS_SENDER_ID sawa na jina lililoidhinishwa.'
+        'Sender ID ya Mambo haijakubaliwa. Weka MAMBO_SENDER_ID kuwa sender ya majaribio (MAMBO SMS), si jina linalosubiri idhini.'
       );
       error.statusCode = 503;
       error.code = 'mambo_sender_id_invalid';

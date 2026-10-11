@@ -74,6 +74,8 @@ export type DeliveryOrder = {
   customerName: string;
   customerEmail: string;
   customerPhone: string;
+  /** Cargo sender number copied onto carrier shipments for arrival SMS. */
+  senderPhone?: string;
   flow: DeliveryFlow;
   serviceLabel: string;
   status: DeliveryOrderStatus;
@@ -1190,6 +1192,7 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     customerName: input.customerName,
     customerEmail: input.customerEmail,
     customerPhone: input.customerPhone,
+    senderPhone: String(input.customerPhone || '').trim(),
     flow: input.flow,
     serviceLabel: input.serviceLabel,
     status: 'pending_assignment',

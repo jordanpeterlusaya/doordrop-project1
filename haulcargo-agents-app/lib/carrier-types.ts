@@ -69,6 +69,7 @@ export type CarrierShipment = {
   pickupLabel?: string;
   customerName?: string;
   customerPhone?: string;
+  senderPhone?: string;
   recipientName?: string;
   recipientPhone?: string;
   parcelDescription?: string;

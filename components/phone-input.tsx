@@ -50,6 +50,15 @@ function nationalDigits(value: string) {
   return digitsOnly(value).replace(/^0+/, '');
 }
 
+/** Drop a repeated country code so +255 pasted into the national box does not become +255255… */
+function nationalForCountry(country: PhoneCountry, national: string) {
+  let next = nationalDigits(national);
+  if (country.dialDigits && next.startsWith(country.dialDigits)) {
+    next = nationalDigits(next.slice(country.dialDigits.length));
+  }
+  return next;
+}
+
 export function parsePhoneValue(value: string) {
   const digits = digitsOnly(value);
   const ranked = [...phoneCountries].sort((left, right) => right.dialDigits.length - left.dialDigits.length);
@@ -58,7 +67,7 @@ export function parsePhoneValue(value: string) {
   if (match) {
     return {
       country: match,
-      national: digits.slice(match.dialDigits.length),
+      national: nationalForCountry(match, digits.slice(match.dialDigits.length)),
     };
   }
 
@@ -69,7 +78,7 @@ export function parsePhoneValue(value: string) {
 }
 
 export function toE164Phone(country: PhoneCountry, national: string) {
-  const nextNational = nationalDigits(national);
+  const nextNational = nationalForCountry(country, national);
   return nextNational ? `${country.dial}${nextNational}` : '';
 }
 
@@ -117,10 +126,11 @@ export function PhoneInput({ value, onChangeText, placeholder, style }: PhoneInp
   }, [query]);
 
   const emit = (nextCountry: PhoneCountry, nextNational: string) => {
-    const nextValue = toE164Phone(nextCountry, nextNational);
+    const cleanedNational = nationalForCountry(nextCountry, nextNational);
+    const nextValue = toE164Phone(nextCountry, cleanedNational);
     lastEmittedRef.current = nextValue;
     setCountry(nextCountry);
-    setNational(nextNational);
+    setNational(cleanedNational);
     onChangeText(nextValue);
   };
 

@@ -60,7 +60,7 @@ export function OrderInboxCard({ item, carrierId, carrier, shipments }: Props) {
 
       <View style={styles.people}>
         <Text style={styles.person} numberOfLines={1}>
-          Mtumaji: {item.customerName || '—'} · {item.customerPhone || '—'}
+          Mtumaji: {item.customerName || '—'} · {item.senderPhone || item.customerPhone || '—'}
         </Text>
         <Text style={styles.person} numberOfLines={1}>
           Mpokeaji: {item.recipientName || '—'} · {item.recipientPhone || '—'}

@@ -429,15 +429,81 @@ function storedParcelPhotoUrls(order) {
     .slice(0, 6);
 }
 
+function directSenderPhone(order) {
+  return String(order?.senderPhone || order?.customerPhone || order?.phoneNumber || '').trim();
+}
+
+/** Profile phone when the parcel order was saved without the sender number. */
+async function resolveSenderPhone(db, order) {
+  const direct = directSenderPhone(order);
+  if (direct) return direct;
+  const userId = String(order?.userId || '').trim();
+  if (!userId || userId.startsWith('manual:')) return '';
+  try {
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return '';
+    const data = snap.data() || {};
+    return String(data.phoneNumber || data.phone || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Write the cargo sender number onto the customer order and the carrier shipment.
+ * SMS and the agents order screen both read senderPhone / customerPhone.
+ */
+async function persistSenderPhone(db, orderId, order, shipment) {
+  const phone = await resolveSenderPhone(db, order);
+  if (!phone) return '';
+
+  const orderCustomer = String(order?.customerPhone || '').trim();
+  const orderSender = String(order?.senderPhone || '').trim();
+  if (!orderCustomer || !orderSender) {
+    await db.collection('orders').doc(orderId).set(
+      {
+        customerPhone: orderCustomer || phone,
+        senderPhone: orderSender || phone,
+      },
+      { merge: true }
+    );
+    order.customerPhone = orderCustomer || phone;
+    order.senderPhone = orderSender || phone;
+  }
+
+  if (shipment) {
+    const shipCustomer = String(shipment.customerPhone || '').trim();
+    const shipSender = String(shipment.senderPhone || '').trim();
+    if (!shipCustomer || !shipSender) {
+      const customerPhone = shipCustomer || phone;
+      const senderPhone = shipSender || phone;
+      await db.collection('carrierShipments').doc(orderId).set(
+        {
+          customerPhone,
+          senderPhone,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      shipment.customerPhone = customerPhone;
+      shipment.senderPhone = senderPhone;
+    }
+  }
+
+  return phone;
+}
+
 function shipmentPayload(order, orderId, shipment) {
   const split = cashSplit(moneyFromOrder(order));
   const parcelPhotoUrls = storedParcelPhotoUrls(order);
+  const senderPhone = directSenderPhone(order);
   return {
     orderId,
     orderNumber: order.orderNumber || order.parcelCode || orderId.slice(0, 6).toUpperCase(),
     parcelCode: order.parcelCode || order.orderNumber || '',
     customerName: order.customerName || '',
-    customerPhone: order.customerPhone || '',
+    customerPhone: senderPhone,
+    senderPhone,
     recipientName: order.recipientName || '',
     recipientPhone: order.recipientPhone || '',
     declaredValueTzs: declaredValueTzs(order),
@@ -659,6 +725,7 @@ async function matchOrderById(db, orderId) {
   if (!isBusParcel(order)) return { skipped: true };
   const shipmentSnap = await db.collection('carrierShipments').doc(orderId).get();
   const shipment = shipmentSnap.exists ? shipmentSnap.data() : null;
+  await persistSenderPhone(db, orderId, order, shipment);
   if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
   if (offerIsOpen(shipment)) return { skipped: true, reason: 'offer-open' };
   return offerNext(db, orderId, order, shipment);
@@ -793,6 +860,8 @@ module.exports = {
   rankCarriers,
   declaredValueTzs,
   scoreCarrier,
+  persistSenderPhone,
+  resolveSenderPhone,
   shipmentPayload,
   storedParcelPhotoUrls,
   syncCarrierShipment,

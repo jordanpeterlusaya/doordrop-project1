@@ -104,6 +104,7 @@ function smsError(audience, cause) {
   const error = new Error(`${prefix} ${detail}`);
   error.statusCode = cause?.statusCode || 503;
   error.code = cause?.code || 'sms_failed';
+  if (cause?.causeDetail) error.causeDetail = String(cause.causeDetail).slice(0, 180);
   return error;
 }
 

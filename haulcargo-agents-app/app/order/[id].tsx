@@ -200,7 +200,7 @@ export default function OrderDetailScreen() {
 
         <People
           senderName={item.customerName}
-          senderPhone={item.customerPhone}
+          senderPhone={item.senderPhone || item.customerPhone}
           recipientName={item.recipientName}
           recipientPhone={item.recipientPhone}
         />
@@ -247,14 +247,23 @@ function People({
   recipientName?: string;
   recipientPhone?: string;
 }) {
-  const sender = [String(senderName || '').trim(), String(senderPhone || '').trim()].filter(Boolean).join(' · ');
-  const recipient = [String(recipientName || '').trim(), String(recipientPhone || '').trim()].filter(Boolean).join(' · ');
-  if (!sender && !recipient) return null;
+  const senderNameText = String(senderName || '').trim();
+  const senderPhoneText = String(senderPhone || '').trim();
+  const recipientNameText = String(recipientName || '').trim();
+  const recipientPhoneText = String(recipientPhone || '').trim();
+  if (!senderNameText && !senderPhoneText && !recipientNameText && !recipientPhoneText) return null;
   return (
     <View style={styles.block}>
       <Text style={styles.kicker}>Watu</Text>
-      {sender ? <PersonRow role="Mtumaji" value={sender} phone={senderPhone} /> : null}
-      {recipient ? <PersonRow role="Mpokeaji" value={recipient} phone={recipientPhone} /> : null}
+      {senderNameText ? <PersonRow role="Mtumaji" value={senderNameText} /> : null}
+      {senderPhoneText ? <PersonRow role="Simu" value={senderPhoneText} phone={senderPhoneText} /> : null}
+      {recipientNameText || recipientPhoneText ? (
+        <PersonRow
+          role="Mpokeaji"
+          value={[recipientNameText, recipientPhoneText].filter(Boolean).join(' · ')}
+          phone={recipientPhoneText}
+        />
+      ) : null}
     </View>
   );
 }

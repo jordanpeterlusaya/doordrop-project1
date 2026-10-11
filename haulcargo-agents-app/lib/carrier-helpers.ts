@@ -264,7 +264,7 @@ export function orderShareMessage(item: CarrierShipment) {
   if (pickup) lines.push(`Kuchukua: ${pickup}`);
   const destination = String(item.destination || '').trim();
   if (destination) lines.push(`Kwenda: ${destination}`);
-  const sender = contactBits(item.customerName, item.customerPhone);
+  const sender = contactBits(item.customerName, item.senderPhone || item.customerPhone);
   if (sender) lines.push(`Mtumaji: ${sender}`);
   const recipient = contactBits(item.recipientName, item.recipientPhone);
   if (recipient) lines.push(`Mpokeaji: ${recipient}`);
