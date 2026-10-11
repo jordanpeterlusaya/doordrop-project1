@@ -1,5 +1,5 @@
 const { FieldValue } = require('firebase-admin/firestore');
-const { maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
+const { mamboSenderId, maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
 
 function parcelCodeOf(shipment, orderId) {
   return String(shipment?.parcelCode || shipment?.orderNumber || orderId || '')
@@ -50,7 +50,7 @@ function assertMamboLive() {
   const named = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
   const provider = named === 'mambosms' ? 'mambo' : named;
   const token = String(process.env.MAMBO_SMS_API_TOKEN || process.env.SMS_API_KEY || '').trim();
-  const senderId = String(process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || '').trim();
+  const senderId = mamboSenderId();
   if (provider && provider !== 'mambo') {
     const error = new Error('SMS ya kufika inatumwa kupitia Mambo tu.');
     error.statusCode = 503;

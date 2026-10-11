@@ -53,7 +53,10 @@ function mamboToken() {
 }
 
 function mamboSenderId() {
-  return String(process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || '').trim();
+  // MAMBO_SENDER_ID is the switch: "MAMBO SMS" while HAUL is unapproved, then HAUL.
+  return String(
+    process.env.MAMBO_SENDER_ID || process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || ''
+  ).trim();
 }
 
 function mamboBaseUrl() {
@@ -305,6 +308,7 @@ async function checkMamboBalance() {
 
 module.exports = {
   checkMamboBalance,
+  mamboSenderId,
   maskPhone,
   normalizeSmsPhone,
   sendSms,

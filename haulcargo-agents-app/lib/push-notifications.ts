@@ -65,33 +65,44 @@ export async function registerCarrierPushToken(opts: {
   }
   if (status !== 'granted') return null;
 
-  const tokenResult = await Notifications.getExpoPushTokenAsync();
-  const token = String(tokenResult.data || '').trim();
-  if (!token) return null;
-
-  await setDoc(
-    doc(db, 'carrierMembers', opts.uid),
-    {
-      expoPushToken: token,
-      latestPushToken: token,
-      pushTokenUpdatedAt: new Date().toISOString(),
-    },
-    { merge: true }
-  );
-
-  if (opts.carrierId) {
-    await setDoc(
-      doc(db, 'carriers', opts.carrierId),
-      {
-        expoPushToken: token,
-        latestPushToken: token,
-        pushTokenUpdatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
+  const projectId = String(
+    Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId || ''
+  ).trim();
+  let expoToken = '';
+  if (projectId) {
+    try {
+      const tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+      expoToken = String(tokenResult.data || '').trim();
+    } catch {
+      expoToken = '';
+    }
   }
 
-  return token;
+  let fcmToken = '';
+  try {
+    const device = await Notifications.getDevicePushTokenAsync();
+    fcmToken = String(device?.data || '').trim();
+  } catch {
+    fcmToken = '';
+  }
+
+  if (!expoToken && !fcmToken) return null;
+  const latestPushToken = fcmToken || expoToken;
+
+  const tokenFields = {
+    ...(expoToken ? { expoPushToken: expoToken } : {}),
+    ...(fcmToken ? { fcmToken } : {}),
+    latestPushToken,
+    pushTokenUpdatedAt: new Date().toISOString(),
+  };
+
+  await setDoc(doc(db, 'carrierMembers', opts.uid), tokenFields, { merge: true });
+
+  if (opts.carrierId) {
+    await setDoc(doc(db, 'carriers', opts.carrierId), tokenFields, { merge: true });
+  }
+
+  return latestPushToken;
 }
 
 const HANDLED_TAP_KEY = 'haul.agents.lastOfferTap';

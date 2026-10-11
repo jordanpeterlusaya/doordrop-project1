@@ -112,14 +112,14 @@ function Meta({ icon, text }: { icon: keyof typeof Ionicons.glyphMap; text: stri
 const styles = StyleSheet.create({
   card: {
     backgroundColor: theme.tile,
-    borderRadius: 16,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
     padding: 14,
     marginBottom: 10,
   },
   offerCard: {
     backgroundColor: theme.primarySoft,
-    borderWidth: 1.5,
-    borderColor: theme.ink,
   },
   pressed: { opacity: 0.92 },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },

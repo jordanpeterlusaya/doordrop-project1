@@ -12,6 +12,7 @@ const googleServerApiKey = defineString('GOOGLE_SERVER_API_KEY');
 const smsProvider = defineString('SMS_PROVIDER', { default: '' });
 const mamboSmsApiToken = defineString('MAMBO_SMS_API_TOKEN', { default: '' });
 const mamboSmsSenderId = defineString('MAMBO_SMS_SENDER_ID', { default: '' });
+const mamboSenderIdParam = defineString('MAMBO_SENDER_ID', { default: '' });
 const mamboSmsBaseUrl = defineString('MAMBO_SMS_BASE_URL', { default: '' });
 const mamboSmsMobileFormat = defineString('MAMBO_SMS_MOBILE_FORMAT', { default: '255' });
 // TEMP: set true in backend/.env until Mambo Sender ID is approved; then false + redeploy.
@@ -150,6 +151,7 @@ function applyRuntimeSecrets() {
   applyParam('SMS_PROVIDER', smsProvider);
   applyParam('MAMBO_SMS_API_TOKEN', mamboSmsApiToken);
   applyParam('MAMBO_SMS_SENDER_ID', mamboSmsSenderId);
+  applyParam('MAMBO_SENDER_ID', mamboSenderIdParam);
   applyParam('MAMBO_SMS_BASE_URL', mamboSmsBaseUrl);
   applyParam('MAMBO_SMS_MOBILE_FORMAT', mamboSmsMobileFormat);
   applyParam('CARRIER_OTP_BYPASS_ENABLED', carrierOtpBypassEnabled);
