@@ -8,6 +8,7 @@ export function setCoverageDraft(next: CoverageSelection) {
   draft = {
     coverageRegions: [...next.coverageRegions],
     coverageAllTanzania: next.coverageAllTanzania,
+    coverageIntraCity: Boolean(next.coverageIntraCity),
     coverageInternational: next.coverageInternational,
     coverageInternationalCountries: next.coverageInternationalCountries,
   };
@@ -18,6 +19,7 @@ export function getCoverageDraft(): CoverageSelection {
   return {
     coverageRegions: [...draft.coverageRegions],
     coverageAllTanzania: draft.coverageAllTanzania,
+    coverageIntraCity: Boolean(draft.coverageIntraCity),
     coverageInternational: draft.coverageInternational,
     coverageInternationalCountries: draft.coverageInternationalCountries,
   };

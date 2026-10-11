@@ -38,6 +38,7 @@ export default function SettingsScreen() {
   const coverage = coverageSummary({
     coverageRegions: carrier.coverageRegions || [],
     coverageAllTanzania: Boolean(carrier.coverageAllTanzania),
+    coverageIntraCity: Boolean(carrier.coverageIntraCity),
     coverageInternational: Boolean(carrier.coverageInternational),
     coverageInternationalCountries: String(carrier.coverageInternationalCountries || ''),
   });
@@ -105,7 +106,7 @@ export default function SettingsScreen() {
         />
         <SettingsRow
           icon="bus-outline"
-          title="Ratiba ya safari"
+          title="Uwezo na siku"
           onPress={() => router.push('/schedule')}
         />
         <SettingsRow

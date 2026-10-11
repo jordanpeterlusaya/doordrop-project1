@@ -33,6 +33,7 @@ export default function OperationCoverageScreen() {
     return {
       coverageRegions: carrier.coverageRegions || [],
       coverageAllTanzania: Boolean(carrier.coverageAllTanzania),
+      coverageIntraCity: Boolean(carrier.coverageIntraCity),
       coverageInternational: Boolean(carrier.coverageInternational),
       coverageInternationalCountries: String(carrier.coverageInternationalCountries || ''),
     };
@@ -48,7 +49,7 @@ export default function OperationCoverageScreen() {
 
   const onConfirm = async () => {
     if (!coverageIsValid(coverage)) {
-      setError('Chagua coverage: mikoa, mikoa yote, na/au nchi za nje.');
+      setError('Chagua coverage: mikoa yote, mikoa maalum, au ndani ya mji.');
       return;
     }
     setError('');
@@ -63,10 +64,13 @@ export default function OperationCoverageScreen() {
     setSaving(true);
     try {
       await updateDoc(doc(db, 'carriers', carrier.id), {
-        coverageRegions: coverage.coverageAllTanzania ? [] : coverage.coverageRegions,
+        coverageRegions: coverage.coverageAllTanzania || coverage.coverageIntraCity ? [] : coverage.coverageRegions,
         coverageAllTanzania: coverage.coverageAllTanzania,
-        coverageInternational: coverage.coverageInternational,
-        coverageInternationalCountries: coverage.coverageInternationalCountries.trim(),
+        coverageIntraCity: coverage.coverageIntraCity,
+        coverageInternational: coverage.coverageIntraCity ? false : coverage.coverageInternational,
+        coverageInternationalCountries: coverage.coverageIntraCity
+          ? ''
+          : coverage.coverageInternationalCountries.trim(),
       });
       await refreshCarrier();
       router.back();
@@ -81,10 +85,10 @@ export default function OperationCoverageScreen() {
     <Screen scroll>
       <Header
         title="Eneo la operesheni"
-        subtitle="Chagua mikoa mnayohudumia — au mikoa yote Tanzania."
+        subtitle="Chagua mikoa yote, mikoa maalum, au ndani ya mji."
         back
       />
-      <CoveragePicker value={coverage} onChange={setCoverage} />
+      <CoveragePicker value={coverage} onChange={setCoverage} baseRegion={carrier?.region} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <View style={styles.cta}>
         <PrimaryButton

@@ -127,11 +127,7 @@ export default function OrderDetailScreen() {
         />
         <Fact
           label="Safari"
-          value={
-            [item.routeLabel, item.departureTime ? `kuondoka ${item.departureTime}` : '']
-              .filter(Boolean)
-              .join(' · ') || '—'
-          }
+          value={item.routeLabel || '—'}
         />
       </View>
 

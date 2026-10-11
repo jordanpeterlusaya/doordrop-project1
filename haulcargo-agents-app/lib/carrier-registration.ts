@@ -1,9 +1,7 @@
-import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import type { User } from 'firebase/auth';
 
 import type { CoverageSelection } from '@/constants/coverage';
-import { ALL_OPERATING_DAYS } from '@/lib/carrier-types';
-import { darTodayKey } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 
 export type RegisterCompanyInput = {
@@ -30,12 +28,10 @@ export type RegisterCompanyInput = {
   termsAccepted?: boolean;
   privacyAccepted?: boolean;
   phoneVerified?: boolean;
-  routeOrigin: string;
-  routeDestination: string;
-  routeDepart: string;
-  cargoCapacityKg: number;
+  cargoCapacityKg?: number;
   coverageRegions?: string[];
   coverageAllTanzania?: boolean;
+  coverageIntraCity?: boolean;
   coverageInternational?: boolean;
   coverageInternationalCountries?: string;
 };
@@ -54,10 +50,14 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
   const carrierId = user.uid;
 
   const coverage: CoverageSelection = {
-    coverageRegions: input.coverageAllTanzania ? [] : [...(input.coverageRegions || [])],
+    coverageRegions:
+      input.coverageAllTanzania || input.coverageIntraCity ? [] : [...(input.coverageRegions || [])],
     coverageAllTanzania: Boolean(input.coverageAllTanzania),
-    coverageInternational: Boolean(input.coverageInternational),
-    coverageInternationalCountries: input.coverageInternationalCountries?.trim() || '',
+    coverageIntraCity: Boolean(input.coverageIntraCity),
+    coverageInternational: input.coverageIntraCity ? false : Boolean(input.coverageInternational),
+    coverageInternationalCountries: input.coverageIntraCity
+      ? ''
+      : input.coverageInternationalCountries?.trim() || '',
   };
 
   const registeredName = input.companyName.trim();
@@ -95,8 +95,10 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     phoneVerified: Boolean(input.phoneVerified),
     coverageRegions: coverage.coverageRegions,
     coverageAllTanzania: coverage.coverageAllTanzania,
+    coverageIntraCity: coverage.coverageIntraCity,
     coverageInternational: coverage.coverageInternational,
     coverageInternationalCountries: coverage.coverageInternationalCountries,
+    cargoCapacityKg: Number(input.cargoCapacityKg) || 0,
     ordersReceived: 0,
     accepted: 0,
     rejected: 0,
@@ -112,20 +114,6 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     carrierId,
     role: 'owner',
     email,
-  });
-
-  await addDoc(collection(db, 'carrierRoutes'), {
-    carrierId,
-    origin: input.routeOrigin.trim(),
-    destination: input.routeDestination.trim(),
-    departureTime: input.routeDepart,
-    arrivalTime: input.routeDepart,
-    cargoCapacityKg: input.cargoCapacityKg,
-    operatingDays: [...ALL_OPERATING_DAYS],
-    pickupKariakoo: true,
-    active: true,
-    serviceDate: darTodayKey(),
-    createdAt: serverTimestamp(),
   });
 
   return carrierId;

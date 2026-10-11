@@ -17,7 +17,7 @@ const TAB_ICONS = {
 } as const;
 
 export default function MainTabsLayout() {
-  const { user, initializing, needsCompanySetup, carrier } = useCarrierSession();
+  const { user, initializing, carrier } = useCarrierSession();
   const insets = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 10 : 6);
 
@@ -30,7 +30,7 @@ export default function MainTabsLayout() {
   }
 
   if (!user) return <Redirect href="/login" />;
-  if (needsCompanySetup || !carrier) return <Redirect href="/register-company" />;
+  if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
 
   return (
     <Tabs

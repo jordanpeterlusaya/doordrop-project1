@@ -21,7 +21,7 @@ import { images } from '@/lib/images';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function LandingScreen() {
-  const { user, initializing, needsCompanySetup, carrier } = useCarrierSession();
+  const { user, initializing, carrier } = useCarrierSession();
   const [showIntro, setShowIntro] = useState(true);
   const insets = useSafeAreaInsets();
   const finishIntro = useCallback(() => setShowIntro(false), []);
@@ -40,11 +40,8 @@ export default function LandingScreen() {
   }
 
   if (user && !isExplicitSignOutActive()) {
-    if (needsCompanySetup) return <Redirect href="/register-company" />;
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
-    if (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com') {
-      return <Redirect href="/(main)" />;
-    }
+    return <Redirect href="/(main)" />;
   }
 
   return (

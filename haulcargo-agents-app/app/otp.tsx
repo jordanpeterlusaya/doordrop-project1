@@ -15,7 +15,6 @@ import {
   clearRegistrationDraft,
   getRegistrationDraft,
 } from '@/lib/registration-draft';
-import { uploadCarrierDocument } from '@/lib/document-upload';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 /**
@@ -31,7 +30,7 @@ export default function OtpScreen() {
     expires?: string;
     otpBypass?: string;
   }>();
-  const { signUp, authenticating, user, carrier, needsCompanySetup } = useCarrierSession();
+  const { signUp, authenticating, user, carrier } = useCarrierSession();
 
   const phone = String(params.phone || '');
   const purpose = String(params.purpose || 'signup');
@@ -69,7 +68,7 @@ export default function OtpScreen() {
   }
 
   // Already finished registration (e.g. back navigation after success).
-  if (!isExplicitSignOutActive() && user && !needsCompanySetup && carrier) {
+  if (!isExplicitSignOutActive() && user && carrier) {
     if (carrier.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }
@@ -80,52 +79,30 @@ export default function OtpScreen() {
       throw new Error('Registration session expired. Start again from company details.');
     }
     const loginEmail = draft.email.trim().toLowerCase();
+    const nationwide = Boolean(draft.coverage.coverageAllTanzania);
+    const intraCity = Boolean(draft.coverage.coverageIntraCity);
     await signUp(loginEmail, draft.password, {
       companyName: draft.companyName.trim(),
       tradingName: draft.tradingName.trim(),
-      brelaNumber: draft.brelaNumber,
-      tin: draft.tin,
-      businessLicence: draft.businessLicence,
-      latraLicence: draft.latraLicence,
-      contactPerson: draft.contactPerson,
-      representativeTitle: draft.representativeTitle,
-      representativeIdNumber: draft.representativeIdNumber,
       phone: draft.phone,
-      businessEmail: (draft.businessEmail.trim() || loginEmail).toLowerCase(),
+      businessEmail: loginEmail,
       region: draft.region,
-      district: draft.district,
-      physicalAddress: draft.physicalAddress,
-      location: draft.physicalAddress,
-      gpsLatitude: draft.gpsLatitude,
-      gpsLongitude: draft.gpsLongitude,
-      operatingStations: draft.operatingStations,
+      location: draft.region,
       documents: {},
       termsAccepted: true,
       privacyAccepted: true,
       phoneVerified: false,
-      routeOrigin: draft.routeOrigin,
-      routeDestination: draft.routeDestination,
-      routeDepart: draft.routeDepart,
-      cargoCapacityKg: Number(draft.cargoCapacityKg) || 0,
-      coverageRegions: draft.coverage.coverageRegions,
-      coverageAllTanzania: draft.coverage.coverageAllTanzania,
-      coverageInternational: draft.coverage.coverageInternational,
-      coverageInternationalCountries: draft.coverage.coverageInternationalCountries,
+      coverageRegions: nationwide || intraCity ? [] : draft.coverage.coverageRegions,
+      coverageAllTanzania: nationwide,
+      coverageIntraCity: intraCity,
+      coverageInternational: false,
+      coverageInternationalCountries: '',
     });
 
-    const { auth, db } = await import('@/lib/firebase');
+    const { auth } = await import('@/lib/firebase');
     const current = auth.currentUser;
     if (!current) throw new Error('Account was not created.');
     const idToken = await current.getIdToken();
-
-    const uploaded: Record<string, string> = {};
-    for (const [key, docFile] of Object.entries(draft.docs)) {
-      if (!docFile) continue;
-      uploaded[key] = await uploadCarrierDocument(docFile, idToken);
-    }
-
-    const { doc, updateDoc } = await import('firebase/firestore');
-    await updateDoc(doc(db, 'carriers', current.uid), { documents: uploaded });
 
     await confirmCarrierPhone({
       phone: draft.phone,

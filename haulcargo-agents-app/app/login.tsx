@@ -18,7 +18,7 @@ export default function LoginScreen() {
     clearAuthError,
     signIn,
     user,
-    needsCompanySetup,
+    initializing,
     carrier,
     refreshCarrier,
   } = useCarrierSession();
@@ -32,8 +32,7 @@ export default function LoginScreen() {
     void getRememberMePreference().then(setRememberMe);
   }, []);
 
-  if (!isExplicitSignOutActive() && user && needsCompanySetup) return <Redirect href="/register-company" />;
-  if (!isExplicitSignOutActive() && user && !needsCompanySetup && (carrier || user.email?.toLowerCase() === 'boyzeus11@gmail.com')) {
+  if (!isExplicitSignOutActive() && user && !initializing) {
     if (carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
     return <Redirect href="/(main)" />;
   }
@@ -60,10 +59,10 @@ export default function LoginScreen() {
       : current.uid;
     const carrierSnap = await getDoc(doc(db, 'carriers', carrierId));
     if (!carrierSnap.exists()) {
-      router.replace('/register-company');
+      router.replace('/(main)');
       return;
     }
-    const status = String(carrierSnap.data()?.status || 'pending');
+    const status = String(carrierSnap.data()?.status || '');
     if (status === 'pending') {
       router.replace('/verification-pending');
       return;

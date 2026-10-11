@@ -19,10 +19,14 @@ export type Carrier = {
   status?: 'pending' | 'verified' | 'rejected' | 'suspended' | string;
   rejectionReason?: string;
   documents?: Record<string, string>;
+  region?: string;
   coverageRegions?: string[];
   coverageAllTanzania?: boolean;
+  coverageIntraCity?: boolean;
   coverageInternational?: boolean;
   coverageInternationalCountries?: string;
+  cargoCapacityKg?: number;
+  operatingDays?: string[];
   phoneNormalized?: string;
   phoneVerified?: boolean;
 };

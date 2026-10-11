@@ -2,56 +2,32 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import {
-  COVERAGE_ALL_TZ,
-  COVERAGE_INTERNATIONAL,
-  TZ_REGIONS,
-  coverageSummary,
-  type CoverageSelection,
-} from '@/constants/coverage';
+import { TZ_REGIONS, type CoverageSelection } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { Field, Muted } from '@/components/ui';
 
 type Props = {
   value: CoverageSelection;
   onChange: (next: CoverageSelection) => void;
-  /** Compact embed (e.g. legacy screens). Default shows search + clear selected. */
-  compact?: boolean;
+  /** Company base region, used only for the intra-city explanation. */
+  baseRegion?: string;
 };
 
-function Row({
-  label,
-  selected,
-  onPress,
-  leading,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  leading?: React.ReactNode;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.row, selected && styles.rowSelected, pressed && styles.rowPressed]}
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked: selected }}>
-      <View style={styles.rowLeft}>
-        {leading}
-        <Text style={[styles.rowLabel, selected && styles.rowLabelSelected]} numberOfLines={1}>
-          {label}
-        </Text>
-      </View>
-      <View style={[styles.check, selected && styles.checkOn]}>
-        {selected ? <Ionicons name="checkmark" size={14} color={theme.white} /> : null}
-      </View>
-    </Pressable>
-  );
-}
+type CoverageMode = 'all' | 'regions' | 'city';
 
-export function CoveragePicker({ value, onChange, compact = false }: Props) {
+const MODES: { id: CoverageMode; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'regions', label: 'Regions' },
+  { id: 'city', label: 'Intra-city' },
+];
+
+export function CoveragePicker({ value, onChange, baseRegion }: Props) {
   const [query, setQuery] = useState('');
+  const [pickedMode, setPickedMode] = useState<CoverageMode | null>(null);
+
+  const mode: CoverageMode | null =
+    pickedMode ??
+    (value.coverageIntraCity ? 'city' : value.coverageAllTanzania ? 'all' : value.coverageRegions.length ? 'regions' : null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -59,127 +35,116 @@ export function CoveragePicker({ value, onChange, compact = false }: Props) {
     return TZ_REGIONS.filter((region) => region.toLowerCase().includes(q));
   }, [query]);
 
-  const selectedCount = value.coverageAllTanzania
-    ? TZ_REGIONS.length
-    : value.coverageRegions.length;
-  const summary = coverageSummary(value);
-
-  const toggleAllTz = () => {
-    const next = !value.coverageAllTanzania;
+  const selectMode = (nextMode: CoverageMode) => {
+    setPickedMode(nextMode);
+    if (nextMode === 'all') {
+      onChange({
+        ...value,
+        coverageAllTanzania: true,
+        coverageIntraCity: false,
+        coverageRegions: [],
+        coverageInternational: false,
+        coverageInternationalCountries: '',
+      });
+      return;
+    }
+    if (nextMode === 'city') {
+      onChange({
+        ...value,
+        coverageAllTanzania: false,
+        coverageIntraCity: true,
+        coverageRegions: [],
+        coverageInternational: false,
+        coverageInternationalCountries: '',
+      });
+      return;
+    }
     onChange({
       ...value,
-      coverageAllTanzania: next,
-      coverageRegions: next ? [] : value.coverageRegions,
-    });
-  };
-
-  const toggleIntl = () => {
-    const next = !value.coverageInternational;
-    onChange({
-      ...value,
-      coverageInternational: next,
-      coverageInternationalCountries: next ? value.coverageInternationalCountries : '',
+      coverageAllTanzania: false,
+      coverageIntraCity: false,
+      coverageInternational: false,
+      coverageInternationalCountries: '',
     });
   };
 
   const toggleRegion = (region: string) => {
-    if (value.coverageAllTanzania) {
-      onChange({
-        ...value,
-        coverageAllTanzania: false,
-        coverageRegions: [region],
-      });
-      return;
-    }
-    const has = value.coverageRegions.includes(region);
+    setPickedMode('regions');
+    const base = value.coverageAllTanzania || value.coverageIntraCity ? [] : value.coverageRegions;
+    const has = base.includes(region);
     onChange({
       ...value,
-      coverageRegions: has
-        ? value.coverageRegions.filter((item) => item !== region)
-        : [...value.coverageRegions, region],
+      coverageAllTanzania: false,
+      coverageIntraCity: false,
+      coverageInternational: false,
+      coverageInternationalCountries: '',
+      coverageRegions: has ? base.filter((item) => item !== region) : [...base, region],
     });
   };
 
-  const clearSelection = () => {
-    onChange({
-      coverageRegions: [],
-      coverageAllTanzania: false,
-      coverageInternational: false,
-      coverageInternationalCountries: '',
-    });
-    setQuery('');
-  };
+  const cityLabel = baseRegion?.trim() || 'your base region';
+  const hint =
+    mode === 'city'
+      ? `Pickup and delivery stay in ${cityLabel}.`
+      : mode === 'all'
+        ? 'Any destination. Pickup stays in your base region.'
+        : mode === 'regions'
+          ? 'Choose the destination regions you serve.'
+          : 'All Tanzania, selected regions, or intra-city only.';
 
   return (
     <View style={styles.wrap}>
-      {!compact ? (
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryTop}>
-            <Text style={styles.summaryLabel}>Imechaguliwa</Text>
-            {selectedCount > 0 || value.coverageInternational ? (
-              <Pressable onPress={clearSelection} hitSlop={8} accessibilityRole="button">
-                <Text style={styles.clearBtn}>Futa</Text>
+      <View style={styles.segment} accessibilityRole="tablist">
+        {MODES.map((item) => {
+          const selected = mode === item.id;
+          return (
+            <Pressable
+              key={item.id}
+              onPress={() => selectMode(item.id)}
+              style={[styles.segmentBtn, selected && styles.segmentBtnOn]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected }}>
+              <Text style={[styles.segmentText, selected && styles.segmentTextOn]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.hint}>{hint}</Text>
+
+      {mode === 'regions' ? (
+        <>
+          <View style={styles.searchMeta}>
+            <Text style={styles.count}>
+              {value.coverageRegions.length === 0
+                ? 'None selected'
+                : `${value.coverageRegions.length} selected`}
+            </Text>
+            {value.coverageRegions.length > 0 ? (
+              <Pressable
+                onPress={() =>
+                  onChange({
+                    ...value,
+                    coverageRegions: [],
+                    coverageAllTanzania: false,
+                    coverageIntraCity: false,
+                  })
+                }
+                hitSlop={8}
+                accessibilityRole="button">
+                <Text style={styles.clear}>Clear</Text>
               </Pressable>
             ) : null}
           </View>
-          <Text style={styles.summaryValue} numberOfLines={3}>
-            {summary}
-          </Text>
-          {value.coverageAllTanzania ? (
-            <Text style={styles.summaryMeta}>Mikoa yote Tanzania ({TZ_REGIONS.length})</Text>
-          ) : selectedCount > 0 ? (
-            <Text style={styles.summaryMeta}>
-              {selectedCount} mkoa{selectedCount === 1 ? '' : ''}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
-
-      <Muted style={styles.hint}>
-        Tafuta na chagua mikoa, au chagua mikoa yote. Coverage hutumika kwa matching ya oda.
-      </Muted>
-
-      <Row
-        label={COVERAGE_ALL_TZ}
-        selected={value.coverageAllTanzania}
-        onPress={toggleAllTz}
-        leading={<Ionicons name="globe-outline" size={18} color={value.coverageAllTanzania ? theme.ink : theme.muted} />}
-      />
-      <Row
-        label={COVERAGE_INTERNATIONAL}
-        selected={value.coverageInternational}
-        onPress={toggleIntl}
-        leading={
-          <Ionicons
-            name="airplane-outline"
-            size={18}
-            color={value.coverageInternational ? theme.ink : theme.muted}
-          />
-        }
-      />
-
-      {value.coverageInternational ? (
-        <Field
-          label="Nchi (nje ya Tanzania)"
-          placeholder="Kenya, Uganda, …"
-          value={value.coverageInternationalCountries}
-          onChangeText={(text) => onChange({ ...value, coverageInternationalCountries: text })}
-        />
-      ) : null}
-
-      {!value.coverageAllTanzania ? (
-        <>
           <View style={styles.searchWrap}>
             <Ionicons name="search-outline" size={18} color={theme.muted} />
             <TextInput
               value={query}
               onChangeText={setQuery}
-              placeholder="Tafuta mkoa…"
+              placeholder="Search regions"
               placeholderTextColor={theme.muted}
               style={styles.searchInput}
               autoCorrect={false}
               autoCapitalize="words"
-              clearButtonMode="while-editing"
             />
             {query ? (
               <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
@@ -187,69 +152,85 @@ export function CoveragePicker({ value, onChange, compact = false }: Props) {
               </Pressable>
             ) : null}
           </View>
-
-          <Text style={styles.section}>Mikoa ({filtered.length})</Text>
           <View style={styles.list}>
-            {filtered.map((region) => (
-              <Row
-                key={region}
-                label={region}
-                selected={value.coverageRegions.includes(region)}
-                onPress={() => toggleRegion(region)}
-              />
-            ))}
+            {filtered.map((region, index) => {
+              const selected = value.coverageRegions.includes(region);
+              return (
+                <Pressable
+                  key={region}
+                  onPress={() => toggleRegion(region)}
+                  style={({ pressed }) => [
+                    styles.row,
+                    index > 0 && styles.rowBorder,
+                    pressed && styles.rowPressed,
+                  ]}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selected }}>
+                  <Text style={[styles.rowLabel, selected && styles.rowLabelSelected]} numberOfLines={1}>
+                    {region}
+                  </Text>
+                  <View style={[styles.check, selected && styles.checkOn]}>
+                    {selected ? <Ionicons name="checkmark" size={14} color={theme.white} /> : null}
+                  </View>
+                </Pressable>
+              );
+            })}
             {filtered.length === 0 ? (
-              <Text style={styles.empty}>Hakuna mkoa unaolingana na “{query.trim()}”.</Text>
+              <Text style={styles.empty}>No region matches “{query.trim()}”.</Text>
             ) : null}
           </View>
         </>
-      ) : (
-        <Muted style={styles.hint}>Mikoa yote Tanzania imechaguliwa — oda zote ndani ya nchi zinaweza kulingana.</Muted>
-      )}
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { marginBottom: 8 },
-  hint: { marginBottom: 12, lineHeight: 20 },
-  summaryCard: {
-    borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.tile,
-    padding: 14,
-    marginBottom: 14,
-  },
-  summaryTop: {
+  segment: {
     flexDirection: 'row',
+    backgroundColor: theme.primarySoft,
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 10,
+  },
+  segmentBtn: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 8,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
   },
-  summaryLabel: {
-    fontFamily: typography.semibold,
-    fontSize: 12,
-    color: theme.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  clearBtn: {
+  segmentBtnOn: { backgroundColor: '#000000' },
+  segmentText: {
     fontFamily: typography.semibold,
     fontSize: 13,
     color: theme.ink,
   },
-  summaryValue: {
-    fontFamily: typography.semibold,
-    fontSize: 15,
-    lineHeight: 21,
-    color: theme.ink,
+  segmentTextOn: { color: theme.white },
+  hint: {
+    fontFamily: typography.body,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.muted,
+    marginBottom: 12,
   },
-  summaryMeta: {
-    marginTop: 6,
+  searchMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  count: {
     fontFamily: typography.body,
     fontSize: 12,
     color: theme.muted,
+  },
+  clear: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    color: theme.ink,
   },
   searchWrap: {
     flexDirection: 'row',
@@ -261,7 +242,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.white,
     paddingHorizontal: 12,
     minHeight: 46,
-    marginBottom: 12,
+    marginBottom: 8,
   },
   searchInput: {
     flex: 1,
@@ -270,42 +251,37 @@ const styles = StyleSheet.create({
     color: theme.ink,
     paddingVertical: 10,
   },
-  section: {
-    fontFamily: typography.semibold,
-    color: theme.ink,
-    marginBottom: 8,
-    fontSize: 14,
+  list: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.white,
+    overflow: 'hidden',
   },
-  list: { gap: 6 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.white,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: theme.radius.md,
-    marginBottom: 6,
-    gap: 10,
+    gap: 12,
+    backgroundColor: theme.white,
   },
-  rowSelected: {
-    borderColor: theme.ink,
-    backgroundColor: theme.primarySoft,
+  rowBorder: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.border,
   },
-  rowPressed: { opacity: 0.92 },
-  rowLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rowPressed: { backgroundColor: theme.primarySoft },
   rowLabel: {
     flex: 1,
     fontFamily: typography.body,
-    fontSize: 14,
+    fontSize: 15,
     color: theme.ink,
   },
   rowLabelSelected: { fontFamily: typography.semibold },
   check: {
-    width: 22,
-    height: 22,
+    width: 20,
+    height: 20,
     borderRadius: 6,
     borderWidth: 1.5,
     borderColor: theme.border,
@@ -321,6 +297,7 @@ const styles = StyleSheet.create({
     fontFamily: typography.body,
     fontSize: 13,
     color: theme.muted,
-    paddingVertical: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
   },
 });

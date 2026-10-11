@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -6,7 +6,6 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Field, Header, PrimaryButton, Screen, Muted } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { darTodayKey } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 import {
   ALL_OPERATING_DAYS,
@@ -26,10 +25,7 @@ function normalizeDays(raw?: string[] | null): DayKey[] {
 export default function ScheduleScreen() {
   const { carrier, routes } = useCarrierSession();
   const primary = routes.find((r) => r.active !== false) || routes[0];
-  const [origin, setOrigin] = useState(primary?.origin || 'Dar es Salaam');
-  const [destination, setDestination] = useState(primary?.destination || '');
-  const [departureTime, setDepartureTime] = useState(primary?.departureTime || '08:00');
-  const [cargoCapacityKg, setCargoCapacityKg] = useState(String(primary?.cargoCapacityKg || 500));
+  const [cargoCapacityKg, setCargoCapacityKg] = useState(String(primary?.cargoCapacityKg || carrier?.cargoCapacityKg || 500));
   const [operatingDays, setOperatingDays] = useState<DayKey[]>(() => normalizeDays(primary?.operatingDays));
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
@@ -47,13 +43,10 @@ export default function ScheduleScreen() {
   return (
     <Screen scroll>
       <Header
-        title="Ratiba"
-        subtitle="Njia, uwezo, na siku za kufanya kazi. Chaguo la kawaida: kila siku."
+        title="Uwezo"
+        subtitle="Kilo na siku za kufanya kazi. Oda zinategemea mkoa wa kampuni na coverage."
         back
       />
-      <Field label="Kutoka" value={origin} onChangeText={setOrigin} />
-      <Field label="Kwenda" value={destination} onChangeText={setDestination} />
-      <Field label="Muda wa kuondoka" value={departureTime} onChangeText={setDepartureTime} />
       <Field label="Uwezo (kg)" keyboardType="numeric" value={cargoCapacityKg} onChangeText={setCargoCapacityKg} />
 
       <Text style={styles.daysLabel}>Siku za kufanya kazi</Text>
@@ -76,32 +69,26 @@ export default function ScheduleScreen() {
 
       {msg ? <Text style={styles.ok}>{msg}</Text> : null}
       <PrimaryButton
-        label="Hifadhi ratiba"
+        label="Hifadhi"
         loading={loading}
         onPress={async () => {
           if (!carrier?.id) return;
           setLoading(true);
           const days = operatingDays.length ? operatingDays : [...ALL_OPERATING_DAYS];
-          const payload = {
-            carrierId: carrier.id,
-            origin: origin.trim(),
-            destination: destination.trim(),
-            departureTime,
-            arrivalTime: departureTime,
-            cargoCapacityKg: Number(cargoCapacityKg) || 0,
-            operatingDays: days,
-            pickupKariakoo: true,
-            active: true,
-            serviceDate: darTodayKey(),
-            updatedAt: serverTimestamp(),
-          };
+          const capacity = Number(cargoCapacityKg) || 0;
           try {
             if (primary?.id) {
-              await updateDoc(doc(db, 'carrierRoutes', primary.id), payload);
-            } else {
-              await addDoc(collection(db, 'carrierRoutes'), { ...payload, createdAt: serverTimestamp() });
+              await updateDoc(doc(db, 'carrierRoutes', primary.id), {
+                cargoCapacityKg: capacity,
+                operatingDays: days,
+                updatedAt: serverTimestamp(),
+              });
             }
-            setMsg('Ratiba imehifadhiwa.');
+            await updateDoc(doc(db, 'carriers', carrier.id), {
+              cargoCapacityKg: capacity,
+              operatingDays: days,
+            });
+            setMsg('Imehifadhiwa.');
             router.back();
           } finally {
             setLoading(false);

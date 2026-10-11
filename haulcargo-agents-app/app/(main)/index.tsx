@@ -83,7 +83,7 @@ export default function HomeScreen() {
           <View style={styles.utilityIcon}>
             <Ionicons name="bus-outline" size={16} color={theme.ink} />
           </View>
-          <Text style={styles.utilityLabel}>Ratiba</Text>
+          <Text style={styles.utilityLabel}>Uwezo</Text>
         </Pressable>
       </View>
 
@@ -101,7 +101,7 @@ export default function HomeScreen() {
       {rows.length === 0 ? (
         <EmptyState
           title="Hakuna oda kwenye inbox"
-          body="Mtuma mzigo kwenye HAUL anapoweka oda ya parcel, itaonekana hapa ikiwa coverage na njia yenu inalingana.">
+          body="Mtuma mzigo kwenye HAUL anapoweka oda inayotoka mkoa wenu na kwenda kwenye coverage yenu, itaonekana hapa.">
           <Image source={images.deskPackingBox} style={styles.emptyArt} resizeMode="contain" />
         </EmptyState>
       ) : (

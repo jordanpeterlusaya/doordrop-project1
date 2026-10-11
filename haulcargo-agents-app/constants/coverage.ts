@@ -34,11 +34,14 @@ export const TZ_REGIONS = [
 export type TzRegion = (typeof TZ_REGIONS)[number];
 
 export const COVERAGE_ALL_TZ = 'Mikoa yote Tanzania';
+export const COVERAGE_INTRA_CITY = 'Ndani ya mji';
 export const COVERAGE_INTERNATIONAL = 'Nje ya nchi';
 
 export type CoverageSelection = {
   coverageRegions: string[];
   coverageAllTanzania: boolean;
+  /** Origin and destination both stay inside the company's base region. */
+  coverageIntraCity: boolean;
   coverageInternational: boolean;
   /** Comma-separated countries when operating outside Tanzania. */
   coverageInternationalCountries: string;
@@ -48,13 +51,16 @@ export function emptyCoverage(): CoverageSelection {
   return {
     coverageRegions: [],
     coverageAllTanzania: false,
+    coverageIntraCity: false,
     coverageInternational: false,
     coverageInternationalCountries: '',
   };
 }
 
 export function coverageIsValid(selection: CoverageSelection) {
-  if (selection.coverageAllTanzania || selection.coverageRegions.length > 0) return true;
+  if (selection.coverageIntraCity || selection.coverageAllTanzania || selection.coverageRegions.length > 0) {
+    return true;
+  }
   if (selection.coverageInternational) {
     return selection.coverageInternationalCountries.trim().length > 1;
   }
@@ -63,12 +69,13 @@ export function coverageIsValid(selection: CoverageSelection) {
 
 export function coverageSummary(selection: CoverageSelection) {
   const parts: string[] = [];
-  if (selection.coverageAllTanzania) parts.push(COVERAGE_ALL_TZ);
-  if (selection.coverageInternational) {
+  if (selection.coverageIntraCity) parts.push(COVERAGE_INTRA_CITY);
+  else if (selection.coverageAllTanzania) parts.push(COVERAGE_ALL_TZ);
+  if (!selection.coverageIntraCity && selection.coverageInternational) {
     const countries = selection.coverageInternationalCountries.trim();
     parts.push(countries ? `${COVERAGE_INTERNATIONAL}: ${countries}` : COVERAGE_INTERNATIONAL);
   }
-  if (!selection.coverageAllTanzania && selection.coverageRegions.length) {
+  if (!selection.coverageAllTanzania && !selection.coverageIntraCity && selection.coverageRegions.length) {
     parts.push(...selection.coverageRegions.slice(0, 4));
     if (selection.coverageRegions.length > 4) {
       parts.push(`+${selection.coverageRegions.length - 4}`);

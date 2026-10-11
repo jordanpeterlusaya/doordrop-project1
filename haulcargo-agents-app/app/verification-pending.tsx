@@ -76,7 +76,7 @@ export default function VerificationPendingScreen() {
         <Text style={styles.timelineTitle}>Review timeline</Text>
         <TimelineRow done label="Application submitted" />
         <TimelineRow done label="Phone verified via SMS" />
-        <TimelineRow active label="HAUL verifying BRELA, TIN & licences" />
+        <TimelineRow active label="HAUL reviewing your company" />
         <TimelineRow label="Orders unlock when verified" last />
       </Animated.View>
 
