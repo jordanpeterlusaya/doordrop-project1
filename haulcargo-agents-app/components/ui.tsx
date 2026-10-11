@@ -130,9 +130,7 @@ export function PrimaryButton({
         pressed && styles.btnPressed,
       ]}>
       {loading ? (
-        <ActivityIndicator
-          color={resolved === 'outline' || resolved === 'primary' ? theme.ink : theme.white}
-        />
+        <ActivityIndicator color={resolved === 'outline' ? theme.ink : theme.white} />
       ) : (
         <Text
           style={[
@@ -151,16 +149,39 @@ export function Field({
   label,
   error,
   hint,
+  secureToggle,
   ...props
-}: TextInputProps & { label: string; error?: string; hint?: string }) {
+}: TextInputProps & {
+  label: string;
+  error?: string;
+  hint?: string;
+  /** When true, shows a show/hide control for password fields. */
+  secureToggle?: boolean;
+}) {
+  const [visible, setVisible] = React.useState(false);
+  const isSecure = Boolean(props.secureTextEntry) && secureToggle ? !visible : props.secureTextEntry;
+
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        placeholderTextColor={theme.muted}
-        style={[styles.input, error ? styles.inputError : null]}
-        {...props}
-      />
+      <View style={[styles.inputWrap, error ? styles.inputWrapError : null]}>
+        <TextInput
+          placeholderTextColor={theme.muted}
+          style={styles.input}
+          {...props}
+          secureTextEntry={isSecure}
+        />
+        {secureToggle ? (
+          <Pressable
+            onPress={() => setVisible((v) => !v)}
+            hitSlop={8}
+            style={styles.eyeBtn}
+            accessibilityRole="button"
+            accessibilityLabel={visible ? 'Hide password' : 'Show password'}>
+            <Ionicons name={visible ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.muted} />
+          </Pressable>
+        ) : null}
+      </View>
       {error ? <Text style={styles.fieldError}>{error}</Text> : null}
       {!error && hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
     </View>
@@ -287,7 +308,7 @@ const styles = StyleSheet.create({
   },
   btn: {
     borderRadius: theme.cta.borderRadius,
-    paddingVertical: 14,
+    paddingVertical: 13,
     paddingHorizontal: theme.cta.paddingHorizontal,
     alignItems: 'center',
     justifyContent: 'center',
@@ -302,16 +323,16 @@ const styles = StyleSheet.create({
   btnOutline: {
     backgroundColor: theme.white,
     borderWidth: 1.5,
-    borderColor: theme.line,
+    borderColor: theme.border,
   },
   btnDanger: { backgroundColor: theme.danger, borderColor: theme.danger },
   btnDisabled: { opacity: 0.5 },
-  btnPressed: { opacity: 0.88 },
+  btnPressed: { opacity: 0.9 },
   btnText: {
     color: theme.white,
     fontSize: theme.cta.labelSize,
     lineHeight: theme.cta.labelLineHeight,
-    fontFamily: typography.bold,
+    fontFamily: typography.semibold,
     letterSpacing: theme.cta.letterSpacing,
   },
   btnTextPrimary: { color: theme.cta.labelColor },
@@ -323,17 +344,26 @@ const styles = StyleSheet.create({
     color: theme.ink,
     marginBottom: 6,
   },
-  input: {
-    borderWidth: 0,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 16,
-    fontFamily: typography.body,
-    backgroundColor: theme.tile,
-    color: theme.ink,
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.white,
+    paddingHorizontal: 14,
   },
-  inputError: { borderColor: theme.danger },
+  inputWrapError: { borderColor: theme.danger, backgroundColor: theme.dangerSoft },
+  input: {
+    flex: 1,
+    borderWidth: 0,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontFamily: typography.body,
+    color: theme.ink,
+    minHeight: 46,
+  },
+  eyeBtn: { paddingLeft: 8, paddingVertical: 8 },
   fieldError: {
     marginTop: 6,
     fontSize: 12,
@@ -349,6 +379,8 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: theme.tile,
     borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
     padding: 16,
     marginBottom: 12,
   },
@@ -397,9 +429,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: theme.tile,
   },
-  chipOn: { backgroundColor: theme.ink },
+  chipOn: { backgroundColor: theme.navy },
   chipText: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  chipTextOn: { color: theme.primary },
+  chipTextOn: { color: theme.white },
   settingsRow: {
     minHeight: 54,
     flexDirection: 'row',

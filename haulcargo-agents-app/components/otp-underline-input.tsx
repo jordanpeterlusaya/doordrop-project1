@@ -13,6 +13,7 @@ type Props = {
   editable?: boolean;
 };
 
+/** Six discrete OTP boxes — not underlines, not 8 digits. */
 export function OtpUnderlineInput({ value, onChange, autoFocus = true, editable = true }: Props) {
   const inputRef = useRef<TextInput>(null);
   const digits = value.replace(/\D/g, '').slice(0, LENGTH).split('');
@@ -28,9 +29,10 @@ export function OtpUnderlineInput({ value, onChange, autoFocus = true, editable 
           const digit = digits[index] || '';
           const active = index === digits.length && digits.length < LENGTH;
           return (
-            <View key={index} style={styles.slot}>
-              <Text style={[styles.digit, digit ? styles.digitFilled : null]}>{digit}</Text>
-              <View style={[styles.line, active && styles.lineActive, digit ? styles.lineFilled : null]} />
+            <View
+              key={index}
+              style={[styles.box, active && styles.boxActive, digit ? styles.boxFilled : null]}>
+              <Text style={styles.digit}>{digit}</Text>
             </View>
           );
         })}
@@ -55,43 +57,37 @@ export function OtpUnderlineInput({ value, onChange, autoFocus = true, editable 
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 18,
-    marginTop: 8,
+    marginBottom: 16,
+    marginTop: 4,
   },
   slots: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
   },
-  slot: {
+  box: {
     flex: 1,
+    aspectRatio: 0.9,
+    maxHeight: 56,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    backgroundColor: theme.white,
     alignItems: 'center',
-    minHeight: 52,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+  },
+  boxActive: {
+    borderColor: theme.accent,
+    backgroundColor: theme.accentSoft,
+  },
+  boxFilled: {
+    borderColor: theme.navyMid,
   },
   digit: {
     fontFamily: typography.bold,
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 22,
+    lineHeight: 28,
     color: theme.ink,
-    marginBottom: 8,
-    minHeight: 34,
-  },
-  digitFilled: {
-    color: theme.ink,
-  },
-  line: {
-    width: '100%',
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: '#D1D5DB',
-  },
-  lineActive: {
-    backgroundColor: theme.ink,
-    height: 2.5,
-  },
-  lineFilled: {
-    backgroundColor: theme.ink,
   },
   hidden: {
     ...StyleSheet.absoluteFill,
@@ -99,3 +95,4 @@ const styles = StyleSheet.create({
     color: 'transparent',
   },
 });
+

@@ -137,7 +137,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: theme.ink,
   },
-  dayTextOn: { color: theme.primary },
+  dayTextOn: { color: theme.accent },
   daysHint: { marginBottom: 16 },
   ok: { color: theme.success, marginBottom: 12, fontFamily: typography.semibold },
 });

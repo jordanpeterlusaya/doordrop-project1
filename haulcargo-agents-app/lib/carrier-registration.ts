@@ -8,6 +8,7 @@ import { db } from '@/lib/firebase';
 
 export type RegisterCompanyInput = {
   companyName: string;
+  tradingName?: string;
   brelaNumber?: string;
   tin?: string;
   businessLicence?: string;
@@ -17,6 +18,8 @@ export type RegisterCompanyInput = {
   representativeIdNumber?: string;
   phone?: string;
   businessEmail?: string;
+  region?: string;
+  district?: string;
   location?: string;
   physicalAddress?: string;
   gpsLatitude?: number | null;
@@ -60,6 +63,7 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
   await setDoc(doc(db, 'carriers', carrierId), {
     ownerUid: carrierId,
     companyName: input.companyName.trim(),
+    tradingName: input.tradingName?.trim() || '',
     brelaNumber: input.brelaNumber?.trim() || '',
     tin: input.tin?.trim() || '',
     businessLicence: input.businessLicence?.trim() || '',
@@ -71,6 +75,8 @@ export async function createCarrierFromRegistration(user: User, input: RegisterC
     phoneNormalized: input.phone || '',
     businessEmail: (input.businessEmail || email).trim().toLowerCase(),
     email,
+    region: input.region?.trim() || '',
+    district: input.district?.trim() || '',
     location: input.location || input.physicalAddress || '',
     physicalAddress: input.physicalAddress?.trim() || input.location || '',
     gpsLatitude: input.gpsLatitude ?? null,

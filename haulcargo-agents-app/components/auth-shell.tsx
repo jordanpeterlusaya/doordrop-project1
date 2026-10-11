@@ -12,7 +12,7 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { theme } from '@/constants/theme';
@@ -24,10 +24,12 @@ type Props = {
   subtitle?: string;
   children: React.ReactNode;
   back?: boolean;
+  onBack?: () => void;
   footer?: React.ReactNode;
   contentStyle?: ViewStyle;
-  /** Centered OTP-style layout (more vertical space, tighter card). */
   centered?: boolean;
+  /** Compact step label under brand, e.g. "Step 1 of 3". */
+  stepLabel?: string;
 };
 
 export function AuthShell({
@@ -35,11 +37,22 @@ export function AuthShell({
   subtitle,
   children,
   back = true,
+  onBack,
   footer,
   contentStyle,
   centered = false,
+  stepLabel,
 }: Props) {
   const insets = useSafeAreaInsets();
+
+  const handleBack = () => {
+    if (onBack) {
+      onBack();
+      return;
+    }
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
+  };
 
   return (
     <View style={styles.root}>
@@ -51,14 +64,14 @@ export function AuthShell({
           contentContainerStyle={[
             styles.scroll,
             centered && styles.scrollCentered,
-            { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 28 },
+            { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 32 },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <Animated.View entering={FadeInDown.duration(380)} style={styles.topRow}>
+          <Animated.View entering={FadeInDown.duration(320)} style={styles.topRow}>
             {back ? (
               <Pressable
-                onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
+                onPress={handleBack}
                 hitSlop={12}
                 style={styles.backBtn}
                 accessibilityRole="button"
@@ -69,14 +82,23 @@ export function AuthShell({
               <View style={styles.backBtn} />
             )}
             <View style={styles.brand}>
-              <Image source={images.haulLogo} style={styles.logo} resizeMode="contain" />
+              <View style={styles.logoWrap}>
+                <Image source={images.haulLogo} style={styles.logo} resizeMode="contain" />
+                <View style={styles.brandDot} />
+              </View>
               <Text style={styles.brandMark}>HAUL</Text>
             </View>
             <View style={styles.backBtn} />
           </Animated.View>
 
+          {stepLabel ? (
+            <Animated.Text entering={FadeIn.duration(280)} style={styles.stepLabel}>
+              {stepLabel}
+            </Animated.Text>
+          ) : null}
+
           <Animated.View
-            entering={FadeInUp.delay(60).duration(420)}
+            entering={FadeInUp.delay(40).duration(360)}
             style={[styles.hero, centered && styles.heroCentered, contentStyle]}>
             <Text style={[styles.title, centered && styles.titleCentered]}>{title}</Text>
             {subtitle ? (
@@ -84,12 +106,12 @@ export function AuthShell({
             ) : null}
           </Animated.View>
 
-          <Animated.View entering={FadeInUp.delay(120).duration(440)} style={styles.card}>
+          <Animated.View entering={FadeInUp.delay(90).duration(380)} style={styles.form}>
             {children}
           </Animated.View>
 
           {footer ? (
-            <Animated.View entering={FadeInUp.delay(160).duration(420)} style={styles.footer}>
+            <Animated.View entering={FadeInUp.delay(130).duration(360)} style={styles.footer}>
               {footer}
             </Animated.View>
           ) : null}
@@ -102,57 +124,70 @@ export function AuthShell({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
   flex: { flex: 1 },
-  scroll: { paddingHorizontal: 22, flexGrow: 1 },
+  scroll: { paddingHorizontal: 24, flexGrow: 1 },
   scrollCentered: { justifyContent: 'center' },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 28,
+    marginBottom: 20,
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
     backgroundColor: theme.white,
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  logo: { width: 28, height: 28 },
+  logoWrap: { position: 'relative' },
+  logo: { width: 22, height: 22 },
+  brandDot: {
+    position: 'absolute',
+    right: -2,
+    top: -2,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.brandYellow,
+  },
   brandMark: {
     fontFamily: typography.ident,
-    fontSize: 22,
-    letterSpacing: -0.6,
-    color: theme.ink,
+    fontSize: 17,
+    letterSpacing: 0.4,
+    color: theme.navy,
   },
-  hero: { marginBottom: 20 },
+  stepLabel: {
+    fontFamily: typography.semibold,
+    fontSize: 12,
+    letterSpacing: 0.3,
+    color: theme.muted,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  hero: { marginBottom: 22 },
   heroCentered: { alignItems: 'center' },
   title: {
     fontFamily: typography.bold,
-    fontSize: 26,
-    lineHeight: 32,
+    fontSize: 24,
+    lineHeight: 30,
     letterSpacing: -0.4,
     color: theme.ink,
   },
-  titleCentered: { textAlign: 'center', fontSize: 24 },
+  titleCentered: { textAlign: 'center', fontSize: 22 },
   subtitle: {
     marginTop: 8,
     fontFamily: typography.body,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 14,
+    lineHeight: 21,
     color: theme.muted,
   },
-  subtitleCentered: { textAlign: 'center', maxWidth: 280 },
-  card: {
-    backgroundColor: theme.white,
-    borderRadius: 24,
-    padding: 22,
-    shadowColor: '#111827',
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+  subtitleCentered: { textAlign: 'center', maxWidth: 300 },
+  form: {
+    backgroundColor: 'transparent',
   },
-  footer: { marginTop: 20, alignItems: 'center' },
+  footer: { marginTop: 22, alignItems: 'center' },
 });

@@ -17,7 +17,7 @@ const TAB_ICONS = {
 } as const;
 
 export default function MainTabsLayout() {
-  const { user, initializing, needsCompanySetup, carrier, isAdmin } = useCarrierSession();
+  const { user, initializing, needsCompanySetup, carrier } = useCarrierSession();
   const insets = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 10 : 6);
 
@@ -30,8 +30,7 @@ export default function MainTabsLayout() {
   }
 
   if (!user) return <Redirect href="/" />;
-  if (needsCompanySetup) return <Redirect href="/register-company" />;
-  if (!carrier && !isAdmin) return <Redirect href="/register-company" />;
+  if (needsCompanySetup || !carrier) return <Redirect href="/register-company" />;
 
   return (
     <Tabs
@@ -67,7 +66,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: theme.primary,
+    backgroundColor: theme.white,
   },
   tabBar: {
     borderTopColor: theme.line,

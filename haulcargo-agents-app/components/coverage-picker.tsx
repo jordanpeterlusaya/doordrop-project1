@@ -131,8 +131,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   chipSelected: {
-    backgroundColor: theme.primary,
-    borderColor: theme.ink,
+    backgroundColor: theme.navy,
+    borderColor: theme.navy,
   },
   chipText: {
     fontFamily: typography.body,
@@ -141,5 +141,6 @@ const styles = StyleSheet.create({
   },
   chipTextSelected: {
     fontFamily: typography.semibold,
+    color: theme.white,
   },
 });

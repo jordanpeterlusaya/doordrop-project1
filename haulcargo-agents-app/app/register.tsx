@@ -1,43 +1,47 @@
 import * as Location from 'expo-location';
 import { Redirect, router } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { Ionicons } from '@expo/vector-icons';
 
 import { AuthShell } from '@/components/auth-shell';
 import { CoveragePicker } from '@/components/coverage-picker';
-import { OtpUnderlineInput } from '@/components/otp-underline-input';
+import { StepProgress } from '@/components/step-progress';
 import { Field, PrimaryButton } from '@/components/ui';
 import { coverageIsValid, emptyCoverage, type CoverageSelection } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { pickDocument, pickImageDocument, type PickedDoc, uploadCarrierDocument } from '@/lib/document-upload';
-import { confirmCarrierPhone, sendCarrierOtp, verifyCarrierOtp } from '@/lib/otp-api';
-import { generateAccountPassword } from '@/lib/password';
-import { formatCountdown, isValidTzPhone } from '@/lib/phone';
+import { pickDocument, pickImageDocument, type PickedDoc } from '@/lib/document-upload';
+import { sendCarrierOtp } from '@/lib/otp-api';
+import { passwordsMatch, validatePassword } from '@/lib/password';
+import { isValidTzPhone } from '@/lib/phone';
+import {
+  saveRegistrationDraft,
+  type DocKey,
+  type RegistrationDraft,
+} from '@/lib/registration-draft';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 const TERMS_URL = 'https://doordrop-terms.vercel.app/';
 const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
 
-const STEPS = ['Company', 'Business', 'Coverage'] as const;
-
-type DocKey = 'brelaCert' | 'tinCert' | 'businessLicence' | 'latraLicence' | 'repId';
-type Phase = 'form' | 'otp';
+const STEPS = ['Company', 'Verification', 'Approval'] as const;
 
 export default function RegisterScreen() {
-  const { signUp, authenticating, authError, user, carrier, clearAuthError } = useCarrierSession();
-  const [phase, setPhase] = useState<Phase>('form');
+  const { authenticating, authError, user, carrier, clearAuthError } = useCarrierSession();
   const [step, setStep] = useState(0);
 
   const [companyName, setCompanyName] = useState('');
   const [tradingName, setTradingName] = useState('');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [phone, setPhone] = useState('');
   const [contactPerson, setContactPerson] = useState('');
   const [representativeTitle, setRepresentativeTitle] = useState('');
   const [businessEmail, setBusinessEmail] = useState('');
+  const [region, setRegion] = useState('');
+  const [district, setDistrict] = useState('');
   const [physicalAddress, setPhysicalAddress] = useState('');
 
   const [brelaNumber, setBrelaNumber] = useState('');
@@ -57,31 +61,11 @@ export default function RegisterScreen() {
   const [cargoCapacityKg, setCargoCapacityKg] = useState('500');
   const [termsAccepted, setTermsAccepted] = useState(false);
 
-  const [otpCode, setOtpCode] = useState('');
-  const [otpTicket, setOtpTicket] = useState('');
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpExpires, setOtpExpires] = useState(300);
-  const [otpSending, setOtpSending] = useState(false);
-  const [otpVerifying, setOtpVerifying] = useState(false);
-  const [phoneMasked, setPhoneMasked] = useState('');
-
   const [localError, setLocalError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   const error = localError || authError;
-  const progress = useMemo(() => `${step + 1} / ${STEPS.length}`, [step]);
-
-  useEffect(() => {
-    if (otpCooldown <= 0) return;
-    const id = setInterval(() => setOtpCooldown((n) => (n <= 1 ? 0 : n - 1)), 1000);
-    return () => clearInterval(id);
-  }, [otpCooldown]);
-
-  useEffect(() => {
-    if (phase !== 'otp' || otpExpires <= 0) return;
-    const id = setInterval(() => setOtpExpires((n) => (n <= 1 ? 0 : n - 1)), 1000);
-    return () => clearInterval(id);
-  }, [phase, otpExpires]);
 
   if (user && carrier?.status === 'verified') return <Redirect href="/(main)" />;
   if (user && carrier?.status === 'pending') return <Redirect href="/verification-pending" />;
@@ -104,42 +88,77 @@ export default function RegisterScreen() {
     setLocalError('');
   };
 
+  const buildDraft = (): RegistrationDraft => ({
+    companyName,
+    tradingName,
+    email,
+    password,
+    phone,
+    contactPerson,
+    representativeTitle,
+    businessEmail,
+    region,
+    district,
+    physicalAddress,
+    brelaNumber,
+    tin,
+    businessLicence,
+    latraLicence,
+    representativeIdNumber,
+    operatingStations,
+    gpsLatitude,
+    gpsLongitude,
+    docs,
+    coverage,
+    routeOrigin,
+    routeDestination,
+    routeDepart,
+    cargoCapacityKg,
+    termsAccepted,
+  });
+
   const validateStep = (): boolean => {
     const nextErrors: Record<string, string> = {};
     clearAuthError();
     setLocalError('');
 
     if (step === 0) {
-      if (!companyName.trim()) nextErrors.companyName = 'Company name required.';
-      if (!email.trim() || !email.includes('@')) nextErrors.email = 'Valid email required.';
-      if (!isValidTzPhone(phone)) nextErrors.phone = 'Valid phone required.';
-      if (!contactPerson.trim()) nextErrors.contactPerson = 'Contact person required.';
-      if (!physicalAddress.trim()) nextErrors.physicalAddress = 'Office address required.';
+      if (!companyName.trim()) nextErrors.companyName = 'Registered company name required.';
+      if (!email.trim() || !email.includes('@')) nextErrors.email = 'Valid business email required.';
+      const pwError = validatePassword(password);
+      if (pwError) nextErrors.password = pwError;
+      const matchError = passwordsMatch(password, confirmPassword);
+      if (matchError) nextErrors.confirmPassword = matchError;
+      if (!isValidTzPhone(phone)) nextErrors.phone = 'Valid +255 / 07XX phone required.';
+      if (!contactPerson.trim()) nextErrors.contactPerson = 'Company contact person required.';
+      if (!region.trim()) nextErrors.region = 'Region required.';
+      if (!district.trim()) nextErrors.district = 'District required.';
+      if (!physicalAddress.trim()) nextErrors.physicalAddress = 'Physical address required.';
+      if (!coverageIsValid(coverage)) {
+        setLocalError('Select operating coverage: regions, all Tanzania, or international countries.');
+        setFieldErrors(nextErrors);
+        return false;
+      }
+      if (!routeDestination.trim()) nextErrors.routeDestination = 'Primary route destination required.';
     }
+
     if (step === 1) {
       if (!brelaNumber.trim()) nextErrors.brelaNumber = 'BRELA number required.';
-      if (!tin.trim()) nextErrors.tin = 'TIN / TRA number required.';
-      if (!businessLicence.trim()) nextErrors.businessLicence = 'Business licence required.';
+      if (!tin.trim()) nextErrors.tin = 'TIN required.';
+      if (!businessLicence.trim()) nextErrors.businessLicence = 'Business licence number required.';
       if (!operatingStations.trim()) nextErrors.operatingStations = 'Stations / locations required.';
       if (gpsLatitude == null || gpsLongitude == null) {
-        setLocalError('Capture office GPS.');
+        setLocalError('Capture office GPS so dispatch can locate your desk.');
         setFieldErrors(nextErrors);
         return false;
       }
       if (!docs.brelaCert || !docs.tinCert || !docs.businessLicence || !docs.repId) {
-        setLocalError('Upload BRELA, TIN, licence, and ID documents.');
+        setLocalError('Upload BRELA, TIN, business licence, and representative ID.');
         setFieldErrors(nextErrors);
         return false;
       }
-    }
-    if (step === 2) {
-      if (!coverageIsValid(coverage)) {
-        setLocalError('Select regions, all Tanzania, or outside countries.');
-        return false;
-      }
-      if (!routeDestination.trim()) nextErrors.routeDestination = 'Primary route destination required.';
       if (!termsAccepted) {
-        setLocalError('Accept Terms and Privacy to continue.');
+        setLocalError('Accept Terms of Service and Privacy Policy to continue.');
         setFieldErrors(nextErrors);
         return false;
       }
@@ -149,121 +168,49 @@ export default function RegisterScreen() {
     return Object.keys(nextErrors).length === 0;
   };
 
-  const sendOtp = async () => {
-    setOtpSending(true);
+  const submitAndSendOtp = async () => {
+    if (!validateStep()) return;
+    setSubmitting(true);
     setLocalError('');
     try {
+      saveRegistrationDraft(buildDraft());
       const result = await sendCarrierOtp(phone, 'signup');
-      setPhoneMasked(result.phoneMasked);
-      setOtpCooldown(result.cooldownSeconds || 60);
-      setOtpExpires(result.expiresInSeconds || 300);
+      router.push({
+        pathname: '/otp',
+        params: {
+          phone,
+          purpose: 'signup',
+          phoneMasked: result.phoneMasked,
+          cooldown: String(result.cooldownSeconds || 60),
+          expires: String(result.expiresInSeconds || 300),
+        },
+      });
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : 'Could not send OTP.');
-      throw e;
     } finally {
-      setOtpSending(false);
-    }
-  };
-
-  const submitAfterOtp = async (ticket: string) => {
-    const password = generateAccountPassword();
-    const loginEmail = email.trim().toLowerCase();
-    await signUp(loginEmail, password, {
-      companyName: tradingName.trim() ? `${companyName.trim()} (${tradingName.trim()})` : companyName,
-      brelaNumber,
-      tin,
-      businessLicence,
-      latraLicence,
-      contactPerson,
-      representativeTitle,
-      representativeIdNumber,
-      phone,
-      businessEmail: (businessEmail.trim() || loginEmail).toLowerCase(),
-      physicalAddress,
-      location: physicalAddress,
-      gpsLatitude,
-      gpsLongitude,
-      operatingStations,
-      documents: {},
-      termsAccepted: true,
-      privacyAccepted: true,
-      phoneVerified: false,
-      routeOrigin,
-      routeDestination,
-      routeDepart,
-      cargoCapacityKg: Number(cargoCapacityKg) || 0,
-      coverageRegions: coverage.coverageRegions,
-      coverageAllTanzania: coverage.coverageAllTanzania,
-      coverageInternational: coverage.coverageInternational,
-      coverageInternationalCountries: coverage.coverageInternationalCountries,
-    });
-
-    const { auth } = await import('@/lib/firebase');
-    const current = auth.currentUser;
-    if (!current) throw new Error('Account was not created.');
-    const idToken = await current.getIdToken();
-
-    const uploaded: Record<string, string> = {};
-    for (const [key, docFile] of Object.entries(docs)) {
-      if (!docFile) continue;
-      uploaded[key] = await uploadCarrierDocument(docFile, idToken);
-    }
-
-    const { doc, updateDoc } = await import('firebase/firestore');
-    const { db } = await import('@/lib/firebase');
-    await updateDoc(doc(db, 'carriers', current.uid), { documents: uploaded });
-
-    await confirmCarrierPhone({
-      phone,
-      otpTicket: ticket,
-      idToken,
-      carrierId: current.uid,
-    });
-
-    router.replace('/verification-pending');
-  };
-
-  const verifyAndSubmit = async () => {
-    setOtpVerifying(true);
-    setLocalError('');
-    try {
-      let ticket = otpTicket;
-      if (!ticket) {
-        const result = await verifyCarrierOtp(phone, otpCode);
-        ticket = result.otpTicket;
-        setOtpTicket(ticket);
-        setPhoneMasked(result.phoneMasked);
-      }
-      await submitAfterOtp(ticket);
-    } catch (e) {
-      if (!(e instanceof Error && authError)) {
-        setLocalError(e instanceof Error ? e.message : 'Could not complete signup.');
-      }
-    } finally {
-      setOtpVerifying(false);
+      setSubmitting(false);
     }
   };
 
   const next = () => {
     if (!validateStep()) return;
-    if (step < STEPS.length - 1) {
-      setStep(step + 1);
+    if (step === 0) {
+      setStep(1);
       return;
     }
-    setPhase('otp');
-    setOtpCode('');
-    setOtpTicket('');
-    void sendOtp().catch(() => undefined);
+    void submitAndSendOtp();
   };
 
   const DocButton = ({
     label,
     docKey,
     required,
+    hint,
   }: {
     label: string;
     docKey: DocKey;
     required?: boolean;
+    hint?: string;
   }) => (
     <View style={styles.docRow}>
       <View style={styles.docMeta}>
@@ -271,7 +218,8 @@ export default function RegisterScreen() {
           {label}
           {required ? ' *' : ''}
         </Text>
-        <Text style={styles.docName}>{docs[docKey]?.name || 'Not selected'}</Text>
+        {hint ? <Text style={styles.docHint}>{hint}</Text> : null}
+        <Text style={styles.docName}>{docs[docKey]?.name || 'No file selected'}</Text>
       </View>
       <View style={styles.docActions}>
         <Pressable onPress={() => void setDoc(docKey, 'image')} style={styles.docBtn}>
@@ -284,65 +232,19 @@ export default function RegisterScreen() {
     </View>
   );
 
-  if (phase === 'otp') {
-    return (
-      <AuthShell
-        title="Enter verification code"
-        subtitle={phoneMasked ? `Sent to ${phoneMasked}` : 'Confirm your phone'}
-        centered
-        footer={
-          <Pressable
-            onPress={() => void sendOtp()}
-            disabled={otpCooldown > 0 || otpSending}
-            style={styles.linkWrap}>
-            <Text style={[styles.link, (otpCooldown > 0 || otpSending) && styles.linkMuted]}>
-              {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend Code'}
-            </Text>
-          </Pressable>
-        }>
-        <OtpUnderlineInput
-          value={otpCode}
-          onChange={setOtpCode}
-          editable={!otpVerifying && !authenticating}
-        />
-        <View style={styles.timerRow}>
-          <Text style={styles.timerLabel}>Code valid for </Text>
-          <Ionicons name="time-outline" size={14} color={theme.muted} />
-          <Text style={styles.timerValue}> {formatCountdown(otpExpires)}</Text>
-        </View>
-        {otpTicket ? <Text style={styles.ok}>Phone verified ✓</Text> : null}
-        {error ? (
-          <Animated.Text entering={FadeIn} style={styles.error}>
-            {error}
-          </Animated.Text>
-        ) : null}
-        <View style={styles.verifyWrap}>
-          <PrimaryButton
-            label="Verify"
-            loading={otpVerifying || authenticating || otpSending}
-            onPress={() => void verifyAndSubmit()}
-          />
-        </View>
-        <Pressable
-          onPress={() => {
-            setPhase('form');
-            setStep(2);
-          }}
-          style={styles.backForm}>
-          <Text style={styles.linkMuted}>Back to coverage</Text>
-        </Pressable>
-      </AuthShell>
-    );
-  }
-
   return (
     <AuthShell
-      title="Create account"
-      subtitle={`${STEPS[step]} · ${progress}`}
+      title={step === 0 ? 'Company information' : 'Government & business'}
+      subtitle={
+        step === 0
+          ? 'Tell us about your registered carrier company and where you operate.'
+          : 'Verify BRELA, TIN, licences, and accept HAUL policies.'
+      }
+      stepLabel={`Step ${step + 1} of ${STEPS.length}`}
       footer={
         step > 0 ? (
           <Pressable onPress={() => setStep(step - 1)} style={styles.linkWrap}>
-            <Text style={styles.link}>Previous step</Text>
+            <Text style={styles.link}>Back</Text>
           </Pressable>
         ) : (
           <Pressable onPress={() => router.replace('/login')} style={styles.linkWrap}>
@@ -352,30 +254,42 @@ export default function RegisterScreen() {
           </Pressable>
         )
       }>
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${((step + 1) / STEPS.length) * 100}%` }]} />
-      </View>
+      <StepProgress steps={STEPS} active={step} />
 
       {step === 0 && (
         <>
           <Field
-            label="Company name"
+            label="Registered company name"
             value={companyName}
             onChangeText={setCompanyName}
             error={fieldErrors.companyName}
           />
+          <Field label="Trading name" value={tradingName} onChangeText={setTradingName} hint="Optional DBA / brand name." />
           <Field
-            label="Trading name (optional)"
-            value={tradingName}
-            onChangeText={setTradingName}
-          />
-          <Field
-            label="Email"
+            label="Business email"
             autoCapitalize="none"
             keyboardType="email-address"
             value={email}
             onChangeText={setEmail}
             error={fieldErrors.email}
+            hint="Used to sign in."
+          />
+          <Field
+            label="Password"
+            secureTextEntry
+            secureToggle
+            value={password}
+            onChangeText={setPassword}
+            error={fieldErrors.password}
+            hint="At least 8 characters with a letter and a number."
+          />
+          <Field
+            label="Confirm password"
+            secureTextEntry
+            secureToggle
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            error={fieldErrors.confirmPassword}
           />
           <Field
             label="Phone"
@@ -383,40 +297,82 @@ export default function RegisterScreen() {
             value={phone}
             onChangeText={setPhone}
             error={fieldErrors.phone}
+            hint="+255 / 07XX — we’ll SMS a real OTP next."
           />
           <Field
-            label="Contact person"
+            label="Region"
+            value={region}
+            onChangeText={setRegion}
+            error={fieldErrors.region}
+            placeholder="e.g. Dar es Salaam"
+          />
+          <Field
+            label="District"
+            value={district}
+            onChangeText={setDistrict}
+            error={fieldErrors.district}
+            placeholder="e.g. Ilala"
+          />
+          <Field
+            label="Physical address"
+            value={physicalAddress}
+            onChangeText={setPhysicalAddress}
+            error={fieldErrors.physicalAddress}
+          />
+          <Field
+            label="Company contact person"
             value={contactPerson}
             onChangeText={setContactPerson}
             error={fieldErrors.contactPerson}
           />
-          <Field label="Title (optional)" value={representativeTitle} onChangeText={setRepresentativeTitle} />
           <Field
-            label="Business email (optional)"
+            label="Title (optional)"
+            value={representativeTitle}
+            onChangeText={setRepresentativeTitle}
+          />
+          <Field
+            label="Alternate business email (optional)"
             autoCapitalize="none"
             keyboardType="email-address"
             value={businessEmail}
             onChangeText={setBusinessEmail}
-            hint="Defaults to login email."
           />
+
+          <Text style={styles.section}>Operating coverage</Text>
+          <Text style={styles.sectionHint}>
+            Used for carrier matching — regions, all Tanzania, and/or international countries.
+          </Text>
+          <CoveragePicker value={coverage} onChange={setCoverage} />
+          <Field label="Primary route from" value={routeOrigin} onChangeText={setRouteOrigin} />
           <Field
-            label="Office address"
-            value={physicalAddress}
-            onChangeText={setPhysicalAddress}
-            error={fieldErrors.physicalAddress}
+            label="Primary route to"
+            value={routeDestination}
+            onChangeText={setRouteDestination}
+            error={fieldErrors.routeDestination}
+          />
+          <Field label="Depart (HH:MM)" value={routeDepart} onChangeText={setRouteDepart} />
+          <Field
+            label="Capacity (kg)"
+            keyboardType="numeric"
+            value={cargoCapacityKg}
+            onChangeText={setCargoCapacityKg}
           />
         </>
       )}
 
       {step === 1 && (
         <>
+          <Text style={styles.sectionHint}>
+            Clear scans of BRELA, TIN, and licences speed up HAUL review. Transport permits (LATRA)
+            are optional if not applicable.
+          </Text>
           <Field
             label="BRELA number"
             value={brelaNumber}
             onChangeText={setBrelaNumber}
             error={fieldErrors.brelaNumber}
           />
-          <Field label="TIN / TRA" value={tin} onChangeText={setTin} error={fieldErrors.tin} />
+          <Field label="TIN" value={tin} onChangeText={setTin} error={fieldErrors.tin} />
           <Field
             label="Business licence number"
             value={businessLicence}
@@ -424,7 +380,7 @@ export default function RegisterScreen() {
             error={fieldErrors.businessLicence}
           />
           <Field
-            label="LATRA licence (if any)"
+            label="Transport permit / LATRA (if any)"
             value={latraLicence}
             onChangeText={setLatraLicence}
           />
@@ -443,39 +399,30 @@ export default function RegisterScreen() {
           <PrimaryButton
             label={
               gpsLatitude != null
-                ? `GPS ✓ ${gpsLatitude.toFixed(4)}, ${gpsLongitude?.toFixed(4)}`
+                ? `GPS saved · ${gpsLatitude.toFixed(4)}, ${gpsLongitude?.toFixed(4)}`
                 : 'Capture office GPS'
             }
             variant="outline"
             onPress={() => void captureGps()}
           />
           <View style={styles.gap} />
-          <Text style={styles.hint}>Required documents</Text>
-          <DocButton label="BRELA certificate" docKey="brelaCert" required />
-          <DocButton label="TIN certificate" docKey="tinCert" required />
-          <DocButton label="Business licence" docKey="businessLicence" required />
-          <DocButton label="LATRA licence" docKey="latraLicence" />
-          <DocButton label="Representative ID" docKey="repId" required />
-        </>
-      )}
+          <Text style={styles.section}>Required documents</Text>
+          <DocButton
+            label="BRELA certificate"
+            docKey="brelaCert"
+            required
+            hint="Company registration extract"
+          />
+          <DocButton label="TIN certificate" docKey="tinCert" required hint="TRA TIN certificate" />
+          <DocButton
+            label="Business licence"
+            docKey="businessLicence"
+            required
+            hint="Municipal / BRELA licence"
+          />
+          <DocButton label="LATRA / transport permit" docKey="latraLicence" hint="If you hold one" />
+          <DocButton label="Representative ID" docKey="repId" required hint="NIDA or passport" />
 
-      {step === 2 && (
-        <>
-          <CoveragePicker value={coverage} onChange={setCoverage} />
-          <Field label="Route from" value={routeOrigin} onChangeText={setRouteOrigin} />
-          <Field
-            label="Route to"
-            value={routeDestination}
-            onChangeText={setRouteDestination}
-            error={fieldErrors.routeDestination}
-          />
-          <Field label="Depart (HH:MM)" value={routeDepart} onChangeText={setRouteDepart} />
-          <Field
-            label="Capacity (kg)"
-            keyboardType="numeric"
-            value={cargoCapacityKg}
-            onChangeText={setCargoCapacityKg}
-          />
           <Pressable
             onPress={() => setTermsAccepted((v) => !v)}
             style={styles.termsRow}
@@ -485,7 +432,7 @@ export default function RegisterScreen() {
               {termsAccepted ? <Text style={styles.checkMark}>✓</Text> : null}
             </View>
             <Text style={styles.termsText}>
-              I agree to{' '}
+              I agree to the{' '}
               <Text style={styles.termsLink} onPress={() => void Linking.openURL(TERMS_URL)}>
                 Terms of Service
               </Text>{' '}
@@ -500,14 +447,14 @@ export default function RegisterScreen() {
       )}
 
       {error ? (
-        <Animated.Text entering={FadeIn} style={styles.error}>
+        <Animated.Text entering={FadeIn} style={styles.error} accessibilityLiveRegion="polite">
           {error}
         </Animated.Text>
       ) : null}
 
       <PrimaryButton
-        label={step === STEPS.length - 1 ? 'Continue' : 'Continue'}
-        loading={authenticating}
+        label={step === 0 ? 'Continue' : 'Submit & verify phone'}
+        loading={authenticating || submitting}
         onPress={next}
       />
     </AuthShell>
@@ -515,68 +462,60 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  progressTrack: {
-    height: 4,
-    borderRadius: 99,
-    backgroundColor: theme.tile,
-    marginBottom: 16,
-    overflow: 'hidden',
-  },
-  progressFill: { height: '100%', backgroundColor: theme.ink },
-  hint: {
+  section: {
     fontFamily: typography.semibold,
     fontSize: 13,
     color: theme.ink,
-    marginBottom: 10,
-    marginTop: 4,
+    marginBottom: 8,
+    marginTop: 8,
   },
-  error: { color: theme.danger, marginBottom: 12, fontFamily: typography.semibold, fontSize: 13 },
-  ok: { color: theme.success, marginBottom: 12, fontFamily: typography.semibold, fontSize: 13, textAlign: 'center' },
+  sectionHint: {
+    fontFamily: typography.body,
+    fontSize: 13,
+    lineHeight: 19,
+    color: theme.muted,
+    marginBottom: 12,
+  },
+  error: { color: theme.danger, marginBottom: 12, fontFamily: typography.semibold, fontSize: 13, lineHeight: 18 },
   gap: { height: 10 },
   linkWrap: { marginTop: 4, alignItems: 'center' },
-  link: { color: theme.ink, fontFamily: typography.bold, fontSize: 14 },
-  linkMuted: { color: theme.muted, fontFamily: typography.body, fontSize: 14 },
+  link: { color: theme.accent, fontFamily: typography.bold, fontSize: 14 },
   muted: { color: theme.muted, fontFamily: typography.body, fontSize: 14 },
   docRow: {
-    backgroundColor: theme.tile,
-    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: theme.radius.md,
     padding: 12,
     marginBottom: 10,
+    backgroundColor: theme.white,
   },
   docMeta: { marginBottom: 8 },
   docLabel: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  docName: { fontFamily: typography.body, fontSize: 12, color: theme.muted, marginTop: 2 },
+  docHint: { fontFamily: typography.body, fontSize: 12, color: theme.muted, marginTop: 2 },
+  docName: { fontFamily: typography.body, fontSize: 12, color: theme.muted, marginTop: 4 },
   docActions: { flexDirection: 'row', gap: 8 },
   docBtn: {
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: theme.white,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.tile,
   },
   docBtnText: { fontFamily: typography.semibold, fontSize: 12, color: theme.ink },
-  termsRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start', marginBottom: 14, marginTop: 4 },
+  termsRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start', marginBottom: 14, marginTop: 8 },
   checkbox: {
     width: 22,
     height: 22,
     borderRadius: 6,
     borderWidth: 1.5,
-    borderColor: theme.line,
+    borderColor: theme.border,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,
   },
-  checkboxOn: { backgroundColor: theme.ink, borderColor: theme.ink },
-  checkMark: { color: theme.primary, fontFamily: typography.bold, fontSize: 12 },
+  checkboxOn: { backgroundColor: theme.accent, borderColor: theme.accent },
+  checkMark: { color: theme.white, fontFamily: typography.bold, fontSize: 12 },
   termsText: { flex: 1, fontFamily: typography.body, fontSize: 14, lineHeight: 21, color: theme.ink },
-  termsLink: { fontFamily: typography.bold, textDecorationLine: 'underline' },
-  timerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 18,
-  },
-  timerLabel: { fontFamily: typography.body, fontSize: 13, color: theme.muted },
-  timerValue: { fontFamily: typography.semibold, fontSize: 13, color: theme.ink },
-  verifyWrap: { alignSelf: 'center', width: '78%', minWidth: 180 },
-  backForm: { marginTop: 16, alignItems: 'center' },
+  termsLink: { fontFamily: typography.semibold, color: theme.accent, textDecorationLine: 'underline' },
 });

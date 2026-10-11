@@ -115,7 +115,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 8,
   },
-  badgeOfferText: { fontFamily: typography.bold, fontSize: 11, color: theme.primary },
+  badgeOfferText: { fontFamily: typography.bold, fontSize: 11, color: theme.accent },
   dest: {
     marginTop: 8,
     fontFamily: typography.semibold,

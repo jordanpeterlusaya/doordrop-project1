@@ -2,7 +2,8 @@ import { apiBaseUrl } from '@/lib/api-config';
 
 type ApiError = Error & { statusCode?: number; code?: string };
 
-export type OtpPurpose = 'signup' | 'login';
+/** signup = registration; login = phone custom-token sign-in; confirm = post email-login phone verify */
+export type OtpPurpose = 'signup' | 'login' | 'confirm';
 
 async function postJson<T>(path: string, body: Record<string, unknown>, token?: string): Promise<T> {
   const headers: Record<string, string> = {
@@ -33,12 +34,14 @@ async function postJson<T>(path: string, body: Record<string, unknown>, token?: 
 }
 
 export async function sendCarrierOtp(phone: string, purpose: OtpPurpose = 'signup') {
+  // Backend accepts signup | login; confirm uses signup semantics for SMS template.
+  const apiPurpose = purpose === 'confirm' ? 'signup' : purpose;
   return postJson<{
     ok: boolean;
     cooldownSeconds: number;
     expiresInSeconds: number;
     phoneMasked: string;
-  }>('/carrier-auth/otp/send', { phone, purpose });
+  }>('/carrier-auth/otp/send', { phone, purpose: apiPurpose });
 }
 
 export async function verifyCarrierOtp(phone: string, code: string) {

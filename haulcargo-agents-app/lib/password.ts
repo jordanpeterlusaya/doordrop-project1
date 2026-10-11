@@ -1,12 +1,12 @@
 export function validatePassword(password: string): string | null {
-  if (password.length < 8) return 'Nenosiri liwe angalau herufi 8.';
-  if (!/[A-Za-z]/.test(password)) return 'Nenosiri liwe na herufi angalau moja.';
-  if (!/\d/.test(password)) return 'Nenosiri liwe na namba angalau moja.';
+  if (password.length < 8) return 'Password must be at least 8 characters.';
+  if (!/[A-Za-z]/.test(password)) return 'Password must include at least one letter.';
+  if (!/\d/.test(password)) return 'Password must include at least one number.';
   return null;
 }
 
 export function passwordsMatch(password: string, confirm: string): string | null {
-  if (password !== confirm) return 'Nenosiri halifanani.';
+  if (password !== confirm) return 'Passwords do not match.';
   return null;
 }
 

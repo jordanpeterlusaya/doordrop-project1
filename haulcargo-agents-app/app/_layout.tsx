@@ -69,6 +69,7 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  canvas: { flex: 1, backgroundColor: '#F7F7F5' },
-  stack: { backgroundColor: '#F7F7F5' },
+  canvas: { flex: 1, backgroundColor: '#FFFFFF' },
+  stack: { backgroundColor: '#FFFFFF' },
 });
+

@@ -158,7 +158,7 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     backgroundColor: theme.tile,
     borderWidth: 2,
-    borderColor: theme.primary,
+    borderColor: theme.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   statusPillOk: { backgroundColor: '#ECFDF5' },
-  statusPillWait: { backgroundColor: theme.primarySoft },
+  statusPillWait: { backgroundColor: theme.accentSoft },
   statusPillText: {
     fontFamily: typography.semibold,
     fontSize: 12,

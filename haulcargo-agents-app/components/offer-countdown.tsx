@@ -31,14 +31,14 @@ export function OfferCountdown({ shipment }: { shipment: CarrierShipment }) {
 
 const styles = StyleSheet.create({
   box: {
-    backgroundColor: theme.primarySoft,
+    backgroundColor: theme.accentSoft,
     borderRadius: 14,
     padding: 12,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: theme.primary,
+    borderColor: theme.accent,
   },
-  urgent: { borderColor: theme.warning, backgroundColor: theme.primarySoft },
+  urgent: { borderColor: theme.warning, backgroundColor: '#FFFBEB' },
   expired: { borderColor: theme.muted, backgroundColor: theme.tile },
   label: {
     fontSize: 12,
