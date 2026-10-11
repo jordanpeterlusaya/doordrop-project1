@@ -14,6 +14,8 @@ const mamboSmsApiToken = defineString('MAMBO_SMS_API_TOKEN', { default: '' });
 const mamboSmsSenderId = defineString('MAMBO_SMS_SENDER_ID', { default: '' });
 const mamboSmsBaseUrl = defineString('MAMBO_SMS_BASE_URL', { default: '' });
 const mamboSmsMobileFormat = defineString('MAMBO_SMS_MOBILE_FORMAT', { default: '255' });
+// TEMP: set true in backend/.env until Mambo Sender ID is approved; then false + redeploy.
+const carrierOtpBypassEnabled = defineString('CARRIER_OTP_BYPASS_ENABLED', { default: '' });
 
 let firestore = null;
 let cachedRequestListener = null;
@@ -150,8 +152,10 @@ function applyRuntimeSecrets() {
   applyParam('MAMBO_SMS_SENDER_ID', mamboSmsSenderId);
   applyParam('MAMBO_SMS_BASE_URL', mamboSmsBaseUrl);
   applyParam('MAMBO_SMS_MOBILE_FORMAT', mamboSmsMobileFormat);
+  applyParam('CARRIER_OTP_BYPASS_ENABLED', carrierOtpBypassEnabled);
 
-  // Production must never honor OTP bypass; strip if somehow injected.
+  // Emulator-only OTP shortcut must never run in production Functions.
+  // CARRIER_OTP_BYPASS_ENABLED is a separate temporary flag (Mambo Sender ID) — do not strip it here.
   if (process.env.FUNCTIONS_EMULATOR !== 'true' && !process.env.FIRESTORE_EMULATOR_HOST) {
     delete process.env.SMS_OTP_ALLOW_DEV;
   }

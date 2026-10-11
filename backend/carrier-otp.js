@@ -62,6 +62,20 @@ function allowDevWithoutSms() {
   return isEmulator() && String(process.env.SMS_OTP_ALLOW_DEV || '').trim() === '1';
 }
 
+/**
+ * Temporary production bypass while Mambo Sender ID (e.g. HAUL) awaits approval.
+ * Set CARRIER_OTP_BYPASS_ENABLED=true (or OTP_BYPASS_ENABLED=true) to accept any
+ * 4–8 digit code and skip real SMS delivery. MUST be disabled once Sender ID is live.
+ */
+function isOtpBypassEnabled() {
+  const raw = String(
+    process.env.CARRIER_OTP_BYPASS_ENABLED || process.env.OTP_BYPASS_ENABLED || ''
+  )
+    .trim()
+    .toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 async function readJsonBody(req) {
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     return req.body;
@@ -102,7 +116,8 @@ async function handleSendOtp(req) {
   if (!phone) throw badRequest('Weka namba ya simu sahihi.', 'invalid_phone');
 
   const purpose = String(body.purpose || 'signup').trim().toLowerCase() || 'signup';
-  if (!smsConfigured() && !allowDevWithoutSms()) {
+  const otpBypass = isOtpBypassEnabled();
+  if (!smsConfigured() && !allowDevWithoutSms() && !otpBypass) {
     throw serviceUnavailable(
       'Huduma ya SMS haijawekwa. Wasiliana na HAUL.',
       'sms_not_configured'
@@ -157,19 +172,19 @@ async function handleSendOtp(req) {
 
   let sent = false;
   let provider = 'none';
-  if (smsConfigured()) {
+  if (smsConfigured() && !otpBypass) {
     try {
       const result = await sendSms(phone, message, { purpose: 'carrier_otp', event: 'otp' });
       sent = true;
       provider = result.provider;
       console.info('carrier-otp sent', { toMasked: maskPhone(phone), provider, purpose });
     } catch (error) {
-      const code = String(error?.code || '');
+      const errCode = String(error?.code || '');
       const raw = String(error?.causeDetail || error?.message || '');
       console.warn('carrier-otp send failed', {
         toMasked: maskPhone(phone),
         purpose,
-        code: code || undefined,
+        code: errCode || undefined,
         reason: raw.slice(0, 160),
       });
       if (Number.isInteger(error?.statusCode) && error.message && !/^mambo_\d+/.test(error.message)) {
@@ -177,9 +192,17 @@ async function handleSendOtp(req) {
       }
       throw serviceUnavailable(
         'Imeshindwa kutuma msimbo wa OTP. Hakikisha Sender ID imeidhinishwa kwenye Mambo SMS, kisha jaribu tena.',
-        code || 'sms_send_failed'
+        errCode || 'sms_send_failed'
       );
     }
+  } else if (otpBypass) {
+    // TEMP: Mambo Sender ID not approved — skip SMS; verify accepts any code.
+    console.warn('carrier-otp bypass send (SMS skipped)', {
+      toMasked: maskPhone(phone),
+      purpose,
+      flag: 'CARRIER_OTP_BYPASS_ENABLED',
+    });
+    provider = 'bypass';
   } else if (allowDevWithoutSms()) {
     // Emulator-only path: code is never logged.
     console.info('carrier-otp queued emulator', { toMasked: maskPhone(phone), purpose });
@@ -194,6 +217,10 @@ async function handleSendOtp(req) {
     expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
     phoneMasked: maskPhone(phone),
   };
+
+  if (otpBypass) {
+    payload.otpBypass = true;
+  }
 
   // Never include the code except on the Firebase emulator with explicit opt-in.
   if (allowDevWithoutSms() && !smsConfigured()) {
@@ -210,6 +237,7 @@ async function handleVerifyOtp(req) {
   if (!phone) throw badRequest('Weka namba ya simu sahihi.', 'invalid_phone');
   if (code.length < 4 || code.length > 8) throw badRequest('Msimbo si sahihi.', 'invalid_code');
 
+  const otpBypass = isOtpBypassEnabled();
   const db = getDb();
   const id = sessionIdForPhone(phone);
   const ref = db.collection('carrierOtpSessions').doc(id);
@@ -225,11 +253,16 @@ async function handleVerifyOtp(req) {
     throw tooMany('Jaribio nyingi. Omba msimbo mpya.', 'too_many_attempts');
   }
 
-  const expected = String(session.codeHash || '');
-  const candidate = hashValue(code, String(session.salt || ''));
-  if (candidate !== expected) {
-    await ref.set({ attempts: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    throw badRequest('Msimbo si sahihi.', 'invalid_code');
+  if (!otpBypass) {
+    const expected = String(session.codeHash || '');
+    const candidate = hashValue(code, String(session.salt || ''));
+    if (candidate !== expected) {
+      await ref.set(
+        { attempts: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      throw badRequest('Msimbo si sahihi.', 'invalid_code');
+    }
   }
 
   const otpTicket = randomTicket();
@@ -243,17 +276,22 @@ async function handleVerifyOtp(req) {
       codeHash: FieldValue.delete(),
       salt: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
+      ...(otpBypass ? { verifiedViaBypass: true } : {}),
     },
     { merge: true }
   );
 
-  console.info('carrier-otp verified', { toMasked: maskPhone(phone) });
+  console.info('carrier-otp verified', {
+    toMasked: maskPhone(phone),
+    bypass: otpBypass || undefined,
+  });
 
   return {
     ok: true,
     otpTicket,
     expiresInSeconds: Math.floor(TICKET_TTL_MS / 1000),
     phoneMasked: maskPhone(phone),
+    ...(otpBypass ? { otpBypass: true } : {}),
   };
 }
 

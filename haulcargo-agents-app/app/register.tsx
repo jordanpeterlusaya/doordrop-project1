@@ -197,6 +197,7 @@ export default function RegisterScreen() {
           phoneMasked: result.phoneMasked,
           cooldown: String(result.cooldownSeconds || 60),
           expires: String(result.expiresInSeconds || 300),
+          ...(result.otpBypass ? { otpBypass: '1' } : {}),
         },
       });
     } catch (e) {

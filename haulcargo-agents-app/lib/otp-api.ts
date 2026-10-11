@@ -41,6 +41,8 @@ export async function sendCarrierOtp(phone: string, purpose: OtpPurpose = 'signu
     cooldownSeconds: number;
     expiresInSeconds: number;
     phoneMasked: string;
+    /** Present when server CARRIER_OTP_BYPASS_ENABLED is on (Mambo Sender ID pending). */
+    otpBypass?: boolean;
   }>('/carrier-auth/otp/send', { phone, purpose: apiPurpose });
 }
 
@@ -50,6 +52,7 @@ export async function verifyCarrierOtp(phone: string, code: string) {
     otpTicket: string;
     expiresInSeconds: number;
     phoneMasked: string;
+    otpBypass?: boolean;
   }>('/carrier-auth/otp/verify', { phone, code });
 }
 

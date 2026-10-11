@@ -94,6 +94,7 @@ export default function LoginScreen() {
             cooldown: String(result.cooldownSeconds || 60),
             expires: String(result.expiresInSeconds || 300),
             carrierId,
+            ...(result.otpBypass ? { otpBypass: '1' } : {}),
           },
         });
       } catch (e) {

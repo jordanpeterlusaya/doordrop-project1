@@ -31,6 +31,7 @@ export default function OtpScreen() {
     cooldown?: string;
     expires?: string;
     carrierId?: string;
+    otpBypass?: string;
   }>();
   const { signInWithPhoneOtp, signUp, authenticating, user, carrier, needsCompanySetup } =
     useCarrierSession();
@@ -41,6 +42,9 @@ export default function OtpScreen() {
   const [phoneMasked, setPhoneMasked] = useState(String(params.phoneMasked || ''));
   const [cooldown, setCooldown] = useState(Number(params.cooldown || 60) || 60);
   const [expiresIn, setExpiresIn] = useState(Number(params.expires || 300) || 300);
+  const [otpBypass, setOtpBypass] = useState(
+    params.otpBypass === '1' || params.otpBypass === 'true'
+  );
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [verifying, setVerifying] = useState(false);
@@ -70,6 +74,7 @@ export default function OtpScreen() {
         setPhoneMasked(result.phoneMasked);
         setCooldown(result.cooldownSeconds || 60);
         setExpiresIn(result.expiresInSeconds || 300);
+        if (result.otpBypass) setOtpBypass(true);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : 'Could not send verification SMS.');
@@ -221,6 +226,7 @@ export default function OtpScreen() {
       setPhoneMasked(result.phoneMasked);
       setCooldown(result.cooldownSeconds || 60);
       setExpiresIn(result.expiresInSeconds || 300);
+      if (result.otpBypass) setOtpBypass(true);
       setCode('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not resend.');
@@ -245,24 +251,30 @@ export default function OtpScreen() {
     <AuthShell
       title="Verify your phone"
       subtitle={
-        phoneMasked
-          ? `Enter the 6-digit code sent to ${phoneMasked}`
-          : 'Enter the 6-digit code from SMS'
+        otpBypass
+          ? phoneMasked
+            ? `SMS is temporarily unavailable. Enter any 6-digit code for ${phoneMasked}`
+            : 'SMS is temporarily unavailable. Enter any 6-digit code to continue'
+          : phoneMasked
+            ? `Enter the 6-digit code sent to ${phoneMasked}`
+            : 'Enter the 6-digit code from SMS'
       }
       centered
       stepLabel={purpose === 'signup' ? 'Phone verification' : undefined}
       onBack={changePhone}
       footer={
         <View style={styles.footerCol}>
-          <Pressable
-            onPress={() => void resend()}
-            disabled={cooldown > 0 || resending}
-            style={styles.resendWrap}
-            accessibilityRole="button">
-            <Text style={[styles.resend, (cooldown > 0 || resending) && styles.resendDisabled]}>
-              {cooldown > 0 ? `Resend code in ${cooldown}s` : resending ? 'Sending…' : 'Resend code'}
-            </Text>
-          </Pressable>
+          {!otpBypass ? (
+            <Pressable
+              onPress={() => void resend()}
+              disabled={cooldown > 0 || resending}
+              style={styles.resendWrap}
+              accessibilityRole="button">
+              <Text style={[styles.resend, (cooldown > 0 || resending) && styles.resendDisabled]}>
+                {cooldown > 0 ? `Resend code in ${cooldown}s` : resending ? 'Sending…' : 'Resend code'}
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable onPress={changePhone} style={styles.changePhone} accessibilityRole="button">
             <Text style={styles.changePhoneText}>Change phone number</Text>
           </Pressable>
@@ -270,9 +282,11 @@ export default function OtpScreen() {
       }>
       <OtpUnderlineInput value={code} onChange={setCode} editable={!verifying && !authenticating} />
 
-      <Text style={styles.timer}>
-        Code expires in {formatCountdown(expiresIn)}
-      </Text>
+      {otpBypass ? (
+        <Text style={styles.bypassNote}>SMS delivery will resume after Sender ID approval.</Text>
+      ) : (
+        <Text style={styles.timer}>Code expires in {formatCountdown(expiresIn)}</Text>
+      )}
 
       {success ? (
         <Animated.Text entering={FadeIn} style={styles.success}>
@@ -302,6 +316,14 @@ const styles = StyleSheet.create({
     color: theme.muted,
     textAlign: 'center',
     marginBottom: 16,
+  },
+  bypassNote: {
+    fontFamily: typography.body,
+    fontSize: 12,
+    color: theme.muted,
+    textAlign: 'center',
+    marginBottom: 16,
+    lineHeight: 17,
   },
   error: {
     color: theme.danger,
