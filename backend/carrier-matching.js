@@ -695,6 +695,21 @@ async function syncCarrierShipment(db, orderId, before, after) {
     await maybeNotifyRecipientOnShipmentChange(db, orderId, before, after);
   } catch (error) {
     console.error('carrier recipient SMS hook failed', orderId, error?.message || error);
+    const afterStep = normalize(after?.trackStep);
+    const becameArrived = beforeStatus !== 'arrived' && (afterStatus === 'arrived' || afterStep === 'arrived');
+    if (becameArrived) {
+      try {
+        await db.collection('carrierShipments').doc(orderId).set(
+          {
+            arrivalSmsError: String(error?.message || 'Imeshindwa kutuma SMS.').slice(0, 180),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (writeError) {
+        console.error('carrier arrival SMS error write failed', orderId, writeError?.message || writeError);
+      }
+    }
   }
 
   const rejectedOrReleased = beforeStatus === 'assigned' && afterStatus === 'matching' && !after.carrierId;

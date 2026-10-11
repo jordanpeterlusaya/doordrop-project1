@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 
 import { DESK_RAIL, type CarrierShipment } from '@/lib/carrier-types';
+import { markShipmentArrived } from '@/lib/carrier-arrive-api';
 import { darTodayKey, deskIndex, offerExpiresMs } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 
@@ -90,12 +91,12 @@ export async function advanceDeskStep(
   const current = { id: shipmentId, ...snap.data() } as CarrierShipment;
   if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
   if (stepKey === 'handed' || stepKey === 'delivered') {
-    throw new Error('Imekabidhiwa inahitaji uthibitisho.');
+    throw new Error('Hatua hii haiwezi tena.');
   }
   const nowKey = DESK_RAIL.find((_, index) => index === deskIndex(current))?.key || '';
   if (!nowKey || FORWARD[nowKey] !== stepKey) throw new Error('Hatua moja tu mbele.');
   const step = DESK_RAIL.find((item) => item.key === stepKey);
-  if (!step || step.key === 'handed') throw new Error('Hatua haijulikani.');
+  if (!step) throw new Error('Hatua haijulikani.');
 
   const patch: Record<string, unknown> = {
     trackStep: step.key,
@@ -108,7 +109,10 @@ export async function advanceDeskStep(
     }),
   };
   if (step.key === 'packed') patch.pickedUpAt = serverTimestamp();
-  if (step.key === 'arrived') patch.arrivedAt = serverTimestamp();
+  if (step.key === 'arrived') {
+    await markShipmentArrived(shipmentId);
+    return;
+  }
   await updateDoc(ref, patch);
   if (step.key === 'packed') await updateDoc(doc(db, 'carriers', carrierId), { pickups: increment(1) });
 }

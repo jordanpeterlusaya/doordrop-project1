@@ -39,6 +39,7 @@ const {
   handleDeliveryProofUpload,
   handleSendDeliveryOtp,
 } = require('./carrier-delivery-proof');
+const { handleMarkArrived } = require('./carrier-arrive');
 
 function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -614,6 +615,7 @@ async function requestListener(req, res) {
             'POST /carrier/delivery-proof/otp/send',
             'POST /carrier/delivery-proof/upload',
             'POST /carrier/delivery-proof/complete',
+            'POST /carrier/shipments/arrive',
             'POST /driver-payments/webhook/mongike',
           ],
         },
@@ -762,6 +764,15 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/carrier/delivery-proof/complete') {
       const payload = await handleCompleteDeliveryProof(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/shipments/arrive') {
+      const { getFirestore } = require('firebase-admin/firestore');
+      const { ensureFirebaseAdmin } = require('./media-upload');
+      ensureFirebaseAdmin();
+      const payload = await handleMarkArrived(req, getFirestore());
       sendJson(res, 200, payload, originHeader);
       return;
     }

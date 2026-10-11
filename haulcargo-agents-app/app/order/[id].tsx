@@ -7,7 +7,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DeskRail } from '@/components/desk-rail';
 import { OfferCountdown } from '@/components/offer-countdown';
-import { ProofSheet } from '@/components/proof-sheet';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
@@ -48,7 +47,6 @@ export default function OrderDetailScreen() {
   const item = useMemo(() => shipments.find((s) => s.id === id), [shipments, id]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [proofOpen, setProofOpen] = useState(false);
   const [error, setError] = useState('');
 
   const email = user?.email || '';
@@ -121,7 +119,7 @@ export default function OrderDetailScreen() {
   };
 
   const goNext = () => {
-    if (!next || next === 'proof') return;
+    if (!next) return;
     void run(() => advanceDeskStep(item.id, carrierId, next.key, email));
   };
 
@@ -140,12 +138,9 @@ export default function OrderDetailScreen() {
   if (liveOffer) {
     primaryLabel = 'Kubali';
     primaryPress = () => void run(() => acceptOffer(item.id, carrierId, email));
-  } else if (next && next !== 'proof') {
-    primaryLabel = next.label;
+  } else if (next) {
+    primaryLabel = next.key === 'arrived' ? 'Weka imefika' : next.label;
     primaryPress = goNext;
-  } else if (next === 'proof') {
-    primaryLabel = 'Imekabidhiwa';
-    primaryPress = () => setProofOpen(true);
   } else if (canRequestPay) {
     primaryLabel = 'Lipa kamisheni';
     primaryPress = payCommission;
@@ -228,7 +223,7 @@ export default function OrderDetailScreen() {
           </Pressable>
         ) : null}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error || item.arrivalSmsError ? <Text style={styles.error}>{error || item.arrivalSmsError}</Text> : null}
       </ScrollView>
 
       {primaryLabel ? (
@@ -236,15 +231,6 @@ export default function OrderDetailScreen() {
           <PrimaryButton label={primaryLabel} loading={busy} onPress={primaryPress} />
           {liveOffer ? <PrimaryButton label="Kataa" variant="outline" disabled={busy} onPress={confirmReject} /> : null}
         </View>
-      ) : null}
-
-      {proofOpen ? (
-        <ProofSheet
-          shipmentId={item.id}
-          recipientPhone={item.recipientPhone}
-          onClose={() => setProofOpen(false)}
-          onDone={() => setProofOpen(false)}
-        />
       ) : null}
     </View>
   );

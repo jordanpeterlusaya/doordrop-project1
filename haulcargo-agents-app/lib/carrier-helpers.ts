@@ -88,7 +88,7 @@ export function trackLabel(stepKey: string) {
   return step?.label || stepKey;
 }
 
-/** Index on the five-step desk rail. Pickup mode does not move this. */
+/** Index on the desk rail. Imefika is the last step. Pickup mode does not move this. */
 export function deskIndex(item: CarrierShipment) {
   const step = String(item.trackStep || '');
   if (step === 'handed' || item.shipmentStatus === 'delivered') return 4;
@@ -112,21 +112,19 @@ function railAt(index: number) {
 }
 
 export function deskStatusLabel(item: CarrierShipment) {
+  if (isDelivered(item) || item.shipmentStatus === 'arrived' || item.trackStep === 'arrived') return 'Imefika';
   const step = railAt(deskIndex(item));
   if (step) return step.label;
   if (item.shipmentStatus === 'assigned') return 'Oda mpya';
   return item.shipmentStatus;
 }
 
-/** Next forward step, or proof once the desk is on Imefika. Never skips. */
+/** Next forward step. Imefika is the last action the company can take. */
 export function nextDeskStep(item: CarrierShipment) {
   if (isDelivered(item)) return null;
   const index = deskIndex(item);
   if (index < 0) return null;
-  if (index >= 3) return 'proof' as const;
-  const next = railAt(index + 1);
-  if (!next || next.key === 'handed') return 'proof' as const;
-  return next;
+  return railAt(index + 1) || null;
 }
 
 export function carrierStatusLabel(status?: string) {

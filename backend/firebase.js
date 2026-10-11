@@ -283,12 +283,13 @@ exports.onCarrierShipmentRematch = onDocumentUpdated(
     document: 'carrierShipments/{orderId}',
     region: 'us-central1',
     retry: false,
-    timeoutSeconds: 30,
+    timeoutSeconds: 60,
     memory: '256MiB',
     minInstances: 0,
     maxInstances: 10,
   },
   async (event) => {
+    applyRuntimeSecrets();
     const before = event.data?.before?.data() || null;
     const after = event.data?.after?.data() || null;
     if (!after) return;

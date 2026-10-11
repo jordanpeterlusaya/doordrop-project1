@@ -105,15 +105,16 @@ export type CarrierShipment = {
   manifestDate?: string;
   declaredValueTzs?: number;
   recipientSmsEvents?: Array<{ event?: string; jobId?: string; at?: string; status?: string }>;
+  senderSmsEvents?: Array<{ event?: string; jobId?: string; at?: string; status?: string }>;
+  arrivalSmsError?: string;
 };
 
-/** Desk rail. Keys stay the ones the customer app and SMS already read. */
+/** Desk rail stops at Imefika. Keys stay the ones the customer app and SMS already read. */
 export const DESK_RAIL = [
   { key: 'received', label: 'Imekubaliwa', status: 'accepted' },
   { key: 'packed', label: 'Imepokelewa', status: 'picked_up' },
   { key: 'transit', label: 'Imetumwa', status: 'in_transit' },
   { key: 'arrived', label: 'Imefika', status: 'arrived' },
-  { key: 'handed', label: 'Imekabidhiwa', status: 'delivered' },
 ] as const;
 
 export type DeskStepKey = (typeof DESK_RAIL)[number]['key'];
@@ -129,7 +130,6 @@ export const STATUS_LABEL: Record<string, string> = {
   at_bus: 'Imepokelewa',
   in_transit: 'Imetumwa',
   arrived: 'Imefika',
-  delivered: 'Imekabidhiwa',
 };
 
 export type CarrierTrip = {
