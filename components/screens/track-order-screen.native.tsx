@@ -2989,8 +2989,8 @@ export default function TrackOrderScreen() {
             <Text style={styles.placedBody}>
               {order && isBusCustomerParcel(order)
                 ? language === 'sw'
-                  ? 'Tunatafuta basi linaloenda huko. Hatua zitaonekana hapa.'
-                  : 'We are matching a bus for this route. Progress will show here.'
+                  ? 'Tunatafuta kampuni iliyopo karibu. Hatua zitaonekana hapa.'
+                  : 'Looking for a nearby company. Progress will show here.'
                 : order && isOutsideParcelOrder(order)
                   ? copy.track.outsideOrderPlacedBody
                   : copy.track.lookingDriver}

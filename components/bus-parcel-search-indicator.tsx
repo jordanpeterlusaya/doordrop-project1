@@ -84,7 +84,7 @@ export function BusParcelSearchIndicator({ accessibilityLabel }: { accessibility
     <View
       style={styles.wrap}
       accessibilityRole="image"
-      accessibilityLabel={accessibilityLabel || 'Tunatafuta basi'}>
+      accessibilityLabel={accessibilityLabel || 'Tunatafuta kampuni iliyopo karibu'}>
       <View style={styles.orbitTrack}>
         <Animated.View
           style={[
@@ -105,7 +105,7 @@ export function BusParcelSearchIndicator({ accessibilityLabel }: { accessibility
           ]}
         />
         <Animated.View style={[styles.busIcon, { opacity: busOpacity, transform: [{ scale: busScale }] }]}>
-          <MaterialCommunityIcons name="bus-side" size={30} color="#111827" />
+          <MaterialCommunityIcons name="office-building" size={30} color="#111827" />
         </Animated.View>
         <View style={styles.searchBadge}>
           <MaterialCommunityIcons name="magnify" size={14} color="#374151" />

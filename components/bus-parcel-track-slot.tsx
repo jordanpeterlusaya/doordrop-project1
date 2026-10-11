@@ -30,7 +30,8 @@ export function BusParcelTrackSlot({
   onCallPhone,
   callAccessibilityLabel,
 }: BusParcelTrackSlotProps) {
-  const searchingTitle = language === 'sw' ? 'Tunatafuta basi' : 'Matching a bus';
+  const searchingTitle =
+    language === 'sw' ? 'Tunatafuta kampuni iliyopo karibu' : 'Looking for a nearby company';
 
   if (searching) {
     return (
@@ -39,8 +40,8 @@ export function BusParcelTrackSlot({
         <Text style={styles.searchTitle}>{searchingTitle}</Text>
         <Text style={styles.searchHint}>
           {language === 'sw'
-            ? 'Tunalinganisha njia na uzito wa mzigo wako.'
-            : 'We are matching your route and parcel weight.'}
+            ? 'Tunalinganisha njia na uzito wa mzigo wako na kampuni iliyothibitishwa.'
+            : 'We are matching your route and parcel weight to a verified company.'}
         </Text>
       </View>
     );

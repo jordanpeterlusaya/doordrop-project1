@@ -112,35 +112,41 @@ export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw'
     return order.carrierPickupMode === 'haul_delivers_to_office'
       ? sw
         ? 'Mzigo unaletwa ofisini'
-        : 'Parcel is going to the bus office'
+        : 'Parcel is going to the company office'
       : sw
-        ? 'Basi linakuja kuchukua'
-        : 'The bus is coming to collect it';
+        ? 'Kampuni inakuja kuchukua'
+        : 'The company is coming to collect it';
   }
   if (step === 'received' || order.carrierMatchStatus === 'accepted') {
-    return sw ? 'Basi limekubali mzigo' : 'Bus accepted the parcel';
+    return sw ? 'Kampuni imekubali mzigo' : 'Company accepted the parcel';
   }
   if (order.carrierMatchStatus === 'offered') {
-    return route ? (sw ? `Basi limepatikana · ${route}` : `Bus matched · ${route}`) : sw ? 'Basi limepatikana' : 'Bus matched';
+    return route
+      ? sw
+        ? `Kampuni imepatikana · ${route}`
+        : `Company matched · ${route}`
+      : sw
+        ? 'Kampuni imepatikana'
+        : 'Company matched';
   }
-  return sw ? 'Tunatafuta basi' : 'Matching a bus';
+  return sw ? 'Tunatafuta kampuni iliyopo karibu' : 'Looking for a nearby company';
 }
 
 export function getBusParcelDetail(order: DeliveryOrder, language: 'en' | 'sw') {
   const sw = language === 'sw';
   const route = String(order.carrierRouteLabel || '').trim();
   if (order.carrierPickupMode === 'agent_collects') {
-    return sw ? 'Kampuni itakuja kuchukua mzigo kwako.' : 'The bus company will collect the parcel from you.';
+    return sw ? 'Kampuni itakuja kuchukua mzigo kwako.' : 'The company will collect the parcel from you.';
   }
   if (order.carrierPickupMode === 'haul_delivers_to_office') {
-    return sw ? 'Mzigo utaletwa ofisini mwa kampuni ya basi.' : 'Haul will bring the parcel to the bus office.';
+    return sw ? 'Mzigo utaletwa ofisini mwa kampuni.' : 'Haul will bring the parcel to the company office.';
   }
   if (route) {
-    return sw ? `Ratiba: ${route}.` : `Schedule: ${route}.`;
+    return sw ? `Njia: ${route}.` : `Route: ${route}.`;
   }
   return sw
-    ? 'Tunalinganisha uzito na njia na basi lililothibitishwa.'
-    : 'We are matching the weight and route to a verified bus.';
+    ? 'Tunalinganisha uzito na njia na kampuni iliyothibitishwa.'
+    : 'We are matching the weight and route to a verified company.';
 }
 
 function cityProgressIndex(status: DeliveryOrderStatus) {
