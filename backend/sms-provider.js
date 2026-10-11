@@ -53,10 +53,14 @@ function mamboToken() {
 }
 
 function mamboSenderId() {
-  // MAMBO_SENDER_ID is the switch: "MAMBO SMS" while HAUL is unapproved, then HAUL.
+  // MAMBO_SENDER_ID is the switch: MAMBO SMS while HAUL is unapproved, then HAUL.
+  // Strip wrapping quotes from .env ("MAMBO SMS") so Mambo gets the exact approved name.
   return String(
     process.env.MAMBO_SENDER_ID || process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || ''
-  ).trim();
+  )
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
 }
 
 function mamboBaseUrl() {
