@@ -100,16 +100,6 @@ export default function SettingsScreen() {
           onPress={() => router.push({ pathname: '/operation-coverage', params: { mode: 'edit' } })}
         />
         <SettingsRow
-          icon="document-text-outline"
-          title="Hati za kampuni"
-          onPress={() => router.push('/edit-documents')}
-        />
-        <SettingsRow
-          icon="bus-outline"
-          title="Uwezo na siku"
-          onPress={() => router.push('/schedule')}
-        />
-        <SettingsRow
           icon="time-outline"
           title="Historia"
           last

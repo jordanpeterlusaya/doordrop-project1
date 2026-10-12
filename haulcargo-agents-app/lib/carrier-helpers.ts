@@ -83,6 +83,21 @@ export function isDelivered(item: CarrierShipment) {
   return item.shipmentStatus === 'delivered' || item.trackStep === 'handed';
 }
 
+/** Imefika is the desk's completed state. Delivered stays included for older rows. */
+export function isCompletedShipment(item: CarrierShipment) {
+  const status = String(item.shipmentStatus || '').toLowerCase();
+  const step = String(item.trackStep || '').toLowerCase();
+  return status === 'arrived' || status === 'delivered' || step === 'arrived' || step === 'handed';
+}
+
+/** Hide Mambo balance failures from the company desk. Admin is notified separately. */
+export function agentStatusError(message?: string) {
+  const text = String(message || '').trim();
+  if (!text) return '';
+  if (/salio la sms|sms limeisha|mambo_insufficient/i.test(text)) return '';
+  return text;
+}
+
 export function trackLabel(stepKey: string) {
   const step = DESK_RAIL.find((s) => s.key === stepKey);
   return step?.label || stepKey;
@@ -212,7 +227,7 @@ export function primaryActiveJob(shipments: CarrierShipment[], carrierId: string
   const active = shipments.filter(
     (item) =>
       item.carrierId === carrierId &&
-      !isDelivered(item) &&
+      !isCompletedShipment(item) &&
       item.shipmentStatus !== 'matching' &&
       item.shipmentStatus !== 'assigned'
   );
@@ -228,7 +243,7 @@ export function inboxShipments(shipments: CarrierShipment[], carrierId: string):
     .filter((item) => {
       if (isIncomingOffer(item, carrierId)) return true;
       if (item.carrierId !== carrierId) return false;
-      if (isDelivered(item) || item.shipmentStatus === 'matching') return false;
+      if (isCompletedShipment(item) || item.shipmentStatus === 'matching') return false;
       return true;
     })
     .sort((left, right) => shipmentRecencyMs(right) - shipmentRecencyMs(left));

@@ -6,7 +6,7 @@ import { Header, Screen } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { requestCommissionPayment } from '@/lib/carrier-actions';
-import { isDelivered, money, shipmentCode } from '@/lib/carrier-helpers';
+import { isCompletedShipment, money, shipmentCode } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 function cashLine(status?: string) {
@@ -21,7 +21,7 @@ export default function FedhaScreen() {
   const carrierId = carrier?.id || '';
   const [payingId, setPayingId] = useState('');
   const delivered = useMemo(
-    () => shipments.filter((item) => item.carrierId === carrierId && isDelivered(item)),
+    () => shipments.filter((item) => item.carrierId === carrierId && isCompletedShipment(item)),
     [shipments, carrierId]
   );
 
@@ -54,15 +54,15 @@ export default function FedhaScreen() {
 
   return (
     <Screen scroll edges="top">
-      <Header title="Fedha" subtitle="Mizigo iliyokabidhiwa pekee." />
+      <Header title="Fedha" subtitle="Mizigo iliyofika." />
       <View style={styles.stats}>
         <Stat label="Mapato" value={money(totals.mapato)} />
-        <Stat label="Kamisheni" value={money(totals.kamisheni)} />
+        <Stat label="Kamisheni ya HAUL" value={money(totals.kamisheni)} />
         <Stat label="Inasubiri" value={String(totals.inasubiri)} />
       </View>
 
       {delivered.length === 0 ? (
-        <Text style={styles.empty}>Hakuna mzigo uliokabidhiwa bado.</Text>
+        <Text style={styles.empty}>Hakuna mzigo uliofika bado.</Text>
       ) : (
         delivered.map((item, index) => {
           const status = String(item.cashStatus || '').toLowerCase();
@@ -109,9 +109,11 @@ const styles = StyleSheet.create({
   },
   stat: {
     flex: 1,
-    backgroundColor: theme.tile,
-    borderRadius: 14,
-    padding: 12,
+    backgroundColor: theme.white,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
+    padding: 10,
   },
   statLabel: { fontFamily: typography.body, fontSize: 12, color: theme.muted },
   statValue: { marginTop: 6, fontFamily: typography.bold, fontSize: 14, color: theme.ink },

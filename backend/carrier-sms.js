@@ -1,5 +1,6 @@
 const { FieldValue } = require('firebase-admin/firestore');
-const { mamboSenderId, maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
+const { config } = require('./config');
+const { isSmsBalanceError, mamboSenderId, maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
 
 function parcelCodeOf(shipment, orderId) {
   return String(shipment?.parcelCode || shipment?.orderNumber || orderId || '')
@@ -28,11 +29,101 @@ function buildBody(event, shipment, orderId) {
   return `HAUL: Hali ya mzigo ${code} imesasishwa (${event}).`;
 }
 
-/** Short Kiswahili arrival text for both mpokeaji and mtumaji. */
-function buildArrivalBody(shipment, orderId) {
+function clipSms(value, max) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+/**
+ * Kiswahili arrival text for both mpokeaji and mtumaji.
+ * One SMS when it fits; the gateway may split a longer body into two.
+ */
+function buildArrivalBody(shipment, orderId, contact = {}) {
+  const code = parcelCodeOf(shipment, orderId) || 'MZIGO';
+  const pickup = clipSms(contact.pickup || shipment?.pickupLabel || shipment?.origin || '', 36);
+  const dest = clipSms(contact.destination || shipment?.destination || '', 36);
+  const company = clipSms(contact.companyName || shipment?.carrierCompanyName || '', 28);
+  const phone = clipSms(contact.confirmPhone || '', 18);
+  const route = pickup && dest ? `${pickup} → ${dest}` : dest || pickup;
+  let body = `HAUL: ${code} umefika.`;
+  if (route) body += ` ${route}.`;
+  if (company) body += ` ${company}.`;
+  if (phone) body += ` Piga ${phone}.`;
+  if (body.length > 300) {
+    const shortRoute = pickup && dest ? `${clipSms(pickup, 18)} → ${clipSms(dest, 18)}` : clipSms(route, 40);
+    body = `HAUL: ${code} umefika.`;
+    if (shortRoute) body += ` ${shortRoute}.`;
+    if (company) body += ` ${clipSms(company, 18)}.`;
+    if (phone) body += ` Piga ${phone}.`;
+  }
+  return body.slice(0, 320);
+}
+
+function opsConfirmPhone() {
+  return String(config.supportPhone || '').trim();
+}
+
+async function resolveConfirmContact(db, shipment) {
+  const carrierId = String(shipment?.carrierId || shipment?.offeredCarrierId || '').trim();
+  let company = String(shipment?.carrierCompanyName || '').trim();
+  let phone = String(shipment?.carrierPhone || '').trim();
+  if (carrierId) {
+    try {
+      const snap = await db.collection('carriers').doc(carrierId).get();
+      if (snap.exists) {
+        const carrier = snap.data() || {};
+        const trading = String(carrier.tradingName || '').trim();
+        const registered = String(carrier.companyName || carrier.name || '').trim();
+        if (!company) company = trading || registered;
+        if (!phone) phone = String(carrier.phone || '').trim();
+      }
+    } catch {
+      // Fall through to the ops line already in config.
+    }
+  }
+  if (!phone) phone = opsConfirmPhone();
+  return { companyName: company, confirmPhone: phone };
+}
+
+async function notifyAdminSmsBalance(db, { orderId, shipment, detail }) {
   const code = parcelCodeOf(shipment, orderId);
-  const dest = String(shipment?.destination || '').trim();
-  return dest ? `Mzigo ${code} umefika ${dest}.` : `Mzigo ${code} umefika.`;
+  const ref = db.collection('adminNotifications').doc(`sms_balance_${orderId}`);
+  const existing = await ref.get();
+  const message = `Mzigo ${code} umewekwa Imefika. SMS haikutumwa kwa sababu salio la Mambo limeisha.`;
+  if (!existing.exists) {
+    await ref.set({
+      type: 'sms_balance_exhausted',
+      email: config.adminEmail,
+      title: 'Salio la SMS limeisha',
+      message,
+      orderId,
+      parcelCode: code,
+      detail: String(detail || 'mambo_insufficient_balance').slice(0, 180),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  }
+  const adminEmail = String(config.adminEmail || '').trim().toLowerCase();
+  if (!adminEmail) return;
+  try {
+    const users = await db.collection('users').where('email', '==', adminEmail).limit(1).get();
+    if (users.empty) return;
+    await db.collection('userNotifications').doc(`sms_balance_${orderId}`).set(
+      {
+        userId: users.docs[0].id,
+        orderId,
+        orderNumber: code,
+        title: 'Salio la SMS limeisha',
+        message,
+        type: 'admin_sms_balance',
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error('admin sms balance notification failed', orderId, error?.message || error);
+  }
 }
 
 function arrivalJobId(orderId, audience) {
@@ -140,6 +231,7 @@ async function deliverArrivalSms(db, { orderId, shipment, to, body, audience }) 
   try {
     result = await sendSms(to, body, { event: 'arrived', orderId, jobId, audience });
   } catch (cause) {
+    const balance = isSmsBalanceError(cause);
     await writeSmsJob(ref, existing, {
       toMasked: maskPhone(to),
       body,
@@ -150,8 +242,12 @@ async function deliverArrivalSms(db, { orderId, shipment, to, body, audience }) 
       audience,
       provider: 'mambo',
       status: 'failed',
+      errorCode: balance ? 'mambo_insufficient_balance' : String(cause?.code || 'sms_failed').slice(0, 80),
       lastError: String(cause?.message || 'sms_failed').slice(0, 240),
     });
+    if (balance) {
+      return { sent: false, balanceExhausted: true, jobId, audience, code: 'mambo_insufficient_balance' };
+    }
     throw smsError(audience, cause);
   }
 
@@ -242,19 +338,49 @@ async function noteArrivalSms(db, orderId, result) {
  * audiences defaults to both parties. Pass ['sender'] to text only the sender
  * (used when the recipient was already notified).
  */
+function jobBalanceFailed(snap) {
+  if (!snap?.exists) return false;
+  const data = snap.data() || {};
+  return data.status === 'failed' && data.errorCode === 'mambo_insufficient_balance';
+}
+
 async function sendArrivalNotices(db, { orderId, shipment, audiences } = {}) {
   const wanted = Array.isArray(audiences) && audiences.length ? audiences : ['recipient', 'sender'];
   const wantRecipient = wanted.includes('recipient');
   const wantSender = wanted.includes('sender');
+  const contact = await resolveConfirmContact(db, shipment);
+  const body = buildArrivalBody(shipment, orderId, contact);
   const recipientRef = db.collection('smsJobs').doc(arrivalJobId(orderId, 'recipient'));
   const senderRef = db.collection('smsJobs').doc(arrivalJobId(orderId, 'sender'));
   const [recipientSnap, senderSnap] = await Promise.all([recipientRef.get(), senderRef.get()]);
   const recipientSent = jobWasSent(recipientSnap);
   const senderSent = jobWasSent(senderSnap);
+  const balanceAlready =
+    (wantRecipient && jobBalanceFailed(recipientSnap)) || (wantSender && jobBalanceFailed(senderSnap));
+  if (balanceAlready && (!wantRecipient || recipientSent || jobBalanceFailed(recipientSnap)) && (!wantSender || senderSent || jobBalanceFailed(senderSnap))) {
+    await notifyAdminSmsBalance(db, { orderId, shipment, detail: 'mambo_insufficient_balance' });
+    return {
+      ok: true,
+      balanceExhausted: true,
+      body,
+      recipient: {
+        sent: recipientSent,
+        skipped: true,
+        balanceExhausted: jobBalanceFailed(recipientSnap),
+        jobId: arrivalJobId(orderId, 'recipient'),
+      },
+      sender: {
+        sent: senderSent,
+        skipped: true,
+        balanceExhausted: jobBalanceFailed(senderSnap),
+        jobId: arrivalJobId(orderId, 'sender'),
+      },
+    };
+  }
   if ((!wantRecipient || recipientSent) && (!wantSender || senderSent)) {
     return {
       ok: true,
-      body: buildArrivalBody(shipment, orderId),
+      body,
       recipient: { sent: recipientSent, skipped: true, jobId: arrivalJobId(orderId, 'recipient') },
       sender: { sent: senderSent, skipped: true, jobId: arrivalJobId(orderId, 'sender') },
     };
@@ -263,7 +389,6 @@ async function sendArrivalNotices(db, { orderId, shipment, audiences } = {}) {
   const phones = await resolveArrivalPhones(db, orderId, shipment);
   const recipientTo = normalizeSmsPhone(phones.recipient);
   const senderTo = normalizeSmsPhone(phones.sender);
-  const body = buildArrivalBody(shipment, orderId);
   const samePhone = Boolean(recipientTo && senderTo && recipientTo === senderTo);
 
   if (wantRecipient && !recipientSent && !recipientTo) throw missingPhoneError('recipient');
@@ -278,6 +403,10 @@ async function sendArrivalNotices(db, { orderId, shipment, audiences } = {}) {
 
   if (wantRecipient && !recipientSent) {
     recipient = await deliverArrivalSms(db, { orderId, shipment, to: recipientTo, body, audience: 'recipient' });
+    if (recipient.balanceExhausted) {
+      await notifyAdminSmsBalance(db, { orderId, shipment, detail: recipient.code });
+      return { ok: true, balanceExhausted: true, body, recipient, sender };
+    }
     await noteArrivalSms(db, orderId, recipient);
   }
 
@@ -294,6 +423,10 @@ async function sendArrivalNotices(db, { orderId, shipment, audiences } = {}) {
       });
     } else {
       sender = await deliverArrivalSms(db, { orderId, shipment, to: senderTo, body, audience: 'sender' });
+      if (sender.balanceExhausted) {
+        await notifyAdminSmsBalance(db, { orderId, shipment, detail: sender.code });
+        return { ok: true, balanceExhausted: true, body, recipient, sender };
+      }
       if (samePhone && !recipientSent && !recipient.sent) {
         recipient = await markSharedParty(db, {
           orderId,
@@ -455,6 +588,7 @@ module.exports = {
   maskPhone,
   maybeNotifyRecipientOnShipmentChange,
   normalizeSmsPhone,
+  notifyAdminSmsBalance,
   sendArrivalNotices,
   smsEventFromTransition,
 };

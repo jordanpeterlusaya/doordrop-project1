@@ -135,6 +135,9 @@ const config = {
   googleRoutesApiKey: process.env.GOOGLE_ROUTES_API_KEY || sharedGoogleServerApiKey,
   debugWebhookUrl: String(process.env.DEBUG_WEBHOOK_URL || '').trim(),
   allowedOrigins: parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS),
+  // Same ops line the customer app already uses (lib/support-contact.ts). Not a new number.
+  supportPhone: String(process.env.HAUL_OPS_PHONE || process.env.SUPPORT_PHONE || '0796904849').trim(),
+  adminEmail: String(process.env.ADMIN_EMAIL || 'boyzeus11@gmail.com').trim().toLowerCase(),
   pricing: {
     bodaboda: { ...pikipikiParcelPricing },
     pikipiki: { ...pikipikiParcelPricing },

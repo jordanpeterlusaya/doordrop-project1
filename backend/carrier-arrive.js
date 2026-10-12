@@ -1,7 +1,8 @@
 const { FieldValue } = require('firebase-admin/firestore');
 
-const { sendArrivalNotices } = require('./carrier-sms');
+const { notifyAdminSmsBalance, sendArrivalNotices } = require('./carrier-sms');
 const { readJsonBodyLimited, requireAuthenticatedUser } = require('./media-upload');
+const { isSmsBalanceError } = require('./sms-provider');
 
 const PENDING_MS = 2 * 60 * 1000;
 
@@ -99,16 +100,9 @@ async function handleMarkArrived(req, database) {
     { merge: true }
   );
 
-  try {
-    const notices = await sendArrivalNotices(database, { orderId: shipmentId, shipment });
-    if (!notices?.recipient?.sent || !notices?.sender?.sent) {
-      const error = new Error('SMS haijatumwa kwa mtumaji na mpokeaji.');
-      error.statusCode = 503;
-      error.code = 'arrival_sms_incomplete';
-      throw error;
-    }
-    const actor = String(decoded.email || decoded.uid || '').trim();
-    await ref.set(
+  const actor = String(decoded.email || decoded.uid || '').trim();
+  const saveArrived = () =>
+    ref.set(
       {
         trackStep: 'arrived',
         shipmentStatus: 'arrived',
@@ -125,6 +119,20 @@ async function handleMarkArrived(req, database) {
       },
       { merge: true }
     );
+
+  try {
+    const notices = await sendArrivalNotices(database, { orderId: shipmentId, shipment });
+    if (notices?.balanceExhausted || isSmsBalanceError(notices)) {
+      await saveArrived();
+      return { ok: true, shipmentStatus: 'arrived', sms: { provider: 'mambo', delivered: false } };
+    }
+    if (!notices?.recipient?.sent || !notices?.sender?.sent) {
+      const error = new Error('SMS haijatumwa kwa mtumaji na mpokeaji.');
+      error.statusCode = 503;
+      error.code = 'arrival_sms_incomplete';
+      throw error;
+    }
+    await saveArrived();
     return {
       ok: true,
       shipmentStatus: 'arrived',
@@ -136,6 +144,15 @@ async function handleMarkArrived(req, database) {
       },
     };
   } catch (error) {
+    if (isSmsBalanceError(error)) {
+      await notifyAdminSmsBalance(database, {
+        orderId: shipmentId,
+        shipment,
+        detail: error?.code || error?.message,
+      }).catch(() => undefined);
+      await saveArrived();
+      return { ok: true, shipmentStatus: 'arrived', sms: { provider: 'mambo', delivered: false } };
+    }
     await ref.set(
       {
         arrivalSmsPending: false,

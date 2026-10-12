@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { OrderInboxCard } from '@/components/order-inbox-card';
 import { EmptyState, FilterChip, Screen } from '@/components/ui';
@@ -15,7 +15,6 @@ import {
   inboxShipments,
   isIncomingOffer,
 } from '@/lib/carrier-helpers';
-import { images } from '@/lib/images';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 type FilterKey = 'all' | 'offers' | 'active' | 'today';
@@ -96,19 +95,11 @@ export default function HomeScreen() {
       </View>
 
       {rows.length === 0 ? (
-        <EmptyState title="Hakuna oda">
-          <Image source={images.deskPackingBox} style={styles.emptyArt} resizeMode="contain" />
-        </EmptyState>
+        <EmptyState title="Hakuna oda" />
       ) : (
         <View style={styles.list}>
           {rows.map((item) => (
-            <OrderInboxCard
-              key={item.id}
-              item={item}
-              carrierId={carrierId}
-              carrier={carrier}
-              shipments={shipments}
-            />
+            <OrderInboxCard key={item.id} item={item} carrierId={carrierId} />
           ))}
         </View>
       )}
@@ -178,5 +169,4 @@ const styles = StyleSheet.create({
   },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
   list: { gap: 0 },
-  emptyArt: { width: 120, height: 96, marginTop: 14 },
 });

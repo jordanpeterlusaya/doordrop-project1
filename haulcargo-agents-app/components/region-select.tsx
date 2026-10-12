@@ -10,9 +10,17 @@ type Props = {
   value: string;
   onChange: (region: string) => void;
   error?: string;
+  label?: string;
+  hint?: string;
 };
 
-export function RegionSelect({ value, onChange, error }: Props) {
+export function RegionSelect({
+  value,
+  onChange,
+  error,
+  label = 'Base region',
+  hint = 'Where the company is located. Orders are picked up here.',
+}: Props) {
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
@@ -23,8 +31,8 @@ export function RegionSelect({ value, onChange, error }: Props) {
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.label}>Base region</Text>
-      <Text style={styles.hint}>Where the company is located. Orders are picked up here.</Text>
+      <Text style={styles.label}>{label}</Text>
+      {hint ? <Text style={styles.hint}>{hint}</Text> : null}
       <View style={[styles.searchWrap, error ? styles.searchError : null]}>
         <Ionicons name="search-outline" size={18} color={theme.muted} />
         <TextInput

@@ -762,8 +762,12 @@ async function syncCarrierShipment(db, orderId, before, after) {
     await maybeNotifyRecipientOnShipmentChange(db, orderId, before, after);
   } catch (error) {
     console.error('carrier recipient SMS hook failed', orderId, error?.message || error);
+    const { isSmsBalanceError } = require('./sms-provider');
     const afterStep = normalize(after?.trackStep);
     const becameArrived = beforeStatus !== 'arrived' && (afterStatus === 'arrived' || afterStep === 'arrived');
+    if (becameArrived && isSmsBalanceError(error)) {
+      return { skipped: true, reason: 'sms_balance' };
+    }
     if (becameArrived) {
       try {
         await db.collection('carrierShipments').doc(orderId).set(

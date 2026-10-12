@@ -12,9 +12,11 @@ import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, advanceDeskStep, rejectOffer, requestCommissionPayment } from '@/lib/carrier-actions';
 import {
+  agentStatusError,
   cashStatusLabel,
   deskIndex,
   deskStatusLabel,
+  isCompletedShipment,
   isIncomingOffer,
   money,
   nextDeskStep,
@@ -57,7 +59,7 @@ export default function OrderDetailScreen() {
     try {
       await work();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Imeshindwa.');
+      setError(agentStatusError(err instanceof Error ? err.message : 'Imeshindwa.'));
     } finally {
       setBusy(false);
     }
@@ -99,7 +101,7 @@ export default function OrderDetailScreen() {
     .join(' · ');
   const cash = String(item.cashStatus || '').toLowerCase();
   const canRequestPay =
-    owned && item.shipmentStatus === 'delivered' && (cash === 'unpaid' || cash === 'collected') && Number(item.haulFee) > 0;
+    owned && isCompletedShipment(item) && (cash === 'unpaid' || cash === 'collected') && Number(item.haulFee) > 0;
 
   const copyCode = async () => {
     await Clipboard.setStringAsync(code);
@@ -160,7 +162,7 @@ export default function OrderDetailScreen() {
 
   const statusLine = copied ? 'Imenakiliwa' : liveOffer ? 'Oda mpya' : deskStatusLabel(item);
   const cashNote =
-    item.shipmentStatus === 'delivered' && (cash === 'pending_reconciliation' || cash === 'reconciled')
+    isCompletedShipment(item) && (cash === 'pending_reconciliation' || cash === 'reconciled')
       ? cashStatusLabel(item.cashStatus)
       : '';
 
@@ -223,7 +225,9 @@ export default function OrderDetailScreen() {
           </Pressable>
         ) : null}
 
-        {error || item.arrivalSmsError ? <Text style={styles.error}>{error || item.arrivalSmsError}</Text> : null}
+        {error || agentStatusError(item.arrivalSmsError) ? (
+          <Text style={styles.error}>{error || agentStatusError(item.arrivalSmsError)}</Text>
+        ) : null}
       </ScrollView>
 
       {primaryLabel ? (

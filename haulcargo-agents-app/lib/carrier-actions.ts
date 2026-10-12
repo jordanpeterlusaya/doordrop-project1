@@ -11,7 +11,7 @@ import {
 
 import { DESK_RAIL, type CarrierShipment } from '@/lib/carrier-types';
 import { markShipmentArrived } from '@/lib/carrier-arrive-api';
-import { darTodayKey, deskIndex, offerExpiresMs } from '@/lib/carrier-helpers';
+import { darTodayKey, deskIndex, isCompletedShipment, offerExpiresMs } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
 
 function stamp() {
@@ -143,7 +143,7 @@ export async function requestCommissionPayment(shipmentId: string, carrierId: st
   if (!snap.exists()) throw new Error('Shipment not found.');
   const current = snap.data();
   if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
-  if (current.shipmentStatus !== 'delivered') throw new Error('Lipa kamisheni baada ya kukabidhi.');
+  if (!isCompletedShipment(current as CarrierShipment)) throw new Error('Lipa kamisheni baada ya mzigo kufika.');
   const haulFee = Number(current.haulFee) || 0;
   if (haulFee <= 0) throw new Error('Hakuna kamisheni ya kulipa.');
   if (current.cashStatus === 'reconciled') throw new Error('Kamisheni tayari imelinganishwa.');

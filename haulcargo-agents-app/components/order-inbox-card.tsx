@@ -1,162 +1,139 @@
-import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { OfferCountdown } from '@/components/offer-countdown';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { acceptOffer, advanceDeskStep } from '@/lib/carrier-actions';
 import {
-  capacitySnapshot,
+  agentStatusError,
   deskStatusLabel,
-  dropOffLabel,
   isIncomingOffer,
-  money,
+  nextDeskStep,
   offerStillValid,
   shipmentCode,
 } from '@/lib/carrier-helpers';
-import type { Carrier, CarrierShipment } from '@/lib/carrier-types';
+import type { CarrierShipment } from '@/lib/carrier-types';
+import { useCarrierSession } from '@/providers/carrier-session';
 
 type Props = {
   item: CarrierShipment;
   carrierId: string;
-  carrier?: Carrier | null;
-  shipments?: CarrierShipment[];
 };
 
-export function OrderInboxCard({ item, carrierId, carrier, shipments }: Props) {
+function routeLine(item: CarrierShipment) {
+  const from = String(item.pickupLabel || item.origin || '').trim();
+  const to = String(item.destination || '').trim();
+  if (from && to) return `${from} → ${to}`;
+  return to || from || '—';
+}
+
+export function OrderInboxCard({ item, carrierId }: Props) {
+  const { user } = useCarrierSession();
+  const [busy, setBusy] = useState(false);
   const offer = isIncomingOffer(item, carrierId);
   const liveOffer = offer && offerStillValid(item);
+  const next = !offer && item.carrierId === carrierId ? nextDeskStep(item) : null;
+  const actionLabel = liveOffer ? 'Kubali' : next?.label || '';
+  const weight = Number(item.weightKg) || 0;
+
+  const runAction = () => {
+    if (!actionLabel || busy) return;
+    const email = user?.email || '';
+    setBusy(true);
+    const work = liveOffer
+      ? acceptOffer(item.id, carrierId, email)
+      : next
+        ? advanceDeskStep(item.id, carrierId, next.key, email)
+        : Promise.resolve();
+    void work
+      .catch((error) => {
+        const message = agentStatusError(error instanceof Error ? error.message : 'Imeshindwa.');
+        if (message) Alert.alert('Imeshindwa', message);
+      })
+      .finally(() => setBusy(false));
+  };
 
   return (
     <Pressable
       onPress={() => router.push(`/order/${item.id}`)}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.card, liveOffer && styles.offerCard, pressed && styles.pressed]}>
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.topRow}>
-        <Text style={styles.code}>{shipmentCode(item)}</Text>
-        {liveOffer ? (
-          <View style={styles.badgeOffer}>
-            <Text style={styles.badgeOfferText}>ODA MPYA</Text>
-          </View>
-        ) : (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{deskStatusLabel(item)}</Text>
-          </View>
-        )}
+        <Text style={styles.code} numberOfLines={1}>
+          {shipmentCode(item)}
+        </Text>
+        <Text style={styles.status}>{liveOffer ? 'Mpya' : deskStatusLabel(item)}</Text>
       </View>
-
-      <Text style={styles.dest} numberOfLines={2}>
-        {dropOffLabel(item)}
+      <Text style={styles.route} numberOfLines={1}>
+        {routeLine(item)}
       </Text>
-
-      <View style={styles.metaGrid}>
-        <Meta icon="scale-outline" text={`${item.weightKg || 0} kg`} />
-        <Meta icon="cash-outline" text={money(item.cashExpected)} />
-        {item.declaredValueTzs ? (
-          <Meta icon="diamond-outline" text={`Thamani ${money(item.declaredValueTzs)}`} />
+      <View style={styles.bottom}>
+        <Text style={styles.weight}>{weight ? `${weight} kg` : '—'}</Text>
+        {liveOffer ? <OfferCountdown shipment={item} compact /> : <View />}
+        {actionLabel ? (
+          <Pressable
+            onPress={runAction}
+            disabled={busy}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.action, pressed && styles.actionPressed, busy && styles.actionBusy]}>
+            <Text style={styles.actionText}>{busy ? '…' : actionLabel}</Text>
+          </Pressable>
         ) : null}
       </View>
-
-      <View style={styles.people}>
-        <Text style={styles.person} numberOfLines={1}>
-          Mtumaji: {item.customerName || '—'} · {item.senderPhone || item.customerPhone || '—'}
-        </Text>
-        <Text style={styles.person} numberOfLines={1}>
-          Mpokeaji: {item.recipientName || '—'} · {item.recipientPhone || '—'}
-        </Text>
-      </View>
-
-      {liveOffer ? (
-        <View style={styles.countdown}>
-          <OfferCountdown shipment={item} />
-          <WeightHint item={item} carrierId={carrierId} carrier={carrier} shipments={shipments} />
-        </View>
-      ) : null}
     </Pressable>
-  );
-}
-
-function WeightHint({
-  item,
-  carrierId,
-  carrier,
-  shipments,
-}: {
-  item: CarrierShipment;
-  carrierId: string;
-  carrier?: Carrier | null;
-  shipments?: CarrierShipment[];
-}) {
-  const weight = Number(item.weightKg) || 0;
-  const snap = capacitySnapshot(carrier, shipments || [], carrierId, item.id);
-  const over = snap.open != null && weight > snap.open;
-  const openLabel = snap.open == null ? 'uwezo haujawekwa' : `uwezo wazi ${Math.max(0, Math.round(snap.open))} kg`;
-  return (
-    <Text style={[styles.hint, over && styles.hintOver]}>
-      {weight ? `${weight} kg · ${openLabel}` : `Uzito wazi · ${openLabel}`}
-      {over ? '. Bado unaweza kukubali.' : ''}
-    </Text>
-  );
-}
-
-function Meta({ icon, text }: { icon: keyof typeof Ionicons.glyphMap; text: string }) {
-  return (
-    <View style={styles.metaItem}>
-      <Ionicons name={icon} size={14} color={theme.muted} />
-      <Text style={styles.metaText}>{text}</Text>
-    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: theme.tile,
+    backgroundColor: theme.white,
     borderRadius: 6,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.line,
-    padding: 14,
-    marginBottom: 10,
-  },
-  offerCard: {
-    backgroundColor: theme.primarySoft,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
   },
   pressed: { opacity: 0.92 },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   code: {
-    fontFamily: typography.bold,
-    fontSize: 17,
-    color: theme.ink,
-    letterSpacing: -0.3,
     flex: 1,
+    fontFamily: typography.bold,
+    fontSize: 16,
+    color: theme.ink,
+    letterSpacing: -0.2,
   },
-  badge: {
-    backgroundColor: theme.white,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeText: { fontFamily: typography.semibold, fontSize: 11, color: theme.ink },
-  badgeOffer: {
-    backgroundColor: theme.ink,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeOfferText: { fontFamily: typography.bold, fontSize: 11, color: theme.accent },
-  dest: {
-    marginTop: 8,
+  status: { fontFamily: typography.semibold, fontSize: 12, color: theme.muted },
+  route: {
+    marginTop: 4,
     fontFamily: typography.semibold,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 18,
     color: theme.ink,
   },
-  metaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 },
-  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  metaText: { fontFamily: typography.body, fontSize: 13, color: theme.muted },
-  people: { marginTop: 10, gap: 4 },
-  person: { fontFamily: typography.body, fontSize: 13, color: theme.ink },
-  countdown: { marginTop: 12, gap: 8 },
-  hint: { fontFamily: typography.body, fontSize: 12, lineHeight: 16, color: theme.muted },
-  hintOver: { color: theme.warning },
+  bottom: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  weight: { fontFamily: typography.body, fontSize: 13, color: theme.muted },
+  action: {
+    marginLeft: 'auto',
+    backgroundColor: theme.cta.backgroundColor,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    minHeight: 32,
+    justifyContent: 'center',
+  },
+  actionPressed: { backgroundColor: theme.cta.pressedBackgroundColor },
+  actionBusy: { backgroundColor: theme.cta.disabledBackgroundColor },
+  actionText: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    color: theme.cta.labelColor,
+  },
 });

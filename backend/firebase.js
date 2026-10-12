@@ -250,7 +250,7 @@ exports.onParcelOrderMatchCarrier = onDocumentCreated(
     retry: false,
     timeoutSeconds: 30,
     memory: '256MiB',
-    minInstances: 0,
+    minInstances: 1,
     maxInstances: 10,
   },
   async (event) => {
@@ -262,6 +262,34 @@ exports.onParcelOrderMatchCarrier = onDocumentCreated(
     } catch (error) {
       console.error('onParcelOrderMatchCarrier failed', orderId, error);
       throw error;
+    }
+  }
+);
+
+/** If a parcel becomes matchable after the create write, offer it now instead of waiting for the cron. */
+exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
+  {
+    document: 'orders/{orderId}',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 10,
+  },
+  async (event) => {
+    const before = event.data?.before?.data() || null;
+    const after = event.data?.after?.data() || null;
+    if (!after) return;
+    const orderId = event.params.orderId;
+    const { isBusParcel, matchOrderById } = require('./carrier-matching');
+    const afterOrder = { id: orderId, ...after };
+    if (!isBusParcel(afterOrder)) return;
+    if (before && isBusParcel({ id: orderId, ...before })) return;
+    try {
+      await matchOrderById(getFirestoreDb(), orderId);
+    } catch (error) {
+      console.error('onParcelOrderMatchCarrierUpdate failed', orderId, error);
     }
   }
 );

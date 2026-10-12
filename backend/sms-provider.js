@@ -176,7 +176,7 @@ async function sendViaMambo(to, body) {
       error.code = 'mambo_unauthorized';
       throw error;
     }
-    if (/insufficient|balance/i.test(detail) || response.status === 402) {
+    if (isSmsBalanceDetail(detail) || response.status === 402) {
       const error = new Error('Salio la SMS limeisha. Ongeza salio kwenye Mambo SMS.');
       error.statusCode = 503;
       error.code = 'mambo_insufficient_balance';
@@ -330,8 +330,21 @@ async function checkMamboBalance() {
   return payload;
 }
 
+function isSmsBalanceDetail(detail) {
+  return /insufficient|balance|salio|sender credit|no credit|low credit|out of credit|credit exhausted/i.test(
+    String(detail || '')
+  );
+}
+
+/** Mambo insufficient balance / sender credit. Callers must not treat this as a fake send. */
+function isSmsBalanceError(error) {
+  if (String(error?.code || '') === 'mambo_insufficient_balance') return true;
+  return isSmsBalanceDetail(`${error?.message || ''} ${error?.causeDetail || ''}`);
+}
+
 module.exports = {
   checkMamboBalance,
+  isSmsBalanceError,
   mamboSenderId,
   maskPhone,
   normalizeSmsPhone,

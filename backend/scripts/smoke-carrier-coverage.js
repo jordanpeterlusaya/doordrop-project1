@@ -108,7 +108,27 @@ assert(smsEventFromTransition('assigned', 'accepted') === 'accepted', 'sms accep
 assert(smsEventFromTransition('in_transit', 'arrived') === 'arrived', 'sms arrived');
 assert(maskPhone('+255712345678').endsWith('5678'), 'mask');
 assert(buildBody('accepted', { parcelCode: 'ABC', destination: 'Mwanza', customerName: 'Juma' }, 'x').includes('ABC'), 'body');
-assert(buildBody('arrived', { parcelCode: 'DDX-1', destination: 'Mwanza' }, 'x') === 'Mzigo DDX-1 umefika Mwanza.', 'arrived copy');
-assert(buildBody('arrived', { parcelCode: 'DDX-1' }, 'x') === 'Mzigo DDX-1 umefika.', 'arrived copy without destination');
+assert(buildBody('arrived', { parcelCode: 'DDX-1', destination: 'Mwanza' }, 'x').includes('DDX-1'), 'arrived code');
+assert(buildBody('arrived', { parcelCode: 'DDX-1', destination: 'Mwanza' }, 'x').includes('Mwanza'), 'arrived dest');
+assert(buildBody('arrived', { parcelCode: 'DDX-1' }, 'x').includes('umefika'), 'arrived copy without destination');
+const arrivedDetail = buildBody(
+  'arrived',
+  {
+    parcelCode: 'DDX-1',
+    pickupLabel: 'Kariakoo',
+    destination: 'Mwanza',
+    carrierCompanyName: 'ABC Cargo',
+  },
+  'x'
+);
+assert(arrivedDetail.includes('Kariakoo') && arrivedDetail.includes('ABC Cargo'), 'arrived route and company');
+const { buildArrivalBody } = require('../carrier-sms');
+const arrivedPhone = buildArrivalBody(
+  { parcelCode: 'DDX-1', pickupLabel: 'Kariakoo', destination: 'Mwanza' },
+  'x',
+  { companyName: 'ABC Cargo', confirmPhone: '0796904849' }
+);
+assert(arrivedPhone.includes('0796904849') && arrivedPhone.includes('Piga'), 'arrived confirm phone');
+assert(arrivedPhone.length <= 320, 'arrived sms length');
 
 console.log('smoke-carrier-coverage OK');
