@@ -196,10 +196,30 @@ export function isOutsidePostHubPhase(order: {
   return String(order.status || '').trim() === 'at_hub';
 }
 
-/** After hub intake, customer should not cancel. */
+/** True once cargo has been picked up (Imepokelewa / picked_up and beyond). */
+export function isPastPickupCancelCutoff(order: {
+  status?: string | null;
+  logisticsStatus?: string | null;
+  carrierTrackStep?: string | null;
+  carrierMatchStatus?: string | null;
+} | null | undefined) {
+  if (!order) return false;
+  const status = String(order.status || '');
+  if (['in_transit', 'delivered'].includes(status)) return true;
+  const track = String(order.carrierTrackStep || '').toLowerCase();
+  if (['packed', 'transit', 'arrived', 'handed'].includes(track)) return true;
+  const logistics = String(order.logisticsStatus || '');
+  return ['received_at_hub', 'in_transit_carrier', 'arrived_destination', 'out_for_delivery', 'completed'].includes(
+    logistics
+  );
+}
+
+/** After pickup / Imepokelewa (and hub intake for express), customer should not cancel. */
 export function canCancelOutsideParcel(order: {
   status?: string | null;
   logisticsStatus?: string | null;
+  carrierTrackStep?: string | null;
+  carrierMatchStatus?: string | null;
 } | null | undefined) {
   if (!order) {
     return false;
@@ -207,10 +227,7 @@ export function canCancelOutsideParcel(order: {
   if (['delivered', 'cancelled'].includes(String(order.status || ''))) {
     return false;
   }
-  const logistics = String(order.logisticsStatus || '');
-  return !['received_at_hub', 'in_transit_carrier', 'arrived_destination', 'out_for_delivery', 'completed'].includes(
-    logistics
-  );
+  return !isPastPickupCancelCutoff(order);
 }
 
 export function makeLogisticsEvent(

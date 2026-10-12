@@ -9,6 +9,7 @@ import { OutsideParcelReceiptModal } from '@/components/outside-parcel-receipt-m
 import { cargoTheme } from '@/constants/cargo-theme';
 import { useAppCopy } from '@/lib/app-copy';
 import {
+  canCustomerCancelDeliveryOrder,
   cancelDeliveryOrderByUser,
   getDeliveryOrderStatusLabel,
   hasDeliveryOrderRating,
@@ -170,7 +171,7 @@ export default function TrackOrderWebScreen() {
   const busAgentLabel = language === 'sw' ? 'Wakala' : 'Agent';
   const busNameLabel = language === 'sw' ? 'Basi' : 'Bus';
   const busProgressSteps = order && isBusTrack ? getActiveOrderProgress(order, language) : [];
-  const canCancelOrder = !!order && !['delivered', 'cancelled'].includes(order.status);
+  const canCancelOrder = !!order && canCustomerCancelDeliveryOrder(order);
   const orderHasRating = hasDeliveryOrderRating(order);
   const canRateOrder = !!order && order.status === 'delivered' && !!user?.uid && user.uid === order.userId;
 

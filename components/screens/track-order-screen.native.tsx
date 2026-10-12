@@ -34,6 +34,7 @@ import { recordAppActivity } from '@/lib/app-analytics';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import {
     autoAssignDriverToOrder,
+    canCustomerCancelDeliveryOrder,
     cancelDeliveryOrderByUser,
     ensureOutsideOrderCountdownAnchor,
     formatDeliveryDateTime,
@@ -1288,7 +1289,7 @@ export default function TrackOrderScreen() {
   const busNameLabel = language === 'sw' ? 'Basi' : 'Bus';
   const canCancelOrder =
     !!order &&
-    !['delivered', 'cancelled'].includes(order.status) &&
+    canCustomerCancelDeliveryOrder(order) &&
     (!isOutsideParcelOrder(order) || canCancelOutsideParcel(order));
   const cancellationReason = order?.cancellationReason?.trim() || '';
   const canMessageDriver =

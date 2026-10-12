@@ -433,62 +433,93 @@ function directSenderPhone(order) {
   return String(order?.senderPhone || order?.customerPhone || order?.phoneNumber || '').trim();
 }
 
-/** Profile phone when the parcel order was saved without the sender number. */
-async function resolveSenderPhone(db, order) {
-  const direct = directSenderPhone(order);
-  if (direct) return direct;
+function directSenderName(order) {
+  return String(order?.senderName || order?.customerName || order?.fullName || '').trim();
+}
+
+function directRecipientName(order) {
+  return String(order?.recipientName || order?.receiverName || '').trim();
+}
+
+function directRecipientPhone(order) {
+  return String(order?.recipientPhone || order?.receiverPhone || '').trim();
+}
+
+function directRecipientAddress(order) {
+  return String(
+    order?.recipientAddress ||
+      order?.dropoffLabel ||
+      order?.outsideDestinationStand ||
+      order?.outsideDestinationLabel ||
+      order?.outsideDestinationCity ||
+      ''
+  ).trim();
+}
+
+/** Profile phone/name when the parcel order was saved without sender fields. */
+async function resolveSenderProfile(db, order) {
+  const phone = directSenderPhone(order);
+  const name = directSenderName(order);
+  if (phone && name) return { phone, name };
   const userId = String(order?.userId || '').trim();
-  if (!userId || userId.startsWith('manual:')) return '';
+  if (!userId || userId.startsWith('manual:')) return { phone, name };
   try {
     const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return '';
+    if (!snap.exists) return { phone, name };
     const data = snap.data() || {};
-    return String(data.phoneNumber || data.phone || '').trim();
+    return {
+      phone: phone || String(data.phoneNumber || data.phone || '').trim(),
+      name: name || String(data.fullName || data.displayName || data.name || '').trim(),
+    };
   } catch {
-    return '';
+    return { phone, name };
   }
 }
 
+async function resolveSenderPhone(db, order) {
+  const profile = await resolveSenderProfile(db, order);
+  return profile.phone;
+}
+
 /**
- * Write the cargo sender number onto the customer order and the carrier shipment.
- * SMS and the agents order screen both read senderPhone / customerPhone.
+ * Write mtumaji + mpokeaji details onto the customer order and carrier shipment.
+ * Agents inbox/detail and SMS both read these fields.
  */
 async function persistSenderPhone(db, orderId, order, shipment) {
-  const phone = await resolveSenderPhone(db, order);
-  if (!phone) return '';
+  const profile = await resolveSenderProfile(db, order);
+  const phone = profile.phone;
+  const senderName = profile.name;
+  const recipientName = directRecipientName(order);
+  const recipientPhone = directRecipientPhone(order);
+  const recipientAddress = directRecipientAddress(order);
+  if (!phone && !senderName && !recipientName && !recipientPhone) return '';
 
-  const orderCustomer = String(order?.customerPhone || '').trim();
-  const orderSender = String(order?.senderPhone || '').trim();
-  if (!orderCustomer || !orderSender) {
-    await db.collection('orders').doc(orderId).set(
-      {
-        customerPhone: orderCustomer || phone,
-        senderPhone: orderSender || phone,
-      },
-      { merge: true }
-    );
-    order.customerPhone = orderCustomer || phone;
-    order.senderPhone = orderSender || phone;
+  const orderPatch = {};
+  if (phone && !String(order?.customerPhone || '').trim()) orderPatch.customerPhone = phone;
+  if (phone && !String(order?.senderPhone || '').trim()) orderPatch.senderPhone = phone;
+  if (senderName && !String(order?.customerName || '').trim()) orderPatch.customerName = senderName;
+  if (senderName && !String(order?.senderName || '').trim()) orderPatch.senderName = senderName;
+  if (recipientName && !String(order?.recipientName || '').trim()) orderPatch.recipientName = recipientName;
+  if (recipientPhone && !String(order?.recipientPhone || '').trim()) orderPatch.recipientPhone = recipientPhone;
+  if (Object.keys(orderPatch).length) {
+    await db.collection('orders').doc(orderId).set(orderPatch, { merge: true });
+    Object.assign(order, orderPatch);
   }
 
-  if (shipment) {
-    const shipCustomer = String(shipment.customerPhone || '').trim();
-    const shipSender = String(shipment.senderPhone || '').trim();
-    if (!shipCustomer || !shipSender) {
-      const customerPhone = shipCustomer || phone;
-      const senderPhone = shipSender || phone;
-      await db.collection('carrierShipments').doc(orderId).set(
-        {
-          customerPhone,
-          senderPhone,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-      shipment.customerPhone = customerPhone;
-      shipment.senderPhone = senderPhone;
-    }
-  }
+  const shipPatch = {
+    customerName: String(shipment?.customerName || order.customerName || senderName || '').trim(),
+    senderName: String(shipment?.senderName || order.senderName || senderName || order.customerName || '').trim(),
+    customerPhone: String(shipment?.customerPhone || order.customerPhone || phone || '').trim(),
+    senderPhone: String(shipment?.senderPhone || order.senderPhone || phone || '').trim(),
+    recipientName: String(shipment?.recipientName || recipientName || '').trim(),
+    recipientPhone: String(shipment?.recipientPhone || recipientPhone || '').trim(),
+    recipientAddress: String(shipment?.recipientAddress || recipientAddress || '').trim(),
+    dropoffLabel: String(shipment?.dropoffLabel || order.dropoffLabel || recipientAddress || '').trim(),
+    userId: String(shipment?.userId || order.userId || '').trim(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await db.collection('carrierShipments').doc(orderId).set(shipPatch, { merge: true });
+  if (shipment) Object.assign(shipment, shipPatch);
 
   return phone;
 }
@@ -497,15 +528,23 @@ function shipmentPayload(order, orderId, shipment) {
   const split = cashSplit(moneyFromOrder(order));
   const parcelPhotoUrls = storedParcelPhotoUrls(order);
   const senderPhone = directSenderPhone(order);
+  const senderName = directSenderName(order);
+  const recipientName = directRecipientName(order);
+  const recipientPhone = directRecipientPhone(order);
+  const recipientAddress = directRecipientAddress(order);
   return {
     orderId,
     orderNumber: order.orderNumber || order.parcelCode || orderId.slice(0, 6).toUpperCase(),
     parcelCode: order.parcelCode || order.orderNumber || '',
-    customerName: order.customerName || '',
+    userId: String(order.userId || '').trim(),
+    customerName: senderName || order.customerName || '',
+    senderName: senderName || order.customerName || '',
     customerPhone: senderPhone,
     senderPhone,
-    recipientName: order.recipientName || '',
-    recipientPhone: order.recipientPhone || '',
+    recipientName,
+    recipientPhone,
+    recipientAddress,
+    dropoffLabel: String(order.dropoffLabel || recipientAddress || '').trim(),
     declaredValueTzs: declaredValueTzs(order),
     pickupLabel: order.pickupLabel || '',
     pickupLatitude: order.pickupLatitude || null,
@@ -519,6 +558,7 @@ function shipmentPayload(order, orderId, shipment) {
     cashExpected: split.amount,
     haulFee: split.haulFee,
     carrierNet: split.carrierNet,
+    fareLabel: String(order.totalLabel || order.fareLabel || '').trim(),
     paymentMethod: 'cash',
     cashStatus: shipment?.cashStatus || 'unpaid',
     updatedAt: FieldValue.serverTimestamp(),
@@ -713,6 +753,29 @@ async function offerNext(db, orderId, order, shipmentHint) {
     } catch (error) {
       console.error('carrier offer push failed', orderId, error?.message || error);
     }
+
+    // Company + sender “kampuni imepatikana” SMS — never block matching.
+    try {
+      const shipSnap = await ref.get();
+      const shipment = shipSnap.exists
+        ? { id: orderId, ...shipSnap.data() }
+        : { id: orderId, ...(shipmentPayload(order, orderId, null) || {}) };
+      const { sendCompanyOfferSms, sendSenderCompanyFoundSms } = require('./carrier-sms');
+      await sendCompanyOfferSms(db, {
+        orderId,
+        shipment,
+        carrierId: result.carrierId,
+        order,
+      });
+      await sendSenderCompanyFoundSms(db, {
+        orderId,
+        shipment,
+        carrierId: result.carrierId,
+        order,
+      });
+    } catch (error) {
+      console.error('carrier offer SMS failed', orderId, error?.message || error);
+    }
   }
 
   return result;
@@ -726,6 +789,43 @@ async function matchOrderById(db, orderId) {
   const shipmentSnap = await db.collection('carrierShipments').doc(orderId).get();
   const shipment = shipmentSnap.exists ? shipmentSnap.data() : null;
   await persistSenderPhone(db, orderId, order, shipment);
+
+  // Sender + recipient SMS on place — idempotent; never blocks matching.
+  try {
+    const { sendOrderPlacedPartySms } = require('./carrier-sms');
+    await sendOrderPlacedPartySms(db, { orderId, order, shipment });
+  } catch (error) {
+    console.error('order placed SMS failed', orderId, error?.message || error);
+  }
+
+  // Backfill party fields on any open / owned shipment that is missing them.
+  if (shipment) {
+    const missingParty =
+      !String(shipment.senderPhone || shipment.customerPhone || '').trim() ||
+      !String(shipment.recipientName || '').trim() ||
+      !String(shipment.recipientPhone || '').trim() ||
+      !String(shipment.senderName || shipment.customerName || '').trim();
+    if (missingParty) {
+      const base = shipmentPayload(order, orderId, shipment);
+      await db.collection('carrierShipments').doc(orderId).set(
+        {
+          customerName: base.customerName,
+          senderName: base.senderName,
+          customerPhone: base.customerPhone,
+          senderPhone: base.senderPhone,
+          recipientName: base.recipientName,
+          recipientPhone: base.recipientPhone,
+          recipientAddress: base.recipientAddress,
+          dropoffLabel: base.dropoffLabel,
+          userId: base.userId,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      Object.assign(shipment, base);
+    }
+  }
+
   if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
   if (offerIsOpen(shipment)) return { skipped: true, reason: 'offer-open' };
   return offerNext(db, orderId, order, shipment);
@@ -843,6 +943,22 @@ async function advanceCarrierOffers(db) {
     if (shipmentSnap.exists) continue;
     const result = await matchOrderById(db, doc.id);
     if (result?.matched) advanced += 1;
+  }
+
+  // Backfill mtumaji/mpokeaji on open offers missing party fields.
+  for (const doc of assignedSnap.docs) {
+    const shipment = doc.data() || {};
+    const missing =
+      !String(shipment.senderPhone || shipment.customerPhone || '').trim() ||
+      !String(shipment.recipientPhone || '').trim() ||
+      !String(shipment.senderName || shipment.customerName || '').trim() ||
+      !String(shipment.recipientName || '').trim();
+    if (!missing) continue;
+    const orderSnap = await db.collection('orders').doc(doc.id).get();
+    if (!orderSnap.exists) continue;
+    const order = { id: orderSnap.id, ...orderSnap.data() };
+    await persistSenderPhone(db, doc.id, order, shipment);
+    advanced += 1;
   }
 
   return { advanced };

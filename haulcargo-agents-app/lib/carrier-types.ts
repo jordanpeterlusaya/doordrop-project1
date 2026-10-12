@@ -69,9 +69,16 @@ export type CarrierShipment = {
   pickupLabel?: string;
   customerName?: string;
   customerPhone?: string;
+  senderName?: string;
   senderPhone?: string;
   recipientName?: string;
   recipientPhone?: string;
+  recipientAddress?: string;
+  dropoffLabel?: string;
+  userId?: string;
+  fareLabel?: string;
+  carrierCompanyName?: string;
+  carrierPhone?: string;
   parcelDescription?: string;
   weightKg?: number;
   cashExpected?: number;

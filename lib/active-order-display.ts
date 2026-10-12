@@ -96,6 +96,11 @@ export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw'
   const sw = language === 'sw';
   const step = String(order.carrierTrackStep || '');
   const route = String(order.carrierRouteLabel || '').trim();
+  const companyOnTheWay = sw
+    ? 'Kampuni imepatikana · yuko njiani kuchukua mzigo'
+    : 'Company found · on the way to pick up the cargo';
+  const withRoute = (base: string) => (route ? `${base} · ${route}` : base);
+
   if (step === 'handed' || order.status === 'delivered') {
     return sw ? 'Mzigo umekabidhiwa' : 'Parcel handed over';
   }
@@ -113,21 +118,14 @@ export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw'
       ? sw
         ? 'Mzigo unaletwa ofisini'
         : 'Parcel is going to the company office'
-      : sw
-        ? 'Kampuni inakuja kuchukua'
-        : 'The company is coming to collect it';
+      : withRoute(companyOnTheWay);
   }
-  if (step === 'received' || order.carrierMatchStatus === 'accepted') {
-    return sw ? 'Kampuni imekubali mzigo' : 'Company accepted the parcel';
-  }
-  if (order.carrierMatchStatus === 'offered') {
-    return route
-      ? sw
-        ? `Kampuni imepatikana · ${route}`
-        : `Company matched · ${route}`
-      : sw
-        ? 'Kampuni imepatikana'
-        : 'Company matched';
+  if (
+    step === 'received' ||
+    order.carrierMatchStatus === 'accepted' ||
+    order.carrierMatchStatus === 'offered'
+  ) {
+    return withRoute(companyOnTheWay);
   }
   return sw ? 'Tunatafuta kampuni iliyopo karibu' : 'Looking for a nearby company';
 }
@@ -135,6 +133,11 @@ export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw'
 export function getBusParcelDetail(order: DeliveryOrder, language: 'en' | 'sw') {
   const sw = language === 'sw';
   const route = String(order.carrierRouteLabel || '').trim();
+  if (order.carrierMatchStatus === 'offered' || order.carrierMatchStatus === 'accepted') {
+    return sw
+      ? 'Kampuni yuko njiani kuchukua mzigo.'
+      : 'The company is on the way to pick up the cargo.';
+  }
   if (order.carrierPickupMode === 'agent_collects') {
     return sw ? 'Kampuni itakuja kuchukua mzigo kwako.' : 'The company will collect the parcel from you.';
   }

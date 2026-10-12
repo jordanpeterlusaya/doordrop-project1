@@ -36,7 +36,7 @@ import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/
 import type { Carrier, CarrierDecision, CarrierRoute, CarrierShipment, CarrierTrip } from '@/lib/carrier-types';
 import { isIncomingOffer, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
-import { registerCarrierPushToken, vibrateForNewOffer } from '@/lib/push-notifications';
+import { alertForNewOffer, registerCarrierPushToken } from '@/lib/push-notifications';
 
 export type OfferBanner = {
   shipmentId: string;
@@ -257,13 +257,19 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       } else {
         const fresh = openOffers.filter((item) => !knownOfferIds.current.has(item.id));
         if (fresh.length) {
-          vibrateForNewOffer();
           const newest = fresh[fresh.length - 1];
           bannerId.current = newest.id;
+          const code = shipmentCode(newest);
+          const destination = newest.destination || newest.routeLabel || '';
           setOfferBanner({
             shipmentId: newest.id,
-            code: shipmentCode(newest),
-            destination: newest.destination || newest.routeLabel || '',
+            code,
+            destination,
+          });
+          void alertForNewOffer({
+            title: 'Oda mpya',
+            body: destination ? `${code} · ${destination}` : code,
+            orderId: newest.id,
           });
         }
         knownOfferIds.current = nextIds;

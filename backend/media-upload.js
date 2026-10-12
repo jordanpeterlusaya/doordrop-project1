@@ -1,4 +1,4 @@
-const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { applicationDefault, cert, getApp, getApps, initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getStorage } = require('firebase-admin/storage');
 
@@ -7,6 +7,7 @@ const { config } = require('./config');
 const MEDIA_BUCKET =
   process.env.DOORDROP_MEDIA_BUCKET || 'doordrop-order-photos-729242246964';
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const STORAGE_APP_NAME = 'doordrop-media-storage';
 
 function badRequest(message) {
   const error = new Error(message);
@@ -18,6 +19,15 @@ function unauthorized(message) {
   const error = new Error(message || 'Unauthorized.');
   error.statusCode = 401;
   return error;
+}
+
+function isCloudFunctionsRuntime() {
+  return Boolean(
+    process.env.K_SERVICE ||
+      process.env.FUNCTION_TARGET ||
+      process.env.FUNCTION_NAME ||
+      process.env.CLOUD_RUN_JOB
+  );
 }
 
 function ensureFirebaseAdmin() {
@@ -37,6 +47,37 @@ function ensureFirebaseAdmin() {
     auth: getAuth(),
     storage: getStorage(),
   };
+}
+
+/**
+ * Storage uploads prefer the Cloud Functions / Cloud Run runtime SA (ADC),
+ * which usually has project Storage access. The Firebase Admin SDK JSON key
+ * often lacks storage.objects.create on the media bucket.
+ */
+function getMediaStorage() {
+  const projectId =
+    config.firebaseProjectId || config.firebaseServiceAccount?.project_id || process.env.GCLOUD_PROJECT;
+  if (isCloudFunctionsRuntime()) {
+    try {
+      const existing = getApps().find((app) => app.name === STORAGE_APP_NAME);
+      const app =
+        existing ||
+        initializeApp(
+          {
+            credential: applicationDefault(),
+            projectId,
+            storageBucket: MEDIA_BUCKET,
+          },
+          STORAGE_APP_NAME
+        );
+      return getStorage(app);
+    } catch (error) {
+      console.warn('media-upload ADC storage init failed; falling back to default admin app', {
+        reason: error?.message || 'error',
+      });
+    }
+  }
+  return ensureFirebaseAdmin().storage;
 }
 
 function getBearerToken(req) {
@@ -142,20 +183,45 @@ async function handleNinunuliePhotoUpload(req) {
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
   const objectPath = `ninunulie/${userId}/${orderKey}/${fileName}`;
 
-  const { storage } = ensureFirebaseAdmin();
+  const storage = getMediaStorage();
   const bucket = storage.bucket(MEDIA_BUCKET);
   const file = bucket.file(objectPath);
-  await file.save(buffer, {
-    resumable: false,
-    metadata: {
-      contentType,
-      cacheControl: 'public, max-age=31536000',
+  try {
+    await file.save(buffer, {
+      resumable: false,
+      public: true,
       metadata: {
-        uploadedBy: decoded.uid,
-        purpose: 'ninunulie',
+        contentType,
+        cacheControl: 'public, max-age=31536000',
+        metadata: {
+          uploadedBy: decoded.uid,
+          purpose: 'ninunulie',
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    // Retry without predefined ACL if uniform bucket-level access is enabled.
+    if (String(error?.message || '').includes('uniform bucket-level access') || error?.code === 400) {
+      await file.save(buffer, {
+        resumable: false,
+        metadata: {
+          contentType,
+          cacheControl: 'public, max-age=31536000',
+          metadata: {
+            uploadedBy: decoded.uid,
+            purpose: 'ninunulie',
+          },
+        },
+      });
+      try {
+        await file.makePublic();
+      } catch {
+        // Public ACL optional when IAM grants allUsers read.
+      }
+    } else {
+      throw error;
+    }
+  }
 
   const downloadURL = `https://storage.googleapis.com/${MEDIA_BUCKET}/${objectPath}`;
 

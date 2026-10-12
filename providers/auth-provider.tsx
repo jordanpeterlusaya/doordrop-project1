@@ -18,6 +18,7 @@ import { getFirebaseAuthErrorMessage } from '@/lib/auth-errors';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
 import { getUserProfile, recordUserAppOpen, type UserProfile, upsertUserProfile } from '@/lib/user-profile';
+import { clearCustomerPresence } from '@/lib/customer-presence';
 
 type AuthContextValue = {
   authError: string;
@@ -400,7 +401,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }) => {
       if (authenticating) {
         logWarning(authScope, 'registerWithEmail ignored while authenticating');
-        return;
+        throw new Error('Registration already in progress.');
       }
 
       setAuthenticating(true);
@@ -437,6 +438,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: input.email.trim().toLowerCase(),
         });
         setAuthError(getAuthMessage(error, 'Registration failed. Please try again.'));
+        throw error;
       } finally {
         setAuthenticating(false);
       }
@@ -450,6 +452,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     logAsyncStart(authScope, 'signOut', { uid: auth.currentUser?.uid ?? null });
 
     try {
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await clearCustomerPresence(uid).catch(() => null);
+      }
       await firebaseSignOut(auth);
       logAsyncSuccess(authScope, 'signOut');
     } catch (error) {

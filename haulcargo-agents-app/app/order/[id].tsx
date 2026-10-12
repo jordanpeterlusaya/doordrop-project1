@@ -201,10 +201,11 @@ export default function OrderDetailScreen() {
         ) : null}
 
         <People
-          senderName={item.customerName}
+          senderName={item.senderName || item.customerName}
           senderPhone={item.senderPhone || item.customerPhone}
           recipientName={item.recipientName}
           recipientPhone={item.recipientPhone}
+          recipientAddress={item.recipientAddress || item.dropoffLabel}
         />
 
         {priceLine ? (
@@ -245,22 +246,38 @@ function People({
   senderPhone,
   recipientName,
   recipientPhone,
+  recipientAddress,
 }: {
   senderName?: string;
   senderPhone?: string;
   recipientName?: string;
   recipientPhone?: string;
+  recipientAddress?: string;
 }) {
   const senderNameText = String(senderName || '').trim();
   const senderPhoneText = String(senderPhone || '').trim();
   const recipientNameText = String(recipientName || '').trim();
   const recipientPhoneText = String(recipientPhone || '').trim();
-  if (!senderNameText && !senderPhoneText && !recipientNameText && !recipientPhoneText) return null;
+  const recipientAddressText = String(recipientAddress || '').trim();
+  if (
+    !senderNameText &&
+    !senderPhoneText &&
+    !recipientNameText &&
+    !recipientPhoneText &&
+    !recipientAddressText
+  ) {
+    return null;
+  }
   return (
     <View style={styles.block}>
       <Text style={styles.kicker}>Watu</Text>
-      {senderNameText ? <PersonRow role="Mtumaji" value={senderNameText} /> : null}
-      {senderPhoneText ? <PersonRow role="Simu" value={senderPhoneText} phone={senderPhoneText} /> : null}
+      {senderNameText || senderPhoneText ? (
+        <PersonRow
+          role="Mtumaji"
+          value={[senderNameText, senderPhoneText].filter(Boolean).join(' · ')}
+          phone={senderPhoneText}
+        />
+      ) : null}
       {recipientNameText || recipientPhoneText ? (
         <PersonRow
           role="Mpokeaji"
@@ -268,6 +285,7 @@ function People({
           phone={recipientPhoneText}
         />
       ) : null}
+      {recipientAddressText ? <PersonRow role="Anwani" value={recipientAddressText} /> : null}
     </View>
   );
 }

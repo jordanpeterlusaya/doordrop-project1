@@ -74,7 +74,8 @@ export type DeliveryOrder = {
   customerName: string;
   customerEmail: string;
   customerPhone: string;
-  /** Cargo sender number copied onto carrier shipments for arrival SMS. */
+  /** Cargo sender (mtumaji) mirrored onto carrier shipments for agents + SMS. */
+  senderName?: string;
   senderPhone?: string;
   flow: DeliveryFlow;
   serviceLabel: string;
@@ -1192,6 +1193,7 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     customerName: input.customerName,
     customerEmail: input.customerEmail,
     customerPhone: input.customerPhone,
+    senderName: String(input.customerName || '').trim(),
     senderPhone: String(input.customerPhone || '').trim(),
     flow: input.flow,
     serviceLabel: input.serviceLabel,
@@ -2222,6 +2224,32 @@ export async function submitDeliveryOrderRating(input: {
   await batch.commit();
 }
 
+/** Pickup completed (Imepokelewa / picked_up+) — customer must not cancel. */
+export function canCustomerCancelDeliveryOrder(order: {
+  status?: string | null;
+  logisticsStatus?: string | null;
+  carrierTrackStep?: string | null;
+  flow?: string | null;
+} | null | undefined) {
+  if (!order) return false;
+  const status = String(order.status || '');
+  if (['delivered', 'cancelled'].includes(status)) return false;
+  if (['in_transit'].includes(status)) return false;
+  const track = String(order.carrierTrackStep || '').toLowerCase();
+  if (['packed', 'transit', 'arrived', 'handed'].includes(track)) return false;
+  if (isOutsideParcelOrder(order)) {
+    const logistics = String(order.logisticsStatus || '');
+    if (
+      ['received_at_hub', 'in_transit_carrier', 'arrived_destination', 'out_for_delivery', 'completed'].includes(
+        logistics
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function cancelDeliveryOrderByUser(orderId: string, reason: string) {
   const trimmedReason = reason.trim();
   if (trimmedReason.length < 4) {
@@ -2238,9 +2266,38 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
     throw new Error('Delivered orders cannot be cancelled.');
   }
 
+  if (!canCustomerCancelDeliveryOrder(order)) {
+    throw new Error(
+      'This order can no longer be cancelled — the cargo has already been picked up (Imepokelewa).'
+    );
+  }
+
   if (order.status === 'cancelled') {
     return;
   }
+
+  const shipmentId = String(order.carrierShipmentId || order.id).trim();
+  const shipmentSnap = shipmentId ? await getDoc(doc(db, 'carrierShipments', shipmentId)) : null;
+  const shipment = shipmentSnap?.exists()
+    ? (shipmentSnap.data() as {
+        shipmentStatus?: string;
+        trackStep?: string;
+        offeredCarrierId?: string;
+        carrierId?: string;
+      })
+    : null;
+  const shipmentStatus = String(shipment?.shipmentStatus || '').toLowerCase();
+  const shipmentTrack = String(shipment?.trackStep || '').toLowerCase();
+  if (
+    ['picked_up', 'at_bus', 'in_transit', 'arrived', 'delivered'].includes(shipmentStatus) ||
+    ['packed', 'transit', 'arrived', 'handed'].includes(shipmentTrack)
+  ) {
+    throw new Error(
+      'This order can no longer be cancelled — the cargo has already been picked up (Imepokelewa).'
+    );
+  }
+
+  const notifyCarrierId = String(shipment?.offeredCarrierId || shipment?.carrierId || '').trim();
 
   const batch = writeBatch(db);
   batch.update(orderRef(orderId), {
@@ -2250,6 +2307,8 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
     cancelledAt: serverTimestamp(),
     driverSearchMessage: 'This order was cancelled by the customer.',
     driverSearchResolvedAt: serverTimestamp(),
+    carrierMatchStatus: 'matching',
+    carrierTrackStep: deleteField(),
     updatedAt: serverTimestamp(),
   });
 
@@ -2258,6 +2317,31 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
       isAvailable: true,
       currentOrderId: '',
       updatedAt: serverTimestamp(),
+    });
+  }
+
+  // Clear agent inbox offer immediately (Cloud Function also notifies).
+  if (shipmentSnap?.exists()) {
+    batch.update(doc(db, 'carrierShipments', shipmentId), {
+      shipmentStatus: 'cancelled',
+      offeredCarrierId: null,
+      carrierId: null,
+      capacityReserved: false,
+      trackStep: deleteField(),
+      cancelledBy: 'customer',
+      cancelledAt: serverTimestamp(),
+      cancelReason: trimmedReason.slice(0, 240),
+    });
+  }
+
+  if (notifyCarrierId) {
+    batch.set(doc(collection(db, 'carriers', notifyCarrierId, 'notifications')), {
+      title: 'Oda imefutwa',
+      body: `${order.orderNumber || orderId} · mteja amefuta oda`,
+      orderId,
+      type: 'carrier_offer_cancelled',
+      createdAt: serverTimestamp(),
+      read: false,
     });
   }
 

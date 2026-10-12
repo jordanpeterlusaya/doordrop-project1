@@ -34,6 +34,11 @@ const {
   handleVerifyOtp,
 } = require('./carrier-otp');
 const {
+  handleConfirmCustomerPhone,
+  handleSendCustomerOtp,
+  handleVerifyCustomerOtp,
+} = require('./customer-otp');
+const {
   handleCompleteDeliveryProof,
   handleDeliveryProofOptions,
   handleDeliveryProofUpload,
@@ -611,6 +616,9 @@ async function requestListener(req, res) {
             'POST /carrier-auth/otp/verify',
             'POST /carrier-auth/otp/login',
             'POST /carrier-auth/confirm-phone',
+            'POST /customer-auth/otp/send',
+            'POST /customer-auth/otp/verify',
+            'POST /customer-auth/confirm-phone',
             'GET /carrier/delivery-proof/options',
             'POST /carrier/delivery-proof/otp/send',
             'POST /carrier/delivery-proof/upload',
@@ -738,6 +746,18 @@ async function requestListener(req, res) {
       return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/customer-auth/otp/send') {
+      const payload = await handleSendCustomerOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/customer-auth/otp/verify') {
+      const payload = await handleVerifyCustomerOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/login') {
       const payload = await handleLoginWithOtp(req);
       sendJson(res, 200, payload, originHeader);
@@ -805,6 +825,38 @@ async function requestListener(req, res) {
         return;
       }
       const payload = await handleConfirmPhone(req, decoded);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/customer-auth/confirm-phone') {
+      const authHeader = String(req.headers.authorization || req.headers.Authorization || '');
+      const match = authHeader.match(/^Bearer\s+(.+)$/i);
+      if (!match) {
+        sendJson(res, 401, { error: 'Missing auth token.' }, originHeader);
+        return;
+      }
+      const { cert, getApps, initializeApp } = require('firebase-admin/app');
+      const { getAuth } = require('firebase-admin/auth');
+      if (!getApps().length) {
+        const firebaseAdminOptions = {};
+        if (config.firebaseServiceAccount) {
+          firebaseAdminOptions.credential = cert(config.firebaseServiceAccount);
+        }
+        if (config.firebaseProjectId || config.firebaseServiceAccount?.project_id) {
+          firebaseAdminOptions.projectId =
+            config.firebaseProjectId || config.firebaseServiceAccount?.project_id;
+        }
+        initializeApp(firebaseAdminOptions);
+      }
+      let decoded;
+      try {
+        decoded = await getAuth().verifyIdToken(match[1].trim());
+      } catch {
+        sendJson(res, 401, { error: 'Invalid or expired auth token.' }, originHeader);
+        return;
+      }
+      const payload = await handleConfirmCustomerPhone(req, decoded);
       sendJson(res, 200, payload, originHeader);
       return;
     }

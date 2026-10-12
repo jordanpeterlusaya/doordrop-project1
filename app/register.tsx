@@ -11,9 +11,11 @@ import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { resolveAuthReturnTo } from '@/lib/auth-navigation';
 import { useAppCopy } from '@/lib/app-copy';
+import { sendCustomerOtp } from '@/lib/otp-api';
+import { saveRegistrationDraft } from '@/lib/registration-draft';
 import { useAuthSession } from '@/providers/auth-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const TERMS_URL = 'https://doordrop-terms.vercel.app/';
 const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
@@ -21,7 +23,7 @@ const PRIVACY_URL = 'https://doordrop-terms.vercel.app/privacy.html';
 function RegisterScreenContent() {
   const router = useRouter();
   const params = useLocalSearchParams<{ returnTo?: string }>();
-  const { authError, authenticating, clearAuthError, registerWithEmail, user } = useAuthSession();
+  const { authError, clearAuthError, user } = useAuthSession();
   const copy = useAppCopy();
   const [fullName, setFullName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -30,6 +32,7 @@ function RegisterScreenContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [formError, setFormError] = useState('');
+  const [sendingOtp, setSendingOtp] = useState(false);
   const returnTo = resolveAuthReturnTo(params.returnTo);
   const errorText = formError || authError;
 
@@ -55,7 +58,7 @@ function RegisterScreenContent() {
     }
   };
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     const trimmedFullName = fullName.trim();
     const trimmedPhoneNumber = phoneNumber.trim();
     const trimmedEmail = email.trim().toLowerCase();
@@ -86,12 +89,36 @@ function RegisterScreenContent() {
     }
 
     setFormError('');
-    void registerWithEmail({
-      fullName: trimmedFullName,
-      phoneNumber: trimmedPhoneNumber,
-      email: trimmedEmail,
-      password,
-    });
+    clearAuthError();
+    setSendingOtp(true);
+
+    try {
+      await saveRegistrationDraft({
+        fullName: trimmedFullName,
+        phoneNumber: trimmedPhoneNumber,
+        email: trimmedEmail,
+        password,
+        returnTo,
+      });
+
+      const otpResult = await sendCustomerOtp(trimmedPhoneNumber, 'signup');
+
+      router.push({
+        pathname: '/otp',
+        params: {
+          phone: trimmedPhoneNumber,
+          phoneMasked: otpResult.phoneMasked || '',
+          cooldown: String(otpResult.cooldownSeconds || 60),
+          expires: String(otpResult.expiresInSeconds || 300),
+          otpBypass: otpResult.otpBypass ? '1' : '0',
+          returnTo,
+        },
+      });
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : 'Imeshindwa kutuma msimbo.');
+    } finally {
+      setSendingOtp(false);
+    }
   };
 
   return (
@@ -164,7 +191,7 @@ function RegisterScreenContent() {
         }}
         placeholder={copy.register.confirmPassword}
         textContentType="newPassword"
-        onSubmitEditing={handleRegister}
+        onSubmitEditing={() => void handleRegister()}
       />
 
       <View style={styles.termsRow}>
@@ -195,9 +222,10 @@ function RegisterScreenContent() {
       {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
 
       <PrimaryButton
-        label={authenticating ? copy.register.submitting : copy.register.submit}
-        onPress={handleRegister}
-        style={authenticating ? styles.buttonDisabled : undefined}
+        label={sendingOtp ? copy.register.submitting : copy.register.submit}
+        onPress={() => void handleRegister()}
+        style={sendingOtp ? styles.buttonDisabled : undefined}
+        disabled={sendingOtp}
       />
 
       <View style={styles.footerRow}>

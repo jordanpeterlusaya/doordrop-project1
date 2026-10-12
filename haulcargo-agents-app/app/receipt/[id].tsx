@@ -21,7 +21,7 @@ function stickerHtml(item: ReturnType<typeof useCarrierSession>['shipments'][0])
     <div class="code">${code}</div>
     <div class="row">Kwenda: ${dropOffLabel(item)}</div>
     <div class="row">Uzito: ${item.weightKg || 0} kg</div>
-    <div class="row">Mtumaji: ${item.customerName || '—'}</div>
+    <div class="row">Mtumaji: ${item.senderName || item.customerName || '—'}</div>
     <div class="row">Mpokeaji: ${item.recipientName || '—'}</div>
     <div class="row">Nauli: ${money(item.cashExpected)}</div>
   </body></html>`;
@@ -65,11 +65,17 @@ export default function ReceiptScreen() {
         </View>
         <View style={styles.row}>
           <Text style={styles.label}>Mtumaji</Text>
-          <Text style={styles.value}>{item.customerName || '—'}</Text>
+          <Text style={styles.value}>
+            {[item.senderName || item.customerName, item.senderPhone || item.customerPhone]
+              .filter(Boolean)
+              .join(' · ') || '—'}
+          </Text>
         </View>
         <View style={styles.row}>
           <Text style={styles.label}>Mpokeaji</Text>
-          <Text style={styles.value}>{item.recipientName || '—'}</Text>
+          <Text style={styles.value}>
+            {[item.recipientName, item.recipientPhone].filter(Boolean).join(' · ') || '—'}
+          </Text>
         </View>
         <View style={styles.row}>
           <Text style={styles.label}>Nauli</Text>

@@ -71,6 +71,8 @@ async function sendFcmMessages(tokens, { title, body, data }) {
           notification: {
             channelId: 'carrier_offers',
             sound: 'default',
+            defaultVibrateTimings: true,
+            notificationCount: 1,
           },
         },
       });

@@ -1,17 +1,31 @@
 // app/book-cargo.tsx
 // Complete crash-proof cargo booking screen with all dependencies handled safely
 
-import { buildFrontendPricingEstimates } from '@/lib/cargo-pricing';
+import { CARGO_CALLOUT_LAYOUT, CargoBullseyePin, CargoRouteCallout } from '@/components/map-markers';
+import { MapRouteLine } from '@/components/map-route-line';
+import {
+  buildNearbyLiveVehicles,
+  NearbyLiveVehicleMarkers,
+  projectMapCoordinate,
+  spaceNearbyVehicles,
+  type MapViewportRegion,
+} from '@/components/nearby-live-vehicles';
+import { buildFrontendPricingEstimates, distanceKmFromMeters, minFareFromDistanceMeters } from '@/lib/cargo-pricing';
+import { FirebaseError } from 'firebase/app';
+import { getFirebaseDataErrorMessage } from '@/lib/auth-errors';
 import { images } from '@/lib/images';
-import { lightMapStyle } from '@/lib/light-map-style';
+import { cargoMapStyle } from '@/lib/light-map-style';
 import { recordAppActivity } from '@/lib/app-analytics';
 import { recordCargoDiagnostic } from '@/lib/cargo-diagnostics';
 import {
   createSearchSessionToken,
+  ensureReadablePlaceLabel,
   fetchLocationSuggestions,
   fetchRouteEstimate,
+  getInstantLocationSuggestions,
   resolveTypedLocation,
   retrieveLocationSuggestion,
+  reverseGeocodeLocation,
   type LocationSuggestion,
   type PricingEstimate,
   type RouteEstimate,
@@ -19,12 +33,29 @@ import {
   type RouteEstimateVehicleType,
   type RetrievedLocation,
 } from '@/lib/location-search';
+import {
+  ensureCustomerLocation,
+  getCustomerLocationSnapshot,
+  subscribeCustomerLocation,
+} from '@/lib/customer-location';
+import { formatExpoGeocodedLabel, isCoordinateLikeLabel } from '@/lib/place-labels';
 import { runMapsDiagnostics } from '@/lib/maps-diagnostics';
 import { canRenderNativeGoogleMap, hasGoogleMapsBuildConfig } from '@/lib/maps-config';
 import { getNativeMaps } from '@/lib/native-maps';
+import { fetchRoadFollowingRoute } from '@/lib/road-route';
 import { filterValidCoordinates, isValidCoordinate } from '@/lib/route-utils';
 import { getSavedPlaces as getStoredSavedPlaces, type SavedPlace } from '@/lib/saved-places';
-import { subscribeToDrivers, type DriverRecord, type DriverVehicleType } from '@/lib/delivery-data';
+import {
+  createDeliveryOrder,
+  mergeDriverLivePositions,
+  subscribeToDriverLocations,
+  subscribeToDrivers,
+  subscribeToOrder,
+  updateCargoNegotiation,
+  type DeliveryOrder,
+  type DriverLocationRecord,
+  type DriverRecord,
+} from '@/lib/delivery-data';
 import {
   logAsyncFailure,
   logAsyncStart,
@@ -33,10 +64,16 @@ import {
   logWarning,
 } from '@/lib/debug-logger';
 import { tryRequire } from '@/lib/safety';
+import { isCargoServiceAvailableAt } from '@/lib/service-cities';
+import { openPhoneDialer, readablePhone } from '@/lib/phone-link';
+import { upsertUserProfile } from '@/lib/user-profile';
 import { useAuthSession } from '@/providers/auth-provider';
+import { useLanguage } from '@/providers/language-provider';
 import { useAppCopy } from '@/lib/app-copy';
 import { classifyLocationError, type CustomerNoticeKind } from '@/lib/network-status';
-import { MapStopPin } from '@/components/map-markers';
+import { formatScheduleSummary } from '@/lib/schedule-delivery';
+import { CargoOfferSearch } from '@/components/cargo-offer-search';
+import { LocationSuggestionsList } from '@/components/location-suggestions-list';
 import { ServiceNotice } from '@/components/service-notice';
 import { typography } from '@/constants/typography';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -45,20 +82,25 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Dimensions,
+  Easing,
   Image,
   Keyboard,
+  KeyboardAvoidingView,
+  LayoutAnimation,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // ============================================
 // TYPES & CONSTANTS (self-contained)
@@ -73,7 +115,7 @@ type PickupState = 'loading' | 'ready' | 'error';
 type DestinationState = 'idle' | 'searching' | 'resolved' | 'error';
 type CargoLoadType = 'small' | 'half' | 'full' | 'overload';
 type RouteSource = 'google' | 'fallback';
-type CargoSheetStep = 'cargo-details' | 'carrier';
+type CargoSheetStep = 'choose' | 'offer';
 
 type RouteMetrics = {
   coordinates: RoutePoint[];
@@ -96,33 +138,42 @@ type CargoSizeOption = {
   subtitle: string;
 };
 
-type LiveCarrierMarker = {
-  id: string;
-  coordinate: RoutePoint;
-  title: string;
-  description: string;
-  iconName: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-  mappedVehicleKey: RouteEstimateVehicleType;
-  isSelectedType: boolean;
-  nearestDistanceMeters: number;
-};
-
 // Theme constants (fallback)
 const cargoTheme = {
   colors: {
-    primary: '#10B981',
-    primaryDark: '#059669',
-    text: '#1E293B',
-    subtext: '#64748B',
-    ink: '#0F172A',
+    primary: '#FFE500',
+    primaryDark: '#111827',
+    text: '#111827',
+    subtext: '#6B7280',
+    ink: '#111827',
+  },
+  cta: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: '#111827',
+    paddingHorizontal: 20,
+    labelSize: 17,
+    labelLineHeight: 22,
+    labelColor: '#FFFFFF',
+    letterSpacing: -0.2,
   },
 };
 
-// Default vehicles
-const cargoVehicles: CargoVehicle[] = [
-  { key: 'toyo', title: 'TOYO', capacity: 'Up to 1 ton', price: 'Route required', eta: '14-24 min' },
-  { key: 'kirikuu', title: 'Kirikuu', capacity: 'Up to 1 ton', price: 'Route required', eta: '10-18 min' },
-];
+function getCargoVehicles(language: 'en' | 'sw'): CargoVehicle[] {
+  if (language === 'sw') {
+    return [
+      { key: 'toyo', title: 'TOYO', capacity: 'Bajaji · hadi tani 1', price: 'Toa bei', eta: '' },
+      { key: 'kirikuu', title: 'Kirikuu', capacity: 'Pickup · hadi tani 1', price: 'Toa bei', eta: '' },
+      { key: 'canter', title: 'Canter', capacity: 'Lori ndogo · hadi tani 3', price: 'Toa bei', eta: '' },
+    ];
+  }
+
+  return [
+    { key: 'toyo', title: 'TOYO', capacity: 'Bajaji · up to 1 ton', price: 'Offer a fare', eta: '' },
+    { key: 'kirikuu', title: 'Kirikuu', capacity: 'Pickup · up to 1 ton', price: 'Offer a fare', eta: '' },
+    { key: 'canter', title: 'Canter', capacity: 'Light truck · up to 3 tons', price: 'Offer a fare', eta: '' },
+  ];
+}
 
 const cargoLoadOptions: CargoSizeOption[] = [
   { key: 'small', label: 'Kidogo', subtitle: 'Nafasi ndogo' },
@@ -130,6 +181,17 @@ const cargoLoadOptions: CargoSizeOption[] = [
   { key: 'full', label: 'Inajaa', subtitle: 'Nafasi imejaa' },
   { key: 'overload', label: 'Inazidi', subtitle: 'Mzigo mkubwa' },
 ];
+
+function normalizeCargoVehicleKey(value?: string | null): RouteEstimateVehicleType {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'kirikuu') {
+    return 'kirikuu';
+  }
+  if (normalized === 'canter' || normalized === 'center' || normalized === 'fuso') {
+    return 'canter';
+  }
+  return 'toyo';
+}
 
 const fallbackSavedPlaces: SavedPlace[] = [
   { id: 'home', label: 'Home', address: 'Mikocheni, Dar es Salaam', icon: 'home' },
@@ -143,18 +205,13 @@ const fallbackSavedPlaces: SavedPlace[] = [
   },
 ];
 
-const vehicleEtaBufferMinutes: Record<string, number> = {
-  toyo: 10,
-  kirikuu: 6,
-};
 const LIVE_CARRIER_RADIUS_METERS = 12000;
 const LIVE_CARRIER_MAX_VISIBLE_COUNT = 8;
-const LIVE_CARRIER_MARKER_ANIMATION_DURATION_MS = 900;
-
-// Vehicle images from our safe import
 const vehicleImages: Record<string, any> = {
-  toyo: images.toyoMedium,
-  kirikuu: images.kirikuu,
+  toyo: images.cargoAvatarToyo,
+  kirikuu: images.cargoAvatarKirikuu,
+  canter: images.cargoAvatarCanter,
+  center: images.cargoAvatarCanter,
 };
 const screenScope = 'BookCargoScreen';
 const defaultPickupPoint: RoutePoint = {
@@ -170,6 +227,33 @@ function formatTzs(amount: number): string {
   return `TZS ${Math.max(0, Math.round(amount)).toLocaleString('en-US')}`;
 }
 
+function parseOfferTzs(value: string): number {
+  const digits = String(value || '').replace(/[^\d]/g, '');
+  if (!digits) {
+    return 0;
+  }
+  const amount = Number(digits);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function formatOfferInput(value: string): string {
+  const amount = parseOfferTzs(value);
+  return amount > 0 ? amount.toLocaleString('en-US') : '';
+}
+
+const OFFER_STEP_TZS = 1000;
+
+function cargoVehicleBadge(value?: string | null) {
+  const key = normalizeCargoVehicleKey(value);
+  if (key === 'kirikuu') {
+    return 'Kirikuu';
+  }
+  if (key === 'canter') {
+    return 'Canter';
+  }
+  return 'TOYO';
+}
+
 function formatDurationFromMinutes(totalMinutes: number): string {
   const safeMinutes = Math.max(1, Math.round(totalMinutes));
   const hours = Math.floor(safeMinutes / 60);
@@ -177,6 +261,56 @@ function formatDurationFromMinutes(totalMinutes: number): string {
   if (hours === 0) return `${safeMinutes} min`;
   if (minutes === 0) return `${hours} hr`;
   return `${hours} hr ${minutes} min`;
+}
+
+function formatArrivalClock(date: Date): string {
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const hour12 = hours % 12 || 12;
+  const suffix = hours < 12 ? 'AM' : 'PM';
+  return `${hour12}:${String(minutes).padStart(2, '0')} ${suffix}`;
+}
+
+function estimateMinutesFromMeters(meters: number) {
+  if (!Number.isFinite(meters) || meters <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.round((meters / 1000 / 22) * 60));
+}
+
+function estimateDurationSecondsFromMeters(meters: number) {
+  if (!Number.isFinite(meters) || meters <= 0) {
+    return 0;
+  }
+  const speedKph = meters > 30000 ? 52 : meters > 8000 ? 34 : 22;
+  return Math.max(60, Math.round((meters / 1000 / speedKph) * 3600));
+}
+
+function formatCargoPickupEta(minutes: number) {
+  const safeMinutes = Math.max(0, Math.round(minutes));
+  if (safeMinutes === 0) {
+    return 'Sasa';
+  }
+  if (safeMinutes < 60) {
+    return `dak ${safeMinutes}`;
+  }
+  const hours = Math.floor(safeMinutes / 60);
+  const remaining = safeMinutes % 60;
+  if (remaining === 0) {
+    return `${hours} hr`;
+  }
+  return `${hours} hr ${remaining} dak`;
+}
+
+function measurePolylineMeters(points: RoutePoint[] | undefined) {
+  if (!points || points.length < 2) {
+    return 0;
+  }
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    total += getDistanceBetweenPoints(points[index - 1], points[index]);
+  }
+  return total;
 }
 
 function formatDistance(meters: number): string {
@@ -197,32 +331,110 @@ function getDistanceBetweenPoints(p1: RoutePoint, p2: RoutePoint): number {
   return R * c;
 }
 
-function areSameRoutePoint(left?: RoutePoint | null, right?: RoutePoint | null) {
-  if (!left || !right) {
+const ROUTE_CAMERA_PAD = 1.28;
+const ROUTE_CAMERA_MAX_PAD = 1.4;
+const MIN_ROUTE_LAT_DELTA = 0.012;
+const MIN_ROUTE_LNG_DELTA = 0.012;
+
+function routeCoordinateBounds(points: RoutePoint[]) {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+
+  for (const point of points) {
+    minLat = Math.min(minLat, point.latitude);
+    maxLat = Math.max(maxLat, point.latitude);
+    minLng = Math.min(minLng, point.longitude);
+    maxLng = Math.max(maxLng, point.longitude);
+  }
+
+  return { minLat, maxLat, minLng, maxLng };
+}
+
+function buildCorridorCameraRegion(points: RoutePoint[]) {
+  const validPoints = filterValidCoordinates(points);
+  if (!validPoints.length) {
+    return null;
+  }
+
+  if (validPoints.length === 1) {
+    return {
+      latitude: validPoints[0].latitude,
+      longitude: validPoints[0].longitude,
+      latitudeDelta: 0.02,
+      longitudeDelta: 0.018,
+    };
+  }
+
+  const bounds = routeCoordinateBounds(validPoints);
+  const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.006);
+  const lngSpan = Math.max(bounds.maxLng - bounds.minLng, 0.006);
+
+  return {
+    latitude: (bounds.minLat + bounds.maxLat) / 2,
+    longitude: (bounds.minLng + bounds.maxLng) / 2,
+    latitudeDelta: Math.max(latSpan * ROUTE_CAMERA_PAD, MIN_ROUTE_LAT_DELTA),
+    longitudeDelta: Math.max(lngSpan * ROUTE_CAMERA_PAD, MIN_ROUTE_LNG_DELTA),
+  };
+}
+
+const MAX_CALLOUT_LATERAL_NUDGE = 14;
+
+type ClampedMapCallout = {
+  x: number;
+  y: number;
+  placement: 'above' | 'below';
+  stemOffset: number;
+};
+
+function attachMapCallout(
+  pin: { x: number; y: number },
+  mapSize: { width: number; height: number },
+  inset: { top: number; right: number; bottom: number; left: number }
+): ClampedMapCallout {
+  const width = CARGO_CALLOUT_LAYOUT.width;
+  const height = CARGO_CALLOUT_LAYOUT.overlayHeight;
+  const ring = CARGO_CALLOUT_LAYOUT.bullseye / 2;
+  const gap = 2;
+  const centeredX = pin.x - width / 2;
+  const aboveY = pin.y - height - ring + gap;
+  const belowY = pin.y + ring + gap;
+  const minX = inset.left;
+  const maxX = mapSize.width - inset.right - width;
+  const minY = inset.top;
+  const maxBottom = mapSize.height - inset.bottom;
+
+  const aboveFits = aboveY >= minY;
+  const belowFits = belowY + height <= maxBottom;
+  const placement: 'above' | 'below' = !aboveFits && belowFits ? 'below' : 'above';
+  const attachedY = placement === 'below' ? belowY : aboveY;
+
+  const overflow =
+    centeredX < minX ? minX - centeredX : centeredX > maxX ? maxX - centeredX : 0;
+  const nudge = Math.max(-MAX_CALLOUT_LATERAL_NUDGE, Math.min(MAX_CALLOUT_LATERAL_NUDGE, overflow));
+
+  return {
+    x: centeredX + nudge,
+    y: attachedY,
+    placement,
+    stemOffset: -nudge,
+  };
+}
+
+function isCameraOverZoomed(region: { latitudeDelta: number; longitudeDelta: number }, points: RoutePoint[]) {
+  const validPoints = filterValidCoordinates(points);
+  if (validPoints.length < 2) {
     return false;
   }
 
-  return Math.abs(left.latitude - right.latitude) < 0.000001 && Math.abs(left.longitude - right.longitude) < 0.000001;
-}
-
-function buildRouteCameraRegion(pickup: RoutePoint, dropoff: RoutePoint, sheetVisible: boolean) {
-  const minLat = Math.min(pickup.latitude, dropoff.latitude);
-  const maxLat = Math.max(pickup.latitude, dropoff.latitude);
-  const minLng = Math.min(pickup.longitude, dropoff.longitude);
-  const maxLng = Math.max(pickup.longitude, dropoff.longitude);
-  const latSpan = Math.max(maxLat - minLat, 0.01);
-  const lngSpan = Math.max(maxLng - minLng, 0.01);
-  const latitudeDelta = latSpan * (sheetVisible ? 2.4 : 1.85);
-  const longitudeDelta = lngSpan * 1.9;
-  const midLat = (minLat + maxLat) / 2;
-  const midLng = (minLng + maxLng) / 2;
-
-  return {
-    latitude: sheetVisible ? midLat - latitudeDelta * 0.22 : midLat,
-    longitude: midLng,
-    latitudeDelta,
-    longitudeDelta,
-  };
+  const bounds = routeCoordinateBounds(validPoints);
+  const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.006);
+  const lngSpan = Math.max(bounds.maxLng - bounds.minLng, 0.006);
+  return (
+    region.latitudeDelta > latSpan * ROUTE_CAMERA_MAX_PAD ||
+    region.longitudeDelta > lngSpan * ROUTE_CAMERA_MAX_PAD
+  );
 }
 
 function mapEstimateToRouteMetrics(estimate: RouteEstimate): RouteMetrics {
@@ -234,17 +446,30 @@ function mapEstimateToRouteMetrics(estimate: RouteEstimate): RouteMetrics {
   };
 }
 
-function buildVehicleEtaRange(durationSeconds: number, vehicleKey: string): string {
-  const minimumTravelMinutes = Math.max(1, Math.ceil(durationSeconds / 60));
-  const bufferMinutes = vehicleEtaBufferMinutes[vehicleKey] ?? 8;
-  const maximumEtaMinutes = minimumTravelMinutes + bufferMinutes;
-  return `${formatDurationFromMinutes(minimumTravelMinutes)}-${formatDurationFromMinutes(maximumEtaMinutes)}`;
+function formatRouteTravelTime(durationSeconds: number): string | null {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return null;
+  }
+  return formatDurationFromMinutes(durationSeconds / 60);
 }
 
-function buildFallbackRoute(pickupPoint: RoutePoint, dropoffPoint: RoutePoint): RouteMetrics {
+async function buildFallbackRoute(pickupPoint: RoutePoint, dropoffPoint: RoutePoint): Promise<RouteMetrics> {
+  const road = await fetchRoadFollowingRoute(pickupPoint, dropoffPoint);
+  if (road && road.coordinates.length > 2) {
+    return {
+      coordinates: road.coordinates,
+      distanceMeters: Math.max(road.distanceMeters || getDistanceBetweenPoints(pickupPoint, dropoffPoint), 500),
+      durationSeconds:
+        road.durationSeconds > 0
+          ? road.durationSeconds
+          : estimateDurationSecondsFromMeters(road.distanceMeters || getDistanceBetweenPoints(pickupPoint, dropoffPoint)),
+      source: 'google',
+    };
+  }
+
   const distanceMeters = Math.max(getDistanceBetweenPoints(pickupPoint, dropoffPoint), 500);
   const averageSpeedKph = distanceMeters > 30000 ? 52 : 28;
-  const durationSeconds = Math.max(Math.round(((distanceMeters / 1000) / averageSpeedKph) * 3600), 6 * 60);
+  const durationSeconds = Math.max(Math.round(((distanceMeters / 1000) / averageSpeedKph) * 3600), 60);
   return {
     coordinates: [pickupPoint, dropoffPoint],
     distanceMeters,
@@ -253,49 +478,20 @@ function buildFallbackRoute(pickupPoint: RoutePoint, dropoffPoint: RoutePoint): 
   };
 }
 
-function mapDriverVehicleTypeToCarrier(vehicleType?: DriverVehicleType): RouteEstimateVehicleType | null {
-  switch (vehicleType) {
-    case 'kirikuu':
-      return 'kirikuu';
-    case 'toyo':
-    case 'pickup':
-    case 'toyo_xl':
-    case 'van':
-    case 'truck':
-      return 'toyo';
-    default:
-      return null;
-  }
-}
-
-function getDriverMarkerIcon(vehicleType?: DriverVehicleType): React.ComponentProps<typeof MaterialCommunityIcons>['name'] {
-  switch (vehicleType) {
-    case 'kirikuu':
-      return 'truck-fast-outline';
-    case 'toyo':
-    case 'pickup':
-    case 'toyo_xl':
-    case 'van':
-    case 'truck':
-      return 'truck-outline';
-    default:
-      return 'truck-fast-outline';
-  }
-}
-
 function formatLocationLabel(
   address: any,
   point: RoutePoint | null,
-  fallbackText?: string
+  fallbackText?: string,
+  language: 'en' | 'sw' = 'en'
 ): string {
-  if (address) {
-    const parts = [address.name, address.street, address.district, address.city, address.region].filter(Boolean);
-    const unique = [...new Set(parts)];
-    if (unique.length > 0) return unique.slice(0, 3).join(', ');
+  const fromExpo = formatExpoGeocodedLabel(address, point);
+  if (fromExpo && !isCoordinateLikeLabel(fromExpo)) {
+    return fromExpo;
   }
-  if (fallbackText?.trim()) return fallbackText.trim();
-  if (point) return `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`;
-  return 'Detecting your current location...';
+  if (fallbackText?.trim() && !isCoordinateLikeLabel(fallbackText)) {
+    return fallbackText.trim();
+  }
+  return language === 'sw' ? 'Inatafuta eneo lako...' : 'Finding your area...';
 }
 
 function formatCompactLocationLabel(value: string, fallback: string) {
@@ -336,51 +532,6 @@ type PrimaryButtonProps = {
 };
 
 const PRIMARY_BUTTON_PRESS_GUARD_MS = 650;
-const ROUTE_LINE_FILL = '#16A34A';
-const ROUTE_LINE_FALLBACK = '#34D399';
-
-function MapRouteLine({
-  Polyline,
-  coordinates,
-  fallback = false,
-}: {
-  Polyline: any;
-  coordinates: RoutePoint[];
-  fallback?: boolean;
-}) {
-  if (!Polyline || coordinates.length < 2) {
-    return null;
-  }
-
-  return (
-    <>
-      <Polyline
-        coordinates={coordinates}
-        strokeColor="rgba(15, 23, 42, 0.20)"
-        strokeWidth={12}
-        lineCap="round"
-        lineJoin="round"
-        zIndex={1}
-      />
-      <Polyline
-        coordinates={coordinates}
-        strokeColor="#FFFFFF"
-        strokeWidth={8}
-        lineCap="round"
-        lineJoin="round"
-        zIndex={2}
-      />
-      <Polyline
-        coordinates={coordinates}
-        strokeColor={fallback ? ROUTE_LINE_FALLBACK : ROUTE_LINE_FILL}
-        strokeWidth={5}
-        lineCap="round"
-        lineJoin="round"
-        zIndex={3}
-      />
-    </>
-  );
-}
 
 const PrimaryButton: React.FC<PrimaryButtonProps> = ({ label, icon, onPress, style, disabled = false }) => {
   const lastPressRef = useRef(0);
@@ -416,11 +567,19 @@ const PrimaryButton: React.FC<PrimaryButtonProps> = ({ label, icon, onPress, sty
 // ============================================
 
 const { height: screenHeight } = Dimensions.get('window');
-const vehicleSheetMaxHeight = Math.min(screenHeight * 0.78, 580);
+const SHEET_ANIMATION_MS = 340;
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  try {
+    UIManager.setLayoutAnimationEnabledExperimental(true);
+  } catch {}
+}
 
 export default function BookCargoScreen() {
   const router = useRouter();
   const copy = useAppCopy();
+  const insets = useSafeAreaInsets();
+  const { language } = useLanguage();
   const params = useLocalSearchParams<{
     repeat?: string;
     pickup?: string;
@@ -431,8 +590,22 @@ export default function BookCargoScreen() {
     dropoffLng?: string;
     vehicle?: string;
     cargoSize?: string;
+    requestedDriverId?: string;
+    requestedDriverName?: string;
+    timing?: string;
+    scheduleDate?: string;
+    scheduleTime?: string;
+    outOfReach?: string;
   }>();
+  const forcedOutOfReach = params.outOfReach === '1';
   const isRepeat = params.repeat === '1';
+  const timingMode = params.timing === 'later' ? 'later' : 'now';
+  const scheduleDate = params.scheduleDate ? String(params.scheduleDate) : '';
+  const scheduleTime = params.scheduleTime ? String(params.scheduleTime) : '';
+  const scheduleBannerLabel =
+    timingMode === 'later' && scheduleDate && scheduleTime
+      ? formatScheduleSummary(scheduleDate, scheduleTime, language)
+      : '';
   const repeatPickupLat = Number(params.pickupLat);
   const repeatPickupLng = Number(params.pickupLng);
   const hasRepeatPickup =
@@ -441,7 +614,7 @@ export default function BookCargoScreen() {
   const repeatDropoffLng = Number(params.dropoffLng);
   const hasRepeatDropoff =
     isRepeat && Number.isFinite(repeatDropoffLat) && Number.isFinite(repeatDropoffLng) && Boolean(params.dropoff?.trim());
-  const { profile, user } = useAuthSession();
+  const { profile, profileLoading, refreshProfile, user } = useAuthSession();
   const Location = useMemo(() => tryRequire<any>('expo-location'), []);
   const nativeMaps = useMemo(() => getNativeMaps(), []);
   const AnimatedRegion = nativeMaps.AnimatedRegion;
@@ -462,22 +635,50 @@ export default function BookCargoScreen() {
   const fitCameraTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickupInputRef = useRef<TextInput | null>(null);
   const dropoffInputRef = useRef<TextInput | null>(null);
-  const liveCarrierAnimatedCoordinatesRef = useRef<Record<string, any>>({});
-  const liveCarrierCoordinateSnapshotRef = useRef<Record<string, RoutePoint>>({});
+  const cargoVehicles = useMemo(() => getCargoVehicles(language), [language]);
   const defaultVehicleKey = cargoVehicles[0]?.key ?? 'toyo';
+
+  const cachedPickupLocation = hasRepeatPickup ? null : getCustomerLocationSnapshot();
+  const hasCachedPickup =
+    Boolean(cachedPickupLocation?.point) &&
+    Boolean(cachedPickupLocation?.label?.trim()) &&
+    cachedPickupLocation?.status === 'ready';
 
   // State
   const [pickupPoint, setPickupPoint] = useState<RoutePoint | null>(
-    hasRepeatPickup ? { latitude: repeatPickupLat, longitude: repeatPickupLng } : null
+    hasRepeatPickup
+      ? { latitude: repeatPickupLat, longitude: repeatPickupLng }
+      : cachedPickupLocation?.point ?? null
   );
   const [pickupLabel, setPickupLabel] = useState(
-    hasRepeatPickup ? String(params.pickup) : 'Detecting your current location...'
+    hasRepeatPickup
+      ? String(params.pickup)
+      : cachedPickupLocation?.label?.trim() ||
+        (language === 'sw' ? 'Inatafuta eneo lako...' : 'Finding your area...')
   );
   const [pickupInput, setPickupInput] = useState(
-    hasRepeatPickup ? String(params.pickup) : 'Detecting your current location...'
+    hasRepeatPickup
+      ? String(params.pickup)
+      : cachedPickupLocation?.label?.trim() ||
+        (language === 'sw' ? 'Inatafuta eneo lako...' : 'Finding your area...')
   );
-  const [pickupState, setPickupState] = useState<PickupState>(hasRepeatPickup ? 'ready' : 'loading');
-  const [pickupHint, setPickupHint] = useState('Checking your current GPS pickup point...');
+  const [pickupState, setPickupState] = useState<PickupState>(
+    hasRepeatPickup || hasCachedPickup ? 'ready' : 'loading'
+  );
+  const [cargoRegionStatus, setCargoRegionStatus] = useState<'checking' | 'available' | 'out-of-reach'>(
+    forcedOutOfReach
+      ? 'out-of-reach'
+      : hasRepeatPickup || hasCachedPickup
+        ? 'available'
+        : 'checking'
+  );
+  const [pickupHint, setPickupHint] = useState(
+    hasCachedPickup
+      ? language === 'sw'
+        ? 'Pickup imesasishwa kutoka GPS yako.'
+        : 'Pickup updated to your live GPS location.'
+      : 'Checking your current GPS pickup point...'
+  );
   const [pickupSuggestions, setPickupSuggestions] = useState<LocationSuggestion[]>([]);
   const [pickupNeedsSelection, setPickupNeedsSelection] = useState(false);
   const [loadingPickupSuggestions, setLoadingPickupSuggestions] = useState(false);
@@ -492,9 +693,7 @@ export default function BookCargoScreen() {
   const [routeMetrics, setRouteMetrics] = useState<RouteMetrics | null>(null);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
   const [routeNotice, setRouteNotice] = useState<CustomerNoticeKind | null>(null);
-  const [selectedVehicle, setSelectedVehicle] = useState(
-    params.vehicle === 'toyo' || params.vehicle === 'kirikuu' ? params.vehicle : defaultVehicleKey
-  );
+  const [selectedVehicle, setSelectedVehicle] = useState(normalizeCargoVehicleKey(params.vehicle) || defaultVehicleKey);
   const [selectedCargoType, setSelectedCargoType] = useState<CargoLoadType>(
     cargoLoadOptions.find((option) => option.label === params.cargoSize)?.key ?? 'small'
   );
@@ -509,8 +708,59 @@ export default function BookCargoScreen() {
   const [routeEditorExpanded, setRouteEditorExpanded] = useState(true);
   const [activeSearchField, setActiveSearchField] = useState<'pickup' | 'dropoff'>('dropoff');
   const [liveDrivers, setLiveDrivers] = useState<DriverRecord[]>([]);
-  const [cargoSheetStep, setCargoSheetStep] = useState<CargoSheetStep>('cargo-details');
-  const [, setLiveCarrierAnimationVersion] = useState(0);
+  const [driverLocations, setDriverLocations] = useState<Record<string, DriverLocationRecord>>({});
+  const [pickupScreenPoint, setPickupScreenPoint] = useState<{ x: number; y: number } | null>(null);
+  const [dropoffScreenPoint, setDropoffScreenPoint] = useState<{ x: number; y: number } | null>(null);
+  const [mapSize, setMapSize] = useState({ width: 0, height: 0 });
+  const [mapRegion, setMapRegion] = useState<MapViewportRegion>({
+    latitude: defaultPickupPoint.latitude,
+    longitude: defaultPickupPoint.longitude,
+    latitudeDelta: 0.045,
+    longitudeDelta: 0.04,
+  });
+  const [cargoSheetStep, setCargoSheetStep] = useState<CargoSheetStep>('choose');
+  const [customerOfferInput, setCustomerOfferInput] = useState('');
+  const [customerOfferNote, setCustomerOfferNote] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  useEffect(() => {
+    setCustomerOfferNote((current) => {
+      const trimmed = current.trim();
+      if (!trimmed || trimmed.length > 20) {
+        return copy.cargo.offerNoteDefault;
+      }
+      return trimmed;
+    });
+  }, [copy.cargo.offerNoteDefault]);
+  const [liveCargoOrder, setLiveCargoOrder] = useState<DeliveryOrder | null>(null);
+  const [offerBusy, setOfferBusy] = useState(false);
+  const mapSizeRef = useRef(mapSize);
+  const mapRegionRef = useRef(mapRegion);
+  const pickupPointRef = useRef<RoutePoint | null>(pickupPoint);
+  const dropoffPointRef = useRef<RoutePoint | null>(dropoffPoint);
+  mapSizeRef.current = mapSize;
+  mapRegionRef.current = mapRegion;
+  pickupPointRef.current = pickupPoint;
+  dropoffPointRef.current = dropoffPoint;
+  const sheetHeightAnim = useRef(new Animated.Value(0)).current;
+  const lastFitPointsRef = useRef<RoutePoint[]>([]);
+  const pendingCameraFitRef = useRef(false);
+  const pullingCameraInRef = useRef(false);
+
+  const handleGoBack = useCallback(() => {
+    if (cargoSheetStep === 'offer') {
+      setCargoSheetStep('choose');
+      return;
+    }
+    if (pickupPoint && dropoffPoint && routeMetrics && !routeEditorExpanded) {
+      setRouteEditorExpanded(true);
+      return;
+    }
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/home');
+  }, [cargoSheetStep, dropoffPoint, pickupPoint, routeEditorExpanded, routeMetrics, router]);
 
   const trackCargoActivity = useCallback(
     (eventName: string, featureKey: string, metadata?: Record<string, string | number | boolean | null | undefined>) => {
@@ -547,11 +797,30 @@ export default function BookCargoScreen() {
     } catch {}
   }, []);
 
-  const mapTopEdgePadding = routeEditorExpanded ? 236 : 130;
-  const mapBottomEdgePadding = routeEditorExpanded
-    ? 100
-    : Math.round(vehicleSheetMaxHeight + 28);
-  const mapSideEdgePadding = 52;
+  const safeSheetBottom = Math.max(insets.bottom, 12);
+  const chooseSheetHeight = Math.round(
+    Math.min(Math.max(560 + safeSheetBottom, screenHeight * 0.6), screenHeight * 0.7)
+  );
+  const showVehicleSheet = !!pickupPoint && !!dropoffPoint && !!routeMetrics;
+  const cargoLayoutStep =
+    !showVehicleSheet || routeEditorExpanded ? 'locations' : cargoSheetStep === 'offer' ? 'offer' : 'choose';
+  const targetSheetHeight = cargoLayoutStep === 'choose' ? chooseSheetHeight : 0;
+  const mapTopEdgePadding = cargoLayoutStep === 'locations' ? 200 : 120;
+  const mapBottomEdgePadding = cargoLayoutStep === 'locations' ? 56 : 88;
+  const mapSideEdgePadding = 60;
+
+  const pullCameraToCorridor = useCallback((points: RoutePoint[]) => {
+    const corridor = buildCorridorCameraRegion(points);
+    if (!corridor) {
+      return;
+    }
+    pullingCameraInRef.current = true;
+    try {
+      mapRef.current?.animateToRegion(corridor, 280);
+    } catch {
+      pullingCameraInRef.current = false;
+    }
+  }, []);
 
   const fitMapToPoints = useCallback((points: RoutePoint[]) => {
     const validPoints = filterValidCoordinates(points);
@@ -561,17 +830,16 @@ export default function BookCargoScreen() {
     }
 
     if (validPoints.length === 1) {
-      focusMapOnPoint(validPoints[0], 600);
+      focusMapOnPoint(validPoints[0], 560);
       return;
     }
 
-    const pickup = validPoints[0];
-    const dropoff = validPoints[validPoints.length - 1];
-    const region = buildRouteCameraRegion(pickup, dropoff, !routeEditorExpanded);
+    lastFitPointsRef.current = validPoints;
+    pendingCameraFitRef.current = true;
+    pullingCameraInRef.current = false;
 
     try {
-      mapRef.current?.animateToRegion(region, 700);
-      mapRef.current?.fitToCoordinates([pickup, dropoff], {
+      mapRef.current?.fitToCoordinates(validPoints, {
         edgePadding: {
           top: mapTopEdgePadding,
           right: mapSideEdgePadding,
@@ -580,8 +848,10 @@ export default function BookCargoScreen() {
         },
         animated: true,
       });
-    } catch {}
-  }, [focusMapOnPoint, mapBottomEdgePadding, mapSideEdgePadding, mapTopEdgePadding, routeEditorExpanded]);
+    } catch {
+      pullCameraToCorridor(validPoints);
+    }
+  }, [focusMapOnPoint, mapBottomEdgePadding, mapSideEdgePadding, mapTopEdgePadding, pullCameraToCorridor]);
 
   const fitMapToPickupAndDropoff = useCallback(
     (pickup?: RoutePoint | null, dropoff?: RoutePoint | null, delay = 380) => {
@@ -593,11 +863,14 @@ export default function BookCargoScreen() {
         clearTimeout(fitCameraTimeoutRef.current);
       }
 
+      const extras = filterValidCoordinates(routeMetrics?.coordinates ?? []);
+      const points = extras.length > 2 ? extras : [pickup, dropoff];
+
       fitCameraTimeoutRef.current = setTimeout(() => {
-        fitMapToPoints([pickup, dropoff]);
+        fitMapToPoints(points);
       }, delay);
     },
-    [fitMapToPoints]
+    [fitMapToPoints, routeMetrics?.coordinates]
   );
 
   useEffect(() => {
@@ -636,7 +909,7 @@ export default function BookCargoScreen() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = subscribeToDrivers(
+    const unsubscribeDrivers = subscribeToDrivers(
       (drivers) => {
         setLiveDrivers(drivers);
       },
@@ -646,8 +919,21 @@ export default function BookCargoScreen() {
         });
       }
     );
+    const unsubscribeLocations = subscribeToDriverLocations(
+      (locations) => {
+        setDriverLocations(locations);
+      },
+      (error) => {
+        logWarning(screenScope, 'live driver locations subscription failed', {
+          message: error.message,
+        });
+      }
+    );
 
-    return unsubscribe;
+    return () => {
+      unsubscribeDrivers();
+      unsubscribeLocations();
+    };
   }, []);
 
   // Load saved places
@@ -668,14 +954,55 @@ export default function BookCargoScreen() {
       });
   }, []);
 
-  // Load a safe preview pickup first, then upgrade to live GPS when permission is available.
+  // Load cached pickup first, then refresh quietly in the background when needed.
   useEffect(() => {
+    if (forcedOutOfReach) {
+      return;
+    }
+
     let isMounted = true;
+
+    const applyLivePickup = (livePoint: RoutePoint, liveLabel: string, source: 'cache' | 'gps') => {
+      const resolvedLabel =
+        liveLabel && !isCoordinateLikeLabel(liveLabel)
+          ? liveLabel
+          : formatLocationLabel(null, livePoint, liveLabel, language);
+
+      setPickupPoint(livePoint);
+      setPickupLabel(resolvedLabel);
+      setPickupInput(resolvedLabel);
+      setPickupState('ready');
+      setPickupNeedsSelection(false);
+      setCargoRegionStatus(isCargoServiceAvailableAt(livePoint) ? 'available' : 'out-of-reach');
+      setPickupHint(
+        source === 'gps'
+          ? language === 'sw'
+            ? 'Pickup imesasishwa kutoka GPS yako.'
+            : 'Pickup updated to your live GPS location.'
+          : language === 'sw'
+            ? 'Pickup imetumika kutoka eneo lililohifadhiwa.'
+            : 'Pickup restored from your last known location.'
+      );
+      focusMapOnPoint(livePoint, source === 'cache' ? 0 : 700);
+    };
+
+    const applyFromSnapshot = (next: ReturnType<typeof getCustomerLocationSnapshot>, source: 'cache' | 'gps') => {
+      if (!next.point || !next.label.trim() || next.status !== 'ready') {
+        return;
+      }
+
+      applyLivePickup(next.point, next.label, source);
+    };
+
     const loadPickup = async () => {
       logAsyncStart(screenScope, 'loadPickup');
       recordCargoDiagnostic('book-cargo-native:pickup:load-start');
+
       try {
-        if (!isMounted) return;
+        if (!isMounted) {
+          return;
+        }
+
         if (hasRepeatPickup) {
           setPickupPoint({ latitude: repeatPickupLat, longitude: repeatPickupLng });
           setPickupLabel(String(params.pickup));
@@ -690,67 +1017,47 @@ export default function BookCargoScreen() {
           }
           return;
         }
-        const fallbackLabel = 'Dar es Salaam pickup preview';
-        setPickupPoint(defaultPickupPoint);
-        setPickupLabel(fallbackLabel);
-        setPickupInput(fallbackLabel);
-        setPickupState('ready');
-        setPickupNeedsSelection(false);
-        setPickupHint('Pickup ready. Tap GPS if you want to refresh your current location.');
-        recordCargoDiagnostic('book-cargo-native:pickup:load-success', {
-          latitude: defaultPickupPoint.latitude,
-          longitude: defaultPickupPoint.longitude,
-          source: 'default-preview',
-        });
-        trackCargoActivity('pickup_ready', 'cargo_pickup', {
-          source: 'default_preview',
-          hasGps: false,
-        });
-        logAsyncSuccess(screenScope, 'loadPickup', {
-          point: defaultPickupPoint,
-          source: 'default-preview',
-        });
 
-        if (!Location) {
+        applyFromSnapshot(getCustomerLocationSnapshot(), 'cache');
+
+        const next = await ensureCustomerLocation({ source: 'initial' });
+        if (!isMounted) {
           return;
         }
 
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (!isMounted) return;
+        setHasLocationPermission(next.status !== 'permission-denied');
 
-        setHasLocationPermission(status === 'granted');
-        if (status !== 'granted') {
-          setPickupHint('Pickup preview loaded. Tap GPS anytime if you later enable location access.');
-          trackCargoActivity('location_permission_denied', 'cargo_pickup', {
-            source: 'initial_load',
+        if (next.status === 'ready' && next.point && next.label.trim()) {
+          applyFromSnapshot(next, 'gps');
+          trackCargoActivity('pickup_ready', 'cargo_pickup', {
+            source: 'gps',
+            hasGps: true,
+          });
+          logAsyncSuccess(screenScope, 'loadPickup', {
+            point: next.point,
+            source: 'shared-cache',
           });
           return;
         }
 
-        const currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        if (!isMounted) return;
-
-        const livePoint: RoutePoint = {
-          latitude: currentLocation.coords.latitude,
-          longitude: currentLocation.coords.longitude,
-        };
-        const reverse = await Location.reverseGeocodeAsync(livePoint);
-        if (!isMounted) return;
-
-        const liveLabel = formatLocationLabel(reverse[0] ?? null, livePoint, 'Current location');
-        setPickupPoint(livePoint);
-        setPickupLabel(liveLabel);
-        setPickupInput(liveLabel);
-        setPickupState('ready');
-        setPickupNeedsSelection(false);
-        setPickupHint('Pickup updated to your live GPS location.');
-        trackCargoActivity('pickup_ready', 'cargo_pickup', {
-          source: 'gps',
-          hasGps: true,
-        });
-        focusMapOnPoint(livePoint, 700);
+        if (next.status === 'permission-denied' || !next.point) {
+          const fallbackLabel = 'Dar es Salaam pickup preview';
+          setPickupPoint(defaultPickupPoint);
+          setPickupLabel(fallbackLabel);
+          setPickupInput(fallbackLabel);
+          setPickupState('ready');
+          setPickupNeedsSelection(false);
+          setCargoRegionStatus('available');
+          setPickupHint('Pickup preview loaded. Tap GPS anytime if you later enable location access.');
+          trackCargoActivity('location_permission_denied', 'cargo_pickup', {
+            source: 'initial_load',
+          });
+        }
       } catch (err) {
-        if (!isMounted) return;
+        if (!isMounted) {
+          return;
+        }
+
         logAsyncFailure(screenScope, 'loadPickup', err);
         recordCargoDiagnostic('book-cargo-native:pickup:load-failure');
         const fallbackLabel = 'Dar es Salaam pickup preview';
@@ -758,17 +1065,34 @@ export default function BookCargoScreen() {
         setPickupLabel(fallbackLabel);
         setPickupInput(fallbackLabel);
         setPickupNeedsSelection(false);
+        setCargoRegionStatus('available');
         setPickupHint('Enter drop-off location to continue.');
         trackCargoActivity('pickup_failed', 'cargo_pickup', {
           source: 'initial_load',
         });
       }
     };
-    loadPickup();
+
+    if (!hasRepeatPickup) {
+      applyFromSnapshot(getCustomerLocationSnapshot(), 'cache');
+    }
+
+    const unsubscribe = hasRepeatPickup
+      ? () => undefined
+      : subscribeCustomerLocation((next) => {
+          if (!isMounted) {
+            return;
+          }
+          applyFromSnapshot(next, 'gps');
+        });
+
+    void loadPickup();
+
     return () => {
       isMounted = false;
+      unsubscribe();
     };
-  }, [Location, focusMapOnPoint, trackCargoActivity]);
+  }, [Location, focusMapOnPoint, forcedOutOfReach, language, trackCargoActivity]);
 
   const clearRouteState = useCallback(() => {
     dropoffLookupIdRef.current += 1;
@@ -777,7 +1101,8 @@ export default function BookCargoScreen() {
     setRouteNotice(null);
     setVehicleEstimates({});
     setVehiclePricingLoading(false);
-    setCargoSheetStep('cargo-details');
+    setCargoSheetStep('choose');
+    setCustomerOfferInput('');
   }, []);
 
   const reopenRouteEditor = useCallback((field: 'pickup' | 'dropoff') => {
@@ -933,7 +1258,7 @@ export default function BookCargoScreen() {
             fallback: true,
           });
           setRouteEstimate(null);
-          nextRoute = buildFallbackRoute(pickupPoint, dropoff);
+          nextRoute = await buildFallbackRoute(pickupPoint, dropoff);
           nextVehicleEstimates = buildFrontendPricingEstimates(
             nextRoute.distanceMeters,
             cargoVehicles.map((vehicle) => vehicle.key),
@@ -963,7 +1288,7 @@ export default function BookCargoScreen() {
         setDestinationHint(nextHint);
         setRouteEditorExpanded(false);
         setActiveSearchField('dropoff');
-        setCargoSheetStep('cargo-details');
+        setCargoSheetStep('choose');
         dropoffSessionTokenRef.current = createSearchSessionToken();
         Keyboard.dismiss();
         logAsyncSuccess(screenScope, 'resolveAndRouteDropoff', {
@@ -1070,6 +1395,10 @@ export default function BookCargoScreen() {
       return;
     }
     const lookupId = ++suggestionLookupIdRef.current;
+    const instantSuggestions = getInstantLocationSuggestions(dropoffInput, pickupPoint, 8);
+    if (instantSuggestions.length > 0) {
+      setDropoffSuggestions(instantSuggestions);
+    }
     setLoadingSuggestions(true);
     const timer = setTimeout(async () => {
       try {
@@ -1104,7 +1433,7 @@ export default function BookCargoScreen() {
           });
         }
       }
-    }, 350);
+    }, 160);
     return () => clearTimeout(timer);
   }, [dropoffInput, pickupPoint, shouldFetchSuggestions]);
 
@@ -1116,6 +1445,14 @@ export default function BookCargoScreen() {
     }
 
     const lookupId = ++pickupSuggestionLookupIdRef.current;
+    const instantSuggestions = getInstantLocationSuggestions(
+      pickupInput,
+      pickupPoint ?? dropoffPoint ?? undefined,
+      8
+    );
+    if (instantSuggestions.length > 0) {
+      setPickupSuggestions(instantSuggestions);
+    }
     setLoadingPickupSuggestions(true);
 
     const timer = setTimeout(async () => {
@@ -1123,7 +1460,7 @@ export default function BookCargoScreen() {
         const suggestions = await fetchLocationSuggestions(
           pickupInput,
           pickupSessionTokenRef.current,
-          dropoffPoint ?? undefined
+          pickupPoint ?? dropoffPoint ?? undefined
         );
 
         if (lookupId === pickupSuggestionLookupIdRef.current) {
@@ -1147,10 +1484,10 @@ export default function BookCargoScreen() {
           });
         }
       }
-    }, 350);
+    }, 160);
 
     return () => clearTimeout(timer);
-  }, [dropoffPoint, pickupInput, pickupNeedsSelection]);
+  }, [dropoffPoint, pickupInput, pickupNeedsSelection, pickupPoint]);
 
   const handlePickupChange = useCallback((value: string) => {
     reopenRouteEditor('pickup');
@@ -1184,6 +1521,7 @@ export default function BookCargoScreen() {
       setPickupInput(displayLabel);
       setPickupState('ready');
       setPickupNeedsSelection(false);
+      setCargoRegionStatus(isCargoServiceAvailableAt(resolved.point) ? 'available' : 'out-of-reach');
       setPickupSuggestions([]);
       setLoadingPickupSuggestions(false);
       setPickupHint('Pickup updated. Enter drop-off to load cargo quotes.');
@@ -1208,8 +1546,10 @@ export default function BookCargoScreen() {
     }
   }, [clearRouteState, dropoffPoint, focusDropoffField, focusMapOnPoint]);
 
-  // Handle continue navigation
-  const handleContinue = useCallback(() => {
+  const handleOfferPrimary = useCallback(async () => {
+    if (offerBusy) {
+      return;
+    }
     if (!pickupPoint) {
       setFormError('Pickup location not ready. Please wait or refresh.');
       return;
@@ -1222,70 +1562,291 @@ export default function BookCargoScreen() {
       setFormError('Please select a valid drop-off location first.');
       return;
     }
-    const activeEstimate =
-      vehicleEstimates[selectedVehicle] ??
-      buildFrontendPricingEstimates(
-        routeMetrics.distanceMeters,
-        [selectedVehicle],
-        selectedCargoType as RouteEstimateCargoSize
-      )[selectedVehicle];
-    const priceValue = activeEstimate?.estimatedPrice ?? 0;
-    const etaString = buildVehicleEtaRange(routeMetrics.durationSeconds, selectedVehicle);
-    const cargoLabel = cargoLoadOptions.find(o => o.key === selectedCargoType)?.label ?? 'Half';
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    const minFare = minFareFromDistanceMeters(routeMetrics.distanceMeters);
+    const distanceKm = distanceKmFromMeters(routeMetrics.distanceMeters);
+    const offerAmount = parseOfferTzs(customerOfferInput);
+    if (offerAmount < minFare) {
+      setFormError(copy.cargo.offerTooLow.replace('{amount}', minFare.toLocaleString('en-US')));
+      setCustomerOfferInput(String(minFare));
+      return;
+    }
+
+    const accountPhone = readablePhone(profile?.phoneNumber) || readablePhone(user.phoneNumber);
+    const sharedPhone = accountPhone || readablePhone(contactPhone);
+    if (!sharedPhone) {
+      setFormError(language === 'sw' ? 'Weka namba yako ya simu ili dereva akupigie.' : 'Add your phone number so the driver can call you.');
+      return;
+    }
+
+    const driverCounter =
+      typeof liveCargoOrder?.driverOffer === 'number' && liveCargoOrder.driverOffer > 0
+        ? liveCargoOrder.driverOffer
+        : 0;
+    const acceptingDriver = Boolean(liveCargoOrder?.id) && driverCounter > 0 && offerAmount === driverCounter;
+
+    const etaString = formatRouteTravelTime(routeMetrics.durationSeconds) || formatDistance(routeMetrics.distanceMeters);
+    const cargoLabel = cargoLoadOptions.find((option) => option.key === selectedCargoType)?.label ?? 'Half';
     const vehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
     const distanceLabel = formatDistance(routeMetrics.distanceMeters);
     const dropoffDisplay = dropoffLabel || dropoffInput;
+    const fareLabel = formatTzs(offerAmount);
+
+    setOfferBusy(true);
+    setFormError('');
 
     try {
-      logAsyncStart(screenScope, 'navigateToOrderReview', {
+      if (!accountPhone) {
+        await upsertUserProfile({
+          uid: user.uid,
+          fullName: profile?.fullName?.trim() || user.displayName?.trim() || 'HAUL',
+          email: user.email?.trim().toLowerCase() || '',
+          phoneNumber: sharedPhone,
+          phoneVerified: false,
+        });
+        void refreshProfile();
+      }
+
+      if (liveCargoOrder?.id) {
+        logAsyncStart(screenScope, acceptingDriver ? 'acceptCargoDriverOffer' : 'updateCargoOffer', {
+          orderId: liveCargoOrder.id,
+          customerOffer: offerAmount,
+          driverOffer: driverCounter || undefined,
+        });
+        await updateCargoNegotiation(liveCargoOrder.id, {
+          customerOffer: offerAmount,
+          lastOfferBy: 'customer',
+          customerOfferNote: customerOfferNote.trim().slice(0, 140) || copy.cargo.offerNoteDefault,
+          fareLabel,
+          totalLabel: fareLabel,
+          cargoVehicleKey: selectedVehicle,
+          cargoVehicleLabel: vehicleTitle,
+          serviceLabel: vehicleTitle,
+          customerPhone: sharedPhone,
+          recipientPhone: sharedPhone,
+        });
+        trackCargoActivity(acceptingDriver ? 'cargo_fare_accepted' : 'cargo_offer_updated', 'cargo_checkout', {
+          vehicleType: selectedVehicle,
+          cargoSize: selectedCargoType,
+          customerOffer: offerAmount,
+          minFare,
+          distanceKm,
+        });
+        return;
+      }
+
+      logAsyncStart(screenScope, 'createCargoOffer', {
         vehicle: selectedVehicle,
         cargoType: selectedCargoType,
+        customerOffer: offerAmount,
+        minFare,
+        distanceKm,
       });
-      trackCargoActivity('checkout_started', 'cargo_checkout', {
+      const [readablePickup, readableDropoff] = await Promise.all([
+        ensureReadablePlaceLabel(pickupPoint, pickupLabel),
+        ensureReadablePlaceLabel(dropoffPoint, dropoffDisplay),
+      ]);
+      if (readablePickup !== pickupLabel) {
+        setPickupLabel(readablePickup);
+        setPickupInput(readablePickup);
+      }
+      if (readableDropoff !== dropoffDisplay) {
+        setDropoffLabel(readableDropoff);
+      }
+
+      const customerName = profile?.fullName?.trim() || user.displayName?.trim() || 'DoorDrop Customer';
+      const customerPhone = sharedPhone;
+      const scheduleLabel =
+        timingMode === 'later' && scheduleDate && scheduleTime
+          ? formatScheduleSummary(scheduleDate, scheduleTime, language)
+          : language === 'sw'
+            ? 'Sasa'
+            : 'Dispatch now';
+
+      const order = await createDeliveryOrder({
+        userId: user.uid,
+        customerName,
+        customerEmail: user.email?.trim().toLowerCase() || '',
+        customerPhone,
+        flow: 'cargo',
+        serviceLabel: vehicleTitle,
+        pickupLabel: readablePickup,
+        dropoffLabel: readableDropoff,
+        pickupLatitude: pickupPoint.latitude,
+        pickupLongitude: pickupPoint.longitude,
+        dropoffLatitude: dropoffPoint.latitude,
+        dropoffLongitude: dropoffPoint.longitude,
+        etaLabel: etaString,
+        fareLabel,
+        totalLabel: fareLabel,
+        fareType: 'negotiated',
+        customerOffer: offerAmount,
+        minFare,
+        distanceKm,
+        lastOfferBy: 'customer',
+        negotiationStatus: 'open',
+        driverNegotiationUsed: 0,
+        customerOfferNote: customerOfferNote.trim().slice(0, 140) || copy.cargo.offerNoteDefault,
+        routeLabel: `${readablePickup} → ${readableDropoff}`,
+        timingMode,
+        scheduleDate,
+        scheduleTime,
+        scheduleLabel,
+        recipientName: customerName,
+        recipientPhone: customerPhone,
+        cargoVehicleKey: selectedVehicle,
+        cargoVehicleLabel: vehicleTitle,
+        cargoCapacityLabel: cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.capacity,
+        cargoSizeLabel: cargoLabel,
+        distanceLabel,
+        durationLabel: etaString,
+        distanceMeters: Math.round(routeMetrics.distanceMeters),
+        durationSeconds: Math.round(routeMetrics.durationSeconds),
+        requestedDriverId: String(params.requestedDriverId || ''),
+        requestedDriverName: String(params.requestedDriverName || ''),
+      });
+
+      setLiveCargoOrder(order);
+      trackCargoActivity('cargo_offer_sent', 'cargo_checkout', {
         vehicleType: selectedVehicle,
         vehicleLabel: vehicleTitle,
         cargoSize: selectedCargoType,
         distanceMeters: Math.round(routeMetrics.distanceMeters),
         durationSeconds: Math.round(routeMetrics.durationSeconds),
-        estimatedPrice: priceValue,
+        customerOffer: offerAmount,
+        minFare,
+        distanceKm,
+        orderId: order.id,
       });
-      router.push({
-        pathname: '/order-review',
-        params: {
-          flow: 'cargo',
-          vehicle: selectedVehicle,
-          timing: 'now',
-          pickup: pickupLabel,
-          pickupLat: String(pickupPoint.latitude),
-          pickupLng: String(pickupPoint.longitude),
-          dropoff: dropoffDisplay,
-          dropoffLat: String(dropoffPoint.latitude),
-          dropoffLng: String(dropoffPoint.longitude),
-          distance: distanceLabel,
-          duration: etaString,
-          distanceMeters: String(Math.round(routeMetrics.distanceMeters)),
-          durationSeconds: String(Math.round(routeMetrics.durationSeconds)),
-          cargoSize: cargoLabel,
-          price: formatTzs(priceValue || 0),
-        },
-      });
-      logAsyncSuccess(screenScope, 'navigateToOrderReview', {
+      logAsyncSuccess(screenScope, 'createCargoOffer', {
+        orderId: order.id,
         vehicle: selectedVehicle,
-        cargoType: selectedCargoType,
       });
-    } catch (navErr) {
-      Alert.alert('Navigation Error', 'Could not proceed to review. Please try again.');
-      logAsyncFailure(screenScope, 'navigateToOrderReview', navErr);
+    } catch (error) {
+      const message =
+        error instanceof FirebaseError
+          ? getFirebaseDataErrorMessage(error.code, 'Could not send this fare. Try again.')
+          : error instanceof Error
+            ? error.message
+            : 'Could not send this fare. Try again.';
+      setFormError(message);
+      logAsyncFailure(screenScope, liveCargoOrder?.id ? 'updateCargoOffer' : 'createCargoOffer', error);
       trackCargoActivity('checkout_failed', 'cargo_checkout', {
         vehicleType: selectedVehicle,
         cargoSize: selectedCargoType,
       });
+    } finally {
+      setOfferBusy(false);
     }
-  }, [dropoffInput, dropoffLabel, dropoffPoint, pickupLabel, pickupNeedsSelection, pickupPoint, routeMetrics, router, selectedCargoType, selectedVehicle, trackCargoActivity, vehicleEstimates]);
+  }, [
+    contactPhone,
+    copy.cargo.offerNoteDefault,
+    copy.cargo.offerTooLow,
+    customerOfferInput,
+    customerOfferNote,
+    dropoffInput,
+    dropoffLabel,
+    dropoffPoint,
+    language,
+    liveCargoOrder,
+    offerBusy,
+    params.requestedDriverId,
+    params.requestedDriverName,
+    pickupLabel,
+    pickupNeedsSelection,
+    pickupPoint,
+    profile?.fullName,
+    profile?.phoneNumber,
+    refreshProfile,
+    routeMetrics,
+    router,
+    scheduleDate,
+    scheduleTime,
+    selectedCargoType,
+    selectedVehicle,
+    timingMode,
+    trackCargoActivity,
+    user,
+  ]);
 
-  const handleEditRoute = useCallback(() => {
-    focusDropoffField();
-  }, [focusDropoffField]);
+  const handleConfirmCargoOffer = useCallback(async () => {
+    if (offerBusy || !liveCargoOrder?.id) {
+      return;
+    }
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    const driverCounter =
+      typeof liveCargoOrder.driverOffer === 'number' && liveCargoOrder.driverOffer > 0
+        ? liveCargoOrder.driverOffer
+        : 0;
+    const minFare = minFareFromDistanceMeters(routeMetrics?.distanceMeters ?? 0);
+    const agreedAmount =
+      driverCounter > 0 ? driverCounter : liveCargoOrder.customerOffer || parseOfferTzs(customerOfferInput);
+    if (agreedAmount < minFare) {
+      setFormError(copy.cargo.offerTooLow.replace('{amount}', minFare.toLocaleString('en-US')));
+      return;
+    }
+
+    const fareLabel = formatTzs(agreedAmount);
+    setOfferBusy(true);
+    setFormError('');
+
+    try {
+      logAsyncStart(screenScope, 'confirmCargoOffer', {
+        orderId: liveCargoOrder.id,
+        agreedAmount,
+        driverOffer: driverCounter || undefined,
+      });
+      await updateCargoNegotiation(liveCargoOrder.id, {
+        customerOffer: agreedAmount,
+        lastOfferBy: 'customer',
+        fareLabel,
+        totalLabel: fareLabel,
+        negotiationStatus: 'confirmed',
+      });
+      trackCargoActivity('cargo_fare_confirmed', 'cargo_checkout', {
+        vehicleType: selectedVehicle,
+        cargoSize: selectedCargoType,
+        customerOffer: agreedAmount,
+        orderId: liveCargoOrder.id,
+      });
+      router.replace({
+        pathname: '/track-order',
+        params: {
+          orderId: liveCargoOrder.id,
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof FirebaseError
+          ? getFirebaseDataErrorMessage(error.code, 'Could not confirm this fare. Try again.')
+          : error instanceof Error
+            ? error.message
+            : 'Could not confirm this fare. Try again.';
+      setFormError(message);
+      logAsyncFailure(screenScope, 'confirmCargoOffer', error);
+    } finally {
+      setOfferBusy(false);
+    }
+  }, [
+    copy.cargo.offerTooLow,
+    customerOfferInput,
+    liveCargoOrder,
+    offerBusy,
+    routeMetrics?.distanceMeters,
+    router,
+    selectedCargoType,
+    selectedVehicle,
+    trackCargoActivity,
+    user,
+  ]);
 
   const applySavedPlaceToPickup = useCallback(async (place: SavedPlace) => {
     logAsyncStart(screenScope, 'applySavedPlaceToPickup', place);
@@ -1299,6 +1860,7 @@ export default function BookCargoScreen() {
       setPickupInput(displayLabel);
       setPickupState('ready');
       setPickupNeedsSelection(false);
+      setCargoRegionStatus(isCargoServiceAvailableAt(point) ? 'available' : 'out-of-reach');
       setPickupSuggestions([]);
       setLoadingPickupSuggestions(false);
       setPickupHint('Saved pickup loaded. Enter drop-off.');
@@ -1372,12 +1934,16 @@ export default function BookCargoScreen() {
       const currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const point: RoutePoint = { latitude: currentLocation.coords.latitude, longitude: currentLocation.coords.longitude };
       setPickupPoint(point);
-      const reverse = await Location.reverseGeocodeAsync(point);
-      const nextLabel = formatLocationLabel(reverse[0] ?? null, point);
+      const reverse = await reverseGeocodeLocation(point);
+      const nextLabel =
+        reverse.label && !isCoordinateLikeLabel(reverse.label)
+          ? reverse.label
+          : formatLocationLabel(null, point, reverse.label, language);
       setPickupLabel(nextLabel);
       setPickupInput(nextLabel);
       setPickupState('ready');
-      setPickupHint('Pickup refreshed.');
+      setCargoRegionStatus(isCargoServiceAvailableAt(point) ? 'available' : 'out-of-reach');
+      setPickupHint(language === 'sw' ? 'Pickup imesasishwa.' : 'Pickup refreshed.');
       logAsyncSuccess(screenScope, 'refreshPickup', {
         point,
         label: nextLabel,
@@ -1402,10 +1968,24 @@ export default function BookCargoScreen() {
   }, [Location, clearRouteState, focusMapOnPoint, reopenRouteEditor, trackCargoActivity]);
 
   // Derived state for UI
-  const showVehicleSheet = !!pickupPoint && !!dropoffPoint && !!routeMetrics;
-  const showCargoDetailsStep = showVehicleSheet && cargoSheetStep === 'cargo-details';
-  const showCarrierStep = showVehicleSheet && cargoSheetStep === 'carrier';
-  const showCollapsedRouteChip = showVehicleSheet && !routeEditorExpanded;
+  const showChooseStep = cargoLayoutStep === 'choose';
+  const showOfferStep = cargoLayoutStep === 'offer';
+  const showCollapsedRouteChip = false;
+  const calloutInset = useMemo(
+    () =>
+      cargoLayoutStep === 'locations'
+        ? { top: 196, right: 12, bottom: 72, left: 12 }
+        : { top: 56, right: 64, bottom: 68, left: 10 },
+    [cargoLayoutStep]
+  );
+  const pickupCallout = useMemo(
+    () => (pickupScreenPoint ? attachMapCallout(pickupScreenPoint, mapSize, calloutInset) : null),
+    [calloutInset, mapSize, pickupScreenPoint]
+  );
+  const dropoffCallout = useMemo(
+    () => (dropoffScreenPoint ? attachMapCallout(dropoffScreenPoint, mapSize, calloutInset) : null),
+    [calloutInset, dropoffScreenPoint, mapSize]
+  );
   const activeSearchSuggestions = activeSearchField === 'pickup' ? pickupSuggestions : dropoffSuggestions;
   const activeSearchLoading = activeSearchField === 'pickup' ? loadingPickupSuggestions : loadingSuggestions;
   const activeSearchHint =
@@ -1415,7 +1995,8 @@ export default function BookCargoScreen() {
         : pickupHint
       : destinationHint;
   const activeSearchNotice = routeNotice && routeNotice !== 'offline' ? routeNotice : null;
-  const locationChipsTitle = activeSearchField === 'pickup' ? 'Saved pickup places' : 'Quick destinations';
+  const locationChipsTitle =
+    activeSearchField === 'pickup' ? copy.cargo.savedPlacesShort : copy.cargo.quickPlaces;
   const shouldShowSuggestionCard =
     routeEditorExpanded &&
     (activeSearchSuggestions.length > 0 ||
@@ -1424,144 +2005,123 @@ export default function BookCargoScreen() {
       Boolean(activeSearchNotice) ||
       (activeSearchField === 'pickup' ? pickupNeedsSelection : Boolean(dropoffInput.trim())));
   const routePoints = useMemo(() => {
-    if (routeMetrics?.coordinates.length) {
+    if (routeMetrics?.coordinates && routeMetrics.coordinates.length > 2) {
       return filterValidCoordinates(routeMetrics.coordinates);
     }
-
-    return filterValidCoordinates([pickupPoint, dropoffPoint]);
-  }, [routeMetrics, pickupPoint, dropoffPoint]);
+    if (routeMetrics?.source === 'fallback') {
+      return filterValidCoordinates(routeMetrics.coordinates);
+    }
+    return [];
+  }, [routeMetrics]);
   const validPickupPoint = isValidCoordinate(pickupPoint) ? pickupPoint : null;
   const validDropoffPoint = isValidCoordinate(dropoffPoint) ? dropoffPoint : null;
-  const nearbyCarrierMarkers = useMemo<LiveCarrierMarker[]>(() => {
-    if (!validPickupPoint) {
-      return [];
+  const positionedCargoDrivers = useMemo(
+    () => mergeDriverLivePositions(liveDrivers, driverLocations),
+    [driverLocations, liveDrivers]
+  );
+  const nearbyCarrierMarkers = useMemo(
+    () =>
+      spaceNearbyVehicles(
+        buildNearbyLiveVehicles({
+          drivers: positionedCargoDrivers,
+          origin: validPickupPoint,
+          selectedVehicleKey: selectedVehicle as 'toyo' | 'kirikuu' | 'canter',
+          allowedVehicleKeys: ['toyo', 'kirikuu', 'canter'],
+          radiusMeters: LIVE_CARRIER_RADIUS_METERS,
+          maxVisible: LIVE_CARRIER_MAX_VISIBLE_COUNT,
+        }),
+        mapRegion,
+        mapSize
+      ),
+    [mapRegion, mapSize, positionedCargoDrivers, selectedVehicle, validPickupPoint]
+  );
+  const pickupEtaMinutes = useMemo(() => {
+    const nearest = nearbyCarrierMarkers.find((vehicle) => vehicle.isSelectedType) ?? nearbyCarrierMarkers[0];
+    if (nearest) {
+      return estimateMinutesFromMeters(nearest.nearestDistanceMeters);
     }
 
-    return liveDrivers
-      .filter((driver) => driver.isAvailable)
-      .map((driver) => {
-        const coordinate = {
-          latitude: driver.currentLatitude ?? Number.NaN,
-          longitude: driver.currentLongitude ?? Number.NaN,
-        };
-
-        if (!isValidCoordinate(coordinate)) {
-          return null;
-        }
-
-        const nearestDistanceMeters = getDistanceBetweenPoints(validPickupPoint, coordinate);
-
-        if (nearestDistanceMeters > LIVE_CARRIER_RADIUS_METERS) {
-          return null;
-        }
-
-        const mappedVehicleKey = mapDriverVehicleTypeToCarrier(driver.vehicleType);
-        if (!mappedVehicleKey) {
-          return null;
-        }
-
-        return {
-          id: driver.id,
-          coordinate,
-          title: driver.fullName || driver.vehicleLabel || 'DoorDrop carrier',
-          description: `${driver.vehicleLabel || 'DoorDrop carrier'} • ${formatDistance(nearestDistanceMeters)} away`,
-          iconName: getDriverMarkerIcon(driver.vehicleType),
-          mappedVehicleKey,
-          isSelectedType: mappedVehicleKey === selectedVehicle,
-          nearestDistanceMeters,
-        };
-      })
-      .filter((driver): driver is LiveCarrierMarker => Boolean(driver))
-      .sort((left, right) => {
-        if (left.isSelectedType !== right.isSelectedType) {
-          return left.isSelectedType ? -1 : 1;
-        }
-
-        return left.nearestDistanceMeters - right.nearestDistanceMeters;
-      })
-      .slice(0, LIVE_CARRIER_MAX_VISIBLE_COUNT);
-  }, [liveDrivers, selectedVehicle, validPickupPoint]);
-  const nearbyCarrierSummary = useMemo(() => {
-    if (!pickupPoint && !dropoffPoint) {
-      return '';
+    const userPoint = getCustomerLocationSnapshot().point;
+    if (validPickupPoint && userPoint && isValidCoordinate(userPoint)) {
+      const meters = getDistanceBetweenPoints(userPoint, validPickupPoint);
+      return meters < 80 ? 0 : estimateMinutesFromMeters(meters);
     }
 
-    if (!liveDrivers.length) {
-      return 'Waiting for live carrier locations from DoorDrive.';
+    return 0;
+  }, [nearbyCarrierMarkers, validPickupPoint]);
+  const pickupEtaLabel = formatCargoPickupEta(pickupEtaMinutes);
+  const dropoffArrivalLabel = useMemo(() => {
+    if (!validPickupPoint || !validDropoffPoint) {
+      return undefined;
     }
 
-    if (!nearbyCarrierMarkers.length) {
-      return 'No nearby carriers visible on the map yet.';
+    const polylineMeters = measurePolylineMeters(routeMetrics?.coordinates);
+    const durationSeconds =
+      (routeMetrics?.durationSeconds && routeMetrics.durationSeconds > 0
+        ? routeMetrics.durationSeconds
+        : 0) ||
+      estimateDurationSecondsFromMeters(
+        polylineMeters ||
+          routeMetrics?.distanceMeters ||
+          getDistanceBetweenPoints(validPickupPoint, validDropoffPoint)
+      );
+    return formatArrivalClock(new Date(Date.now() + durationSeconds * 1000));
+  }, [routeMetrics?.coordinates, routeMetrics?.distanceMeters, routeMetrics?.durationSeconds, validDropoffPoint, validPickupPoint]);
+
+  const projectMapCallouts = useCallback((region?: MapViewportRegion) => {
+    const viewport = region ?? mapRegionRef.current;
+    const size = mapSizeRef.current;
+    const pickup = pickupPointRef.current;
+    const dropoff = dropoffPointRef.current;
+
+    if (isValidCoordinate(pickup)) {
+      const point = projectMapCoordinate(pickup, viewport, size);
+      setPickupScreenPoint(point);
+    } else {
+      setPickupScreenPoint(null);
     }
 
-    const matchingCarrierCount = nearbyCarrierMarkers.filter((driver) => driver.isSelectedType).length;
-    if (matchingCarrierCount > 0) {
-      const selectedVehicleTitle =
-        cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title.toLowerCase() ?? 'selected';
-      return `${matchingCarrierCount} ${selectedVehicleTitle} carrier${matchingCarrierCount === 1 ? '' : 's'} within ${(LIVE_CARRIER_RADIUS_METERS / 1000).toFixed(0)} km of pickup visible on the map.`;
+    if (isValidCoordinate(dropoff)) {
+      const point = projectMapCoordinate(dropoff, viewport, size);
+      setDropoffScreenPoint(point);
+    } else {
+      setDropoffScreenPoint(null);
     }
+  }, []);
 
-    return `${nearbyCarrierMarkers.length} nearby carrier${nearbyCarrierMarkers.length === 1 ? '' : 's'} within ${(LIVE_CARRIER_RADIUS_METERS / 1000).toFixed(0)} km of pickup visible on the map.`;
-  }, [dropoffPoint, liveDrivers.length, nearbyCarrierMarkers, pickupPoint, selectedVehicle]);
-  useEffect(() => {
-    if (!AnimatedRegion) {
-      liveCarrierAnimatedCoordinatesRef.current = {};
-      liveCarrierCoordinateSnapshotRef.current = {};
+  const handleMapRegionChange = useCallback((region: MapViewportRegion) => {
+    if (!region || !Number.isFinite(region.latitude) || !Number.isFinite(region.longitudeDelta)) {
+      return;
+    }
+    mapRegionRef.current = region;
+    projectMapCallouts(region);
+  }, [projectMapCallouts]);
+
+  const handleMapRegionComplete = useCallback((region: MapViewportRegion) => {
+    if (!region || !Number.isFinite(region.latitude) || !Number.isFinite(region.longitudeDelta)) {
+      return;
+    }
+    mapRegionRef.current = region;
+    setMapRegion(region);
+    projectMapCallouts(region);
+
+    if (pullingCameraInRef.current) {
+      pullingCameraInRef.current = false;
+      pendingCameraFitRef.current = false;
       return;
     }
 
-    let hasStructuralChange = false;
-    const visibleIds = new Set(nearbyCarrierMarkers.map((driver) => driver.id));
-
-    Object.keys(liveCarrierAnimatedCoordinatesRef.current).forEach((driverId) => {
-      if (visibleIds.has(driverId)) {
-        return;
-      }
-
-      delete liveCarrierAnimatedCoordinatesRef.current[driverId];
-      delete liveCarrierCoordinateSnapshotRef.current[driverId];
-      hasStructuralChange = true;
-    });
-
-    nearbyCarrierMarkers.forEach((driver) => {
-      const existingCoordinate = liveCarrierAnimatedCoordinatesRef.current[driver.id];
-      const previousCoordinate = liveCarrierCoordinateSnapshotRef.current[driver.id];
-
-      if (!existingCoordinate) {
-        liveCarrierAnimatedCoordinatesRef.current[driver.id] = new AnimatedRegion({
-          latitude: driver.coordinate.latitude,
-          longitude: driver.coordinate.longitude,
-          latitudeDelta: 0,
-          longitudeDelta: 0,
-        });
-        liveCarrierCoordinateSnapshotRef.current[driver.id] = driver.coordinate;
-        hasStructuralChange = true;
-        return;
-      }
-
-      if (areSameRoutePoint(previousCoordinate, driver.coordinate)) {
-        return;
-      }
-
-      existingCoordinate
-        .timing({
-          latitude: driver.coordinate.latitude,
-          longitude: driver.coordinate.longitude,
-          latitudeDelta: 0,
-          longitudeDelta: 0,
-          duration: LIVE_CARRIER_MARKER_ANIMATION_DURATION_MS,
-          toValue: 0,
-          useNativeDriver: false,
-        })
-        .start();
-      liveCarrierCoordinateSnapshotRef.current[driver.id] = driver.coordinate;
-    });
-
-    if (hasStructuralChange) {
-      setLiveCarrierAnimationVersion((value) => value + 1);
+    if (pendingCameraFitRef.current && isCameraOverZoomed(region, lastFitPointsRef.current)) {
+      pullCameraToCorridor(lastFitPointsRef.current);
+      return;
     }
-  }, [AnimatedRegion, nearbyCarrierMarkers]);
 
+    pendingCameraFitRef.current = false;
+  }, [projectMapCallouts, pullCameraToCorridor]);
+
+  useEffect(() => {
+    projectMapCallouts();
+  }, [projectMapCallouts, routeMetrics?.distanceMeters, showVehicleSheet, validDropoffPoint, validPickupPoint]);
   // Compute quotes for vehicles
   const vehicleQuotes = useMemo(() => {
     const quotes: Record<string, number> = {};
@@ -1571,31 +2131,87 @@ export default function BookCargoScreen() {
     return quotes;
   }, [vehicleEstimates]);
 
-  const fallbackVehicleQuotes = useMemo(() => {
-    if (!routeMetrics) {
-      return {} as Record<string, number>;
-    }
-
-    const estimates = buildFrontendPricingEstimates(
-      routeMetrics.distanceMeters,
-      cargoVehicles.map((vehicle) => vehicle.key),
-      selectedCargoType as RouteEstimateCargoSize
-    );
-
-    return Object.fromEntries(
-      cargoVehicles.map((vehicle) => [vehicle.key, estimates[vehicle.key]?.estimatedPrice ?? 0])
-    ) as Record<string, number>;
-  }, [routeMetrics, selectedCargoType]);
-  const displayVehicleQuotes = useMemo(() => {
-    const quotes: Record<string, number> = {};
-    for (const vehicle of cargoVehicles) {
-      quotes[vehicle.key] = vehicleQuotes[vehicle.key] || fallbackVehicleQuotes[vehicle.key] || 0;
-    }
-    return quotes;
-  }, [fallbackVehicleQuotes, vehicleQuotes]);
-  const activeVehiclePrice = displayVehicleQuotes[selectedVehicle] || 0;
+  const routeMinFare = minFareFromDistanceMeters(routeMetrics?.distanceMeters ?? 0);
+  const routeDistanceKm = distanceKmFromMeters(routeMetrics?.distanceMeters ?? 0);
   const activeVehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
-  const activeCargoSizeLabel = cargoLoadOptions.find((option) => option.key === selectedCargoType)?.label ?? 'Small';
+  const currentOfferAmount = parseOfferTzs(customerOfferInput) || routeMinFare;
+  const liveDriverName = liveCargoOrder?.driverName?.trim() || '';
+  const liveDriverVehicle = cargoVehicleBadge(
+    liveCargoOrder?.driverVehicleType || liveCargoOrder?.driverVehicleLabel || liveCargoOrder?.cargoVehicleKey || selectedVehicle
+  );
+  const liveDriverOffer =
+    typeof liveCargoOrder?.driverOffer === 'number' && liveCargoOrder.driverOffer > 0
+      ? liveCargoOrder.driverOffer
+      : 0;
+  const hasLiveDriver = Boolean(liveCargoOrder?.driverId || liveDriverName || liveDriverOffer);
+  const driverPriceWaiting = hasLiveDriver && liveDriverOffer > 0 && liveCargoOrder?.lastOfferBy === 'driver';
+  const driverChancesUsed = Math.max(0, Math.round(Number(liveCargoOrder?.driverNegotiationUsed) || 0));
+  const driverChancesLeft = Math.max(0, 3 - driverChancesUsed);
+  const driverOfferNote = liveCargoOrder?.driverOfferNote?.trim() || '';
+  const lastSentOffer = liveCargoOrder?.customerOffer ?? 0;
+  const canAcceptDriverOffer = hasLiveDriver && liveDriverOffer > 0 && currentOfferAmount === liveDriverOffer;
+  const offerDirty = !liveCargoOrder || currentOfferAmount !== lastSentOffer;
+  const offerPrimaryLabel = offerBusy
+    ? copy.confirm.creating
+    : !liveCargoOrder
+      ? copy.cargo.findOffers
+      : canAcceptDriverOffer
+        ? copy.cargo.acceptFare
+        : offerDirty
+          ? copy.cargo.sendPrice
+          : copy.cargo.findOffers;
+  const offerPrimaryDisabled =
+    offerBusy || currentOfferAmount < routeMinFare || (Boolean(liveCargoOrder) && !offerDirty && !canAcceptDriverOffer);
+
+  const bumpOffer = useCallback(
+    (delta: number) => {
+      setFormError('');
+      const next = Math.max(routeMinFare, currentOfferAmount + delta);
+      setCustomerOfferInput(String(next));
+    },
+    [currentOfferAmount, routeMinFare]
+  );
+
+  useEffect(() => {
+    if (cargoSheetStep !== 'offer') {
+      return;
+    }
+    const current = parseOfferTzs(customerOfferInput);
+    if (current < routeMinFare) {
+      setCustomerOfferInput(String(routeMinFare));
+    }
+  }, [cargoSheetStep, customerOfferInput, routeMinFare]);
+
+  useEffect(() => {
+    const orderId = liveCargoOrder?.id;
+    if (!orderId) {
+      return;
+    }
+    const unsubscribe = subscribeToOrder(
+      orderId,
+      (next) => {
+        if (next) {
+          setLiveCargoOrder(next);
+        }
+      },
+      (error) => {
+        logWarning(screenScope, 'subscribeToCargoOffer', { orderId, message: error.message });
+      }
+    );
+    return () => unsubscribe();
+  }, [liveCargoOrder?.id]);
+
+  useEffect(() => {
+    if (!liveCargoOrder?.id || liveCargoOrder.negotiationStatus !== 'confirmed') {
+      return;
+    }
+    router.replace({
+      pathname: '/track-order',
+      params: {
+        orderId: liveCargoOrder.id,
+      },
+    });
+  }, [liveCargoOrder?.id, liveCargoOrder?.negotiationStatus, router]);
 
   const handleCargoSizeSelect = useCallback((cargoType: CargoLoadType) => {
     setSelectedCargoType(cargoType);
@@ -1617,29 +2233,62 @@ export default function BookCargoScreen() {
       hasRoute: Boolean(routeMetrics),
       distanceMeters: routeMetrics ? Math.round(routeMetrics.distanceMeters) : undefined,
       estimatedPrice: vehicleQuotes[vehicleKey],
-      matchingCarrierCount: nearbyCarrierMarkers.filter((driver) => driver.mappedVehicleKey === vehicleKey).length,
+      matchingCarrierCount: nearbyCarrierMarkers.filter((driver) => driver.vehicleKey === vehicleKey).length,
     });
   }, [nearbyCarrierMarkers, routeMetrics, selectedCargoType, trackCargoActivity, vehicleQuotes]);
 
-  const handleCargoDetailsContinue = useCallback(() => {
+  const handleChooseVehicle = useCallback(() => {
     setFormError('');
-    setCargoSheetStep('carrier');
-    trackCargoActivity('cargo_details_confirmed', 'cargo_handling', {
+    const current = parseOfferTzs(customerOfferInput);
+    if (current < routeMinFare) {
+      setCustomerOfferInput(String(routeMinFare));
+    }
+    if (liveCargoOrder?.id && liveCargoOrder.negotiationStatus !== 'confirmed') {
+      const vehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
+      void updateCargoNegotiation(liveCargoOrder.id, {
+        cargoVehicleKey: selectedVehicle,
+        cargoVehicleLabel: vehicleTitle,
+        serviceLabel: vehicleTitle,
+      });
+    }
+    setCargoSheetStep('offer');
+    trackCargoActivity('cargo_carrier_confirmed', 'cargo_vehicle', {
+      vehicleType: selectedVehicle,
       cargoSize: selectedCargoType,
-      distanceMeters: routeMetrics ? Math.round(routeMetrics.distanceMeters) : undefined,
+      minFare: routeMinFare,
+      distanceKm: routeDistanceKm,
     });
-  }, [routeMetrics, selectedCargoType, trackCargoActivity]);
+  }, [customerOfferInput, liveCargoOrder, routeDistanceKm, routeMinFare, selectedCargoType, selectedVehicle, trackCargoActivity]);
 
   useEffect(() => {
+    LayoutAnimation.configureNext({
+      duration: SHEET_ANIMATION_MS,
+      update: { type: LayoutAnimation.Types.easeInEaseOut },
+    });
+    Animated.timing(sheetHeightAnim, {
+      toValue: targetSheetHeight,
+      duration: SHEET_ANIMATION_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+
     if (pickupPoint && dropoffPoint) {
-      fitMapToPickupAndDropoff(pickupPoint, dropoffPoint, 420);
+      fitMapToPickupAndDropoff(pickupPoint, dropoffPoint, 200);
       return;
     }
 
     if (pickupPoint) {
       focusMapOnPoint(pickupPoint, 500);
     }
-  }, [dropoffPoint, fitMapToPickupAndDropoff, focusMapOnPoint, pickupPoint]);
+  }, [
+    cargoLayoutStep,
+    dropoffPoint,
+    fitMapToPickupAndDropoff,
+    focusMapOnPoint,
+    pickupPoint,
+    sheetHeightAnim,
+    targetSheetHeight,
+  ]);
 
   const handleMapPress = useCallback(async (event: any) => {
     const point: RoutePoint | undefined = event?.nativeEvent?.coordinate;
@@ -1647,22 +2296,16 @@ export default function BookCargoScreen() {
       return;
     }
 
-    const coordinateLabel = `${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}`;
-    let resolvedLabel = coordinateLabel;
+    let resolvedLabel = language === 'sw' ? 'Inatafuta eneo...' : 'Finding place...';
 
-    if (Location?.reverseGeocodeAsync) {
-      try {
-        const reverse = await Location.reverseGeocodeAsync(point);
-        const address = reverse?.[0];
-        const parts = address
-          ? [address.name, address.street, address.district, address.city, address.region].filter(Boolean)
-          : [];
-
-        if (parts.length) {
-          resolvedLabel = [...new Set(parts)].slice(0, 3).join(', ');
-        }
-      } catch {}
-    }
+    try {
+      const reverse = await reverseGeocodeLocation(point);
+      if (reverse.label && !isCoordinateLikeLabel(reverse.label)) {
+        resolvedLabel = reverse.label;
+      } else if (reverse.label?.trim()) {
+        resolvedLabel = reverse.label.trim();
+      }
+    } catch {}
 
     if (mapSelectionTarget === 'pickup') {
       reopenRouteEditor('dropoff');
@@ -1670,7 +2313,12 @@ export default function BookCargoScreen() {
       setPickupLabel(resolvedLabel);
       setPickupInput(resolvedLabel);
       setPickupState('ready');
-      setPickupHint('Pickup pin placed on the map. Set the drop-off to redraw pricing.');
+      setCargoRegionStatus(isCargoServiceAvailableAt(point) ? 'available' : 'out-of-reach');
+      setPickupHint(
+        language === 'sw'
+          ? 'Pickup imewekwa kwenye ramani. Weka drop-off.'
+          : 'Pickup pin placed on the map. Set the drop-off to redraw pricing.'
+      );
       setPickupNeedsSelection(false);
       setPickupSuggestions([]);
       setLoadingPickupSuggestions(false);
@@ -1707,136 +2355,385 @@ export default function BookCargoScreen() {
       point,
       manual: false,
     });
-  }, [Location, clearRouteState, focusDropoffField, focusMapOnPoint, mapSelectionTarget, reopenRouteEditor, resolveAndRouteDropoff]);
+  }, [Location, clearRouteState, focusDropoffField, focusMapOnPoint, language, mapSelectionTarget, reopenRouteEditor, resolveAndRouteDropoff]);
 
   // ============================================
   // RENDER
   // ============================================
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+  if (cargoRegionStatus === 'checking' || cargoRegionStatus === 'out-of-reach') {
+    const isOutOfReach = cargoRegionStatus === 'out-of-reach';
+    return (
+      <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.outOfReachScreen}>
+        <StatusBar barStyle="dark-content" backgroundColor="#F7F7F5" />
+        <View style={styles.outOfReachGlow} />
+        <TouchableOpacity
+          accessibilityRole="button"
+          style={styles.outOfReachBack}
+          onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+              return;
+            }
+            router.replace('/home');
+          }}>
+          <MaterialCommunityIcons name="arrow-left" size={22} color="#0F172A" />
+        </TouchableOpacity>
+        <View style={styles.outOfReachBody}>
+          {isOutOfReach ? (
+            <>
+              <View style={styles.outOfReachArtWell}>
+                <Image
+                  source={images.cargoOutOfReachAvatar}
+                  style={styles.outOfReachAvatar}
+                  resizeMode="contain"
+                />
+              </View>
+              <Text style={styles.outOfReachTitle}>{copy.cargo.outOfReachTitle}</Text>
+              <Text style={styles.outOfReachText}>{copy.cargo.outOfReachText}</Text>
+              <Text style={styles.outOfReachHint}>{copy.cargo.outOfReachHint}</Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={styles.outOfReachButton}
+                onPress={() => router.replace('/home')}>
+                <Text style={styles.outOfReachButtonText}>{copy.cargo.outOfReachBack}</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="large" color={cargoTheme.colors.primary} />
+              <Text style={styles.outOfReachChecking}>{copy.cargo.checkingRegion}</Text>
+            </>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
 
-      {/* Real Google Map */}
-      {mapCanRender && NativeMapView && Marker && Polyline ? (
-        <NativeMapView
-          ref={mapRef}
-          provider={mapProvider}
-          style={styles.map}
-          customMapStyle={lightMapStyle}
-          showsUserLocation={hasLocationPermission}
-          showsMyLocationButton={hasLocationPermission}
-          toolbarEnabled={false}
-          moveOnMarkerPress={false}
-          initialRegion={{
-            latitude: validPickupPoint?.latitude ?? defaultPickupPoint.latitude,
-            longitude: validPickupPoint?.longitude ?? defaultPickupPoint.longitude,
-            latitudeDelta: 0.045,
-            longitudeDelta: 0.04,
-          }}
-          onPress={handleMapPress}>
-          {validPickupPoint ? (
-            <Marker
-              coordinate={validPickupPoint}
-              title={copy.cargo.pickup}
-              description={pickupLabel}
-              anchor={{ x: 0.5, y: 1 }}
-              tracksViewChanges={false}
-              zIndex={8}
-            >
-              <MapStopPin kind="pickup" label={copy.cargo.pickup} />
-            </Marker>
-          ) : null}
-          {validDropoffPoint ? (
-            <Marker
-              coordinate={validDropoffPoint}
-              title={copy.cargo.dropoff}
-              description={dropoffLabel || dropoffInput}
-              anchor={{ x: 0.5, y: 1 }}
-              tracksViewChanges={false}
-              zIndex={9}
-            >
-              <MapStopPin kind="dropoff" label={copy.cargo.dropoff} />
-            </Marker>
-          ) : null}
-          {nearbyCarrierMarkers.map((driver) => {
-            const markerImage = vehicleImages[driver.mappedVehicleKey];
-            const animatedCoordinate = liveCarrierAnimatedCoordinatesRef.current[driver.id];
-            const markerChild = (
-              <View
-                collapsable={false}
-                style={[
-                  styles.liveCarrierMarkerShell,
-                  driver.isSelectedType ? styles.liveCarrierMarkerShellActive : styles.liveCarrierMarkerShellMuted,
-                ]}
-              >
-                {driver.isSelectedType ? (
-                  <View style={styles.liveCarrierMarkerLabel}>
-                    <Text style={styles.liveCarrierMarkerLabelText}>
-                      {cargoVehicles.find((vehicle) => vehicle.key === driver.mappedVehicleKey)?.title ?? 'Selected'}
-                    </Text>
-                  </View>
+  if (cargoLayoutStep === 'offer') {
+    return (
+      <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.offerScreen}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.offerScreenInner}>
+          <View style={styles.offerScreenHeader}>
+            <TouchableOpacity accessibilityRole="button" style={styles.chromeButton} onPress={handleGoBack}>
+              <MaterialCommunityIcons name="arrow-left" size={22} color={cargoTheme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.offerScreenBody}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.offerScreenContent}>
+            <Text style={styles.offerScreenTitle}>
+              {driverPriceWaiting ? copy.cargo.driverPriceTitle : copy.cargo.offerTitle}
+            </Text>
+            <Text style={styles.offerHint}>
+              {driverPriceWaiting ? copy.cargo.driverPriceHint : copy.cargo.offerHint}
+            </Text>
+
+            {driverPriceWaiting ? (
+              <View style={styles.driverPriceCard}>
+                <Text style={styles.driverPriceCurrency}>TZS</Text>
+                <Text style={styles.driverPriceAmount}>{liveDriverOffer.toLocaleString('en-US')}</Text>
+                {liveDriverName || liveDriverVehicle ? (
+                  <Text style={styles.driverPriceMeta}>
+                    {[liveDriverName, liveDriverVehicle].filter(Boolean).join(' · ')}
+                  </Text>
                 ) : null}
-                <View
-                  style={[
-                    styles.liveCarrierMarkerCard,
-                    driver.isSelectedType ? styles.liveCarrierMarkerCardActive : styles.liveCarrierMarkerCardMuted,
-                  ]}
-                >
-                  {driver.isSelectedType ? <View style={styles.liveCarrierMarkerHalo} /> : null}
-                  {markerImage ? (
-                    <Image
-                      source={markerImage}
-                      resizeMode="contain"
-                      fadeDuration={0}
-                      style={[
-                        styles.liveCarrierMarkerImage,
-                        driver.isSelectedType
-                          ? styles.liveCarrierMarkerImageActive
-                          : styles.liveCarrierMarkerImageMuted,
-                      ]}
-                    />
-                  ) : (
-                    <MaterialCommunityIcons name={driver.iconName} size={18} color={cargoTheme.colors.primaryDark} />
-                  )}
+                {driverOfferNote ? <Text style={styles.driverPriceNote}>“{driverOfferNote}”</Text> : null}
+              </View>
+            ) : null}
+
+            {hasLiveDriver ? (
+              <Text style={styles.chanceLine}>
+                {driverChancesLeft > 0
+                  ? copy.cargo.driverChances.replace('{left}', String(driverChancesLeft))
+                  : copy.cargo.driverChancesNone}
+              </Text>
+            ) : null}
+
+            {driverPriceWaiting ? <Text style={styles.yourFareLabel}>{copy.cargo.yourFare}</Text> : null}
+
+            <View style={styles.offerStepperRow}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Minus"
+                style={[styles.offerStepButton, currentOfferAmount <= routeMinFare && styles.offerStepButtonDisabled]}
+                disabled={currentOfferAmount <= routeMinFare}
+                onPress={() => bumpOffer(-OFFER_STEP_TZS)}>
+                <Text style={styles.offerStepButtonText}>−</Text>
+              </TouchableOpacity>
+              <View style={styles.offerAmountWrap}>
+                <Text style={styles.offerCurrency}>TZS</Text>
+                <TextInput
+                  value={formatOfferInput(customerOfferInput || String(routeMinFare))}
+                  onChangeText={(value) => {
+                    setFormError('');
+                    const next = parseOfferTzs(value);
+                    setCustomerOfferInput(String(next || ''));
+                  }}
+                  placeholder={routeMinFare.toLocaleString('en-US')}
+                  placeholderTextColor="#D1D5DB"
+                  keyboardType="number-pad"
+                  style={styles.offerInput}
+                  returnKeyType="done"
+                  onSubmitEditing={() => void handleOfferPrimary()}
+                />
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Plus"
+                style={styles.offerStepButton}
+                onPress={() => bumpOffer(OFFER_STEP_TZS)}>
+                <Text style={styles.offerStepButtonText}>+</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.offerUnderline} />
+
+            <View style={styles.offerNoteChips}>
+              {['Bei yangu.', 'Niko tayari.', 'Tuongee.'].map((line) => {
+                const active = customerOfferNote === line;
+                return (
+                  <TouchableOpacity
+                    key={line}
+                    accessibilityRole="button"
+                    style={[styles.offerNoteChip, active && styles.offerNoteChipActive]}
+                    onPress={() => setCustomerOfferNote(line)}>
+                    <Text style={[styles.offerNoteChipText, active && styles.offerNoteChipTextActive]}>{line}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {profileLoading || readablePhone(profile?.phoneNumber) || readablePhone(user?.phoneNumber) ? null : (
+              <TextInput
+                value={contactPhone}
+                onChangeText={(value) => {
+                  setFormError('');
+                  setContactPhone(value);
+                }}
+                keyboardType="phone-pad"
+                placeholder={language === 'sw' ? 'Namba yako ya simu' : 'Your phone number'}
+                placeholderTextColor="#9CA3AF"
+                style={styles.offerPhone}
+              />
+            )}
+
+            {readablePhone(liveCargoOrder?.driverPhone) ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={styles.offerCallRow}
+                onPress={() => {
+                  void openPhoneDialer(liveCargoOrder?.driverPhone).catch(() => {
+                    setFormError(language === 'sw' ? 'Imeshindikana kufungua simu.' : 'Could not open the phone app.');
+                  });
+                }}>
+                <Text style={styles.offerCallNumber}>{readablePhone(liveCargoOrder?.driverPhone)}</Text>
+                <Text style={styles.offerCallAction}>{language === 'sw' ? 'Piga' : 'Call'}</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            <View style={styles.paymentRow}>
+              <MaterialCommunityIcons name="cash" size={22} color={cargoTheme.colors.ink} />
+              <Text style={styles.paymentRowLabel}>{copy.cargo.cash}</Text>
+            </View>
+
+            <View style={styles.travelWithDriverBanner} accessibilityRole="text">
+              <MaterialCommunityIcons name="account-supervisor" size={22} color={cargoTheme.colors.ink} />
+              <View style={styles.travelWithDriverCopy}>
+                <Text style={styles.travelWithDriverTitle}>{copy.cargo.travelWithDriverTitle}</Text>
+                <Text style={styles.travelWithDriverText}>{copy.cargo.travelWithDriverText}</Text>
+              </View>
+            </View>
+
+            {!hasLiveDriver && liveCargoOrder ? (
+              <CargoOfferSearch
+                label={copy.cargo.lookingDriver}
+                hint={copy.cargo.searchHint}
+                vehicleKey={selectedVehicle}
+                vehicleLabel={activeVehicleTitle}
+              />
+            ) : hasLiveDriver && !driverPriceWaiting ? (
+              <View style={styles.offerDriverCard}>
+                <View style={styles.offerDriverAvatar}>
+                  <MaterialCommunityIcons name="account" size={26} color={cargoTheme.colors.ink} />
+                </View>
+                <View style={styles.offerDriverCopy}>
+                  <Text style={styles.offerDriverName}>{liveDriverName || liveDriverVehicle}</Text>
+                  <Text style={styles.offerDriverVehicle}>{liveDriverVehicle}</Text>
+                  {liveDriverOffer > 0 ? (
+                    <Text style={styles.offerDriverFare}>
+                      {copy.cargo.driverOffer.replace('{amount}', liveDriverOffer.toLocaleString('en-US'))}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
-            );
+            ) : null}
+          </ScrollView>
 
-            if (animatedCoordinate && MarkerAnimated) {
-              return (
-                <MarkerAnimated
-                  key={driver.id}
-                  coordinate={animatedCoordinate as unknown as RoutePoint}
-                  title={driver.title}
-                  description={driver.description}
-                  anchor={{ x: 0.5, y: 1 }}
-                  tracksViewChanges
-                >
-                  {markerChild}
-                </MarkerAnimated>
-              );
+          <View style={[styles.offerScreenFooter, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
+            {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+            {hasLiveDriver && offerDirty ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={[styles.offerSecondaryButton, (offerBusy || currentOfferAmount < routeMinFare) && styles.primaryButtonDisabled]}
+                disabled={offerBusy || currentOfferAmount < routeMinFare}
+                onPress={() => void handleOfferPrimary()}>
+                <Text style={styles.offerSecondaryButtonText}>
+                  {offerBusy ? copy.confirm.creating : copy.cargo.sendPrice}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            <PrimaryButton
+              label={
+                driverPriceWaiting
+                  ? copy.cargo.acceptThisFare.replace('{amount}', liveDriverOffer.toLocaleString('en-US'))
+                  : hasLiveDriver
+                    ? copy.confirm.confirm
+                    : offerPrimaryLabel
+              }
+              onPress={() => void (hasLiveDriver ? handleConfirmCargoOffer() : handleOfferPrimary())}
+              style={styles.ctaButton}
+              disabled={hasLiveDriver ? offerBusy || !liveCargoOrder?.id : offerPrimaryDisabled}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+
+      <View style={styles.mapPane}>
+      {/* Real Google Map */}
+      {mapCanRender && NativeMapView && Marker && Polyline ? (
+        <View
+          style={styles.mapStage}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            if (width < 8 || height < 8) {
+              return;
             }
-
-            return (
+            const heightChanged = Math.abs(height - mapSizeRef.current.height) > 24;
+            const nextSize = { width, height };
+            mapSizeRef.current = nextSize;
+            setMapSize(nextSize);
+            projectMapCallouts();
+            if (
+              heightChanged &&
+              isValidCoordinate(pickupPointRef.current) &&
+              isValidCoordinate(dropoffPointRef.current)
+            ) {
+              fitMapToPickupAndDropoff(pickupPointRef.current, dropoffPointRef.current, 80);
+            }
+          }}>
+          <NativeMapView
+            ref={mapRef}
+            provider={mapProvider}
+            style={styles.map}
+            customMapStyle={cargoMapStyle}
+            showsUserLocation={hasLocationPermission}
+            showsMyLocationButton={false}
+            showsCompass={false}
+            showsScale={false}
+            showsTraffic={false}
+            showsIndoors={false}
+            showsBuildings={false}
+            showsPointsOfInterest={false}
+            toolbarEnabled={false}
+            moveOnMarkerPress={false}
+            initialRegion={{
+              latitude: validPickupPoint?.latitude ?? defaultPickupPoint.latitude,
+              longitude: validPickupPoint?.longitude ?? defaultPickupPoint.longitude,
+              latitudeDelta: 0.045,
+              longitudeDelta: 0.04,
+            }}
+            onMapReady={() => projectMapCallouts()}
+            onRegionChange={handleMapRegionChange}
+            onRegionChangeComplete={handleMapRegionComplete}
+            onPress={handleMapPress}>
+            {validPickupPoint ? (
               <Marker
-                key={driver.id}
-                coordinate={driver.coordinate}
-                title={driver.title}
-                description={driver.description}
-                anchor={{ x: 0.5, y: 1 }}
+                key="cargo-pickup-pin"
+                coordinate={validPickupPoint}
+                anchor={{ x: 0.5, y: 0.5 }}
                 tracksViewChanges
-              >
-                {markerChild}
+                zIndex={8}>
+                <CargoBullseyePin kind="pickup" />
               </Marker>
-            );
-          })}
-          <MapRouteLine
-            Polyline={Polyline}
-            coordinates={routePoints}
-            fallback={routeMetrics?.source === 'fallback'}
-          />
-        </NativeMapView>
+            ) : null}
+            {validDropoffPoint ? (
+              <Marker
+                key="cargo-dropoff-pin"
+                coordinate={validDropoffPoint}
+                anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges
+                zIndex={9}>
+                <CargoBullseyePin kind="dropoff" />
+              </Marker>
+            ) : null}
+            <NearbyLiveVehicleMarkers
+              vehicles={nearbyCarrierMarkers}
+              Marker={Marker}
+              MarkerAnimated={MarkerAnimated}
+              AnimatedRegion={AnimatedRegion}
+              pinStyle="silhouette"
+            />
+            <MapRouteLine
+              Polyline={Polyline}
+              coordinates={routePoints}
+              fallback={routeMetrics?.source === 'fallback'}
+            />
+          </NativeMapView>
+          {pickupCallout ? (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.mapCalloutLayer,
+                {
+                  width: CARGO_CALLOUT_LAYOUT.width,
+                  height: CARGO_CALLOUT_LAYOUT.overlayHeight,
+                  transform: [{ translateX: pickupCallout.x }, { translateY: pickupCallout.y }],
+                },
+              ]}>
+              <CargoRouteCallout
+                kind="pickup"
+                title={copy.cargo.mapPickup}
+                detail={pickupEtaLabel}
+                showPin={false}
+                placement={pickupCallout.placement}
+                stemOffset={pickupCallout.stemOffset}
+              />
+            </View>
+          ) : null}
+          {dropoffCallout && dropoffArrivalLabel ? (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.mapCalloutLayer,
+                {
+                  width: CARGO_CALLOUT_LAYOUT.width,
+                  height: CARGO_CALLOUT_LAYOUT.overlayHeight,
+                  transform: [{ translateX: dropoffCallout.x }, { translateY: dropoffCallout.y }],
+                },
+              ]}>
+              <CargoRouteCallout
+                kind="dropoff"
+                title={copy.cargo.mapDropoff}
+                detail={dropoffArrivalLabel}
+                showPin={false}
+                placement={dropoffCallout.placement}
+                stemOffset={dropoffCallout.stemOffset}
+              />
+            </View>
+          ) : null}
+        </View>
       ) : (
         <View style={[styles.map, styles.mapUnavailableCard]}>
           <Text style={styles.mapUnavailableTitle}>Google Map not ready</Text>
@@ -1846,130 +2743,83 @@ export default function BookCargoScreen() {
         </View>
       )}
 
-      <View pointerEvents="none" style={styles.mapShade} />
-
       <View pointerEvents="box-none" style={styles.topOverlay}>
         <View style={styles.chromeRow}>
-          <TouchableOpacity style={styles.chromeButton} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.chromeButton} onPress={handleGoBack}>
             <MaterialCommunityIcons name="arrow-left" size={22} color={cargoTheme.colors.text} />
-          </TouchableOpacity>
-          <View style={styles.titleChip}>
-            <Text style={styles.titleChipText}>
-              {showVehicleSheet ? (showCarrierStep ? copy.cargo.carrier : copy.cargo.details) : copy.cargo.book}
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.chromeButton} onPress={() => router.push('/menu')}>
-            <MaterialCommunityIcons name="menu" size={22} color={cargoTheme.colors.text} />
           </TouchableOpacity>
         </View>
 
+        {scheduleBannerLabel ? (
+          <View style={styles.scheduleBannerChip}>
+            <MaterialCommunityIcons name="calendar-clock" size={16} color={cargoTheme.colors.primaryDark} />
+            <Text style={styles.scheduleBannerChipText}>{scheduleBannerLabel}</Text>
+          </View>
+        ) : null}
+
         {routeEditorExpanded ? (
-          <>
-            <View style={styles.searchCard}>
-              <View style={styles.searchCardHeader}>
-                <View>
-                  <Text style={styles.searchCardTitle}>{copy.cargo.route}</Text>
-                </View>
-                {showVehicleSheet ? (
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    style={styles.searchCollapseButton}
-                    onPress={() => setRouteEditorExpanded(false)}>
-                    <MaterialCommunityIcons name="chevron-up" size={18} color={cargoTheme.colors.text} />
-                    <Text style={styles.searchCollapseButtonText}>{copy.cargo.hide}</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-
+          <View style={styles.searchStack}>
+            <View style={[styles.searchCard, shouldShowSuggestionCard && styles.searchCardJoined]}>
               <View style={styles.searchFieldShell}>
-                <View style={styles.routeTimeline}>
-                  <View style={styles.routeSpineCol}>
-                    <View style={styles.pickupDot} />
-                    <View style={styles.routeSpine}>
-                      <View style={styles.routeSpineFill} />
-                    </View>
-                    <View style={styles.dropoffSquare} />
+                <View style={styles.searchFieldRow}>
+                  <View style={styles.pickupDot} />
+                  <View style={styles.routeCopy}>
+                    <TextInput
+                      ref={pickupInputRef}
+                      value={pickupInput}
+                      onChangeText={handlePickupChange}
+                      onFocus={() => reopenRouteEditor('pickup')}
+                      placeholder={copy.cargo.pickupPlaceholder}
+                      placeholderTextColor="#94A3B8"
+                      style={styles.routeInput}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      returnKeyType="search"
+                    />
                   </View>
-                  <View style={styles.routeFields}>
-                    <View style={styles.searchFieldRow}>
-                      <View style={styles.routeCopy}>
-                        <Text style={styles.routeLabel}>{copy.cargo.pickup}</Text>
-                        <TextInput
-                          ref={pickupInputRef}
-                          value={pickupInput}
-                          onChangeText={handlePickupChange}
-                          onFocus={() => reopenRouteEditor('pickup')}
-                          placeholder={copy.cargo.pickupPlaceholder}
-                          placeholderTextColor="#94A3B8"
-                          style={styles.routeInput}
-                          autoCapitalize="words"
-                          autoCorrect={false}
-                          returnKeyType="search"
-                        />
-                      </View>
-                      {pickupState === 'loading' ? (
-                        <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-                      ) : (
-                        <Pressable hitSlop={10} onPress={refreshPickup}>
-                          <MaterialCommunityIcons name="crosshairs-gps" size={22} color={cargoTheme.colors.primaryDark} />
-                        </Pressable>
-                      )}
-                    </View>
+                  {pickupState === 'loading' ? (
+                    <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
+                  ) : (
+                    <Pressable hitSlop={10} onPress={refreshPickup}>
+                      <MaterialCommunityIcons name="crosshairs-gps" size={22} color={cargoTheme.colors.primaryDark} />
+                    </Pressable>
+                  )}
+                </View>
 
-                    <View style={styles.searchFieldHairline} />
+                <View style={styles.searchFieldHairline} />
 
-                    <View style={styles.searchFieldRow}>
-                      <View style={styles.routeCopy}>
-                        <Text style={styles.routeLabel}>{copy.cargo.dropoff}</Text>
-                        <TextInput
-                          ref={dropoffInputRef}
-                          value={dropoffInput}
-                          onChangeText={resetDropoffSelection}
-                          onFocus={() => reopenRouteEditor('dropoff')}
-                          placeholder={copy.parcel.dropoffPlaceholder}
-                          placeholderTextColor="#94A3B8"
-                          style={styles.routeInput}
-                          autoCapitalize="words"
-                          autoCorrect={false}
-                          returnKeyType="search"
-                          onSubmitEditing={() => resolveAndRouteDropoff({ manual: true })}
-                        />
-                      </View>
-                      <View style={styles.routeActions}>
-                        {dropoffInput ? (
-                          <Pressable hitSlop={10} onPress={clearDropoffSelection}>
-                            <MaterialCommunityIcons name="close" size={20} color="#94A3B8" />
-                          </Pressable>
-                        ) : null}
-                        {destinationState === 'searching' || loadingSuggestions ? (
-                          <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-                        ) : (
-                          <Pressable hitSlop={10} onPress={() => resolveAndRouteDropoff({ manual: true })}>
-                            <MaterialCommunityIcons name="magnify" size={22} color={cargoTheme.colors.primaryDark} />
-                          </Pressable>
-                        )}
-                      </View>
-                    </View>
+                <View style={styles.searchFieldRow}>
+                  <View style={styles.dropoffSquare} />
+                  <View style={styles.routeCopy}>
+                    <TextInput
+                      ref={dropoffInputRef}
+                      value={dropoffInput}
+                      onChangeText={resetDropoffSelection}
+                      onFocus={() => reopenRouteEditor('dropoff')}
+                      placeholder={copy.cargo.dropoffPlaceholder}
+                      placeholderTextColor="#94A3B8"
+                      style={styles.routeInput}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      returnKeyType="search"
+                      onSubmitEditing={() => resolveAndRouteDropoff({ manual: true })}
+                    />
+                  </View>
+                  <View style={styles.routeActions}>
+                    {dropoffInput ? (
+                      <Pressable hitSlop={10} onPress={clearDropoffSelection}>
+                        <MaterialCommunityIcons name="close" size={20} color="#94A3B8" />
+                      </Pressable>
+                    ) : null}
+                    {destinationState === 'searching' || loadingSuggestions ? (
+                      <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
+                    ) : (
+                      <Pressable hitSlop={10} onPress={() => resolveAndRouteDropoff({ manual: true })}>
+                        <MaterialCommunityIcons name="magnify" size={22} color={cargoTheme.colors.primaryDark} />
+                      </Pressable>
+                    )}
                   </View>
                 </View>
-              </View>
-
-              <View style={styles.mapModeRow}>
-                    {[
-                      { key: 'pickup', label: 'Pickup pin' },
-                      { key: 'dropoff', label: 'Drop-off pin' },
-                    ].map((item) => {
-                  const isActive = mapSelectionTarget === item.key;
-                  return (
-                    <TouchableOpacity
-                      key={item.key}
-                      activeOpacity={0.88}
-                      style={[styles.mapModeChip, isActive && styles.mapModeChipActive]}
-                      onPress={() => setMapSelectionTarget(item.key as 'pickup' | 'dropoff')}>
-                      <Text style={[styles.mapModeChipText, isActive && styles.mapModeChipTextActive]}>{item.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
               </View>
             </View>
 
@@ -1981,220 +2831,375 @@ export default function BookCargoScreen() {
                   </View>
                 ) : null}
 
-                {activeSearchLoading ? (
-                  <View style={styles.resultsLoadingRow}>
-                    <ActivityIndicator size="small" color={cargoTheme.colors.primaryDark} />
-                    <Text style={styles.resultsLoadingText}>
-                      {activeSearchField === 'pickup' ? 'Loading pickup suggestions...' : 'Loading destination suggestions...'}
-                    </Text>
-                  </View>
+                {savedPlaces.length ? (
+                  <>
+                    <Text style={styles.searchResultsSectionLabel}>{locationChipsTitle}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedPlacesRow}>
+                      {savedPlaces.map((place) => (
+                        <TouchableOpacity
+                          key={place.id}
+                          activeOpacity={0.88}
+                          style={styles.savedPlaceChip}
+                          onPress={() => {
+                            if (activeSearchField === 'pickup') {
+                              void applySavedPlaceToPickup(place);
+                              return;
+                            }
+
+                            void applySavedPlaceToDropoff(place);
+                          }}>
+                          <MaterialCommunityIcons name={place.icon} size={15} color="#111827" />
+                          <Text style={styles.savedPlaceChipText}>{place.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </>
                 ) : null}
 
-                {activeSearchSuggestions.length > 0 ? (
-                  <View style={styles.suggestionListCompact}>
-                    {activeSearchSuggestions.map((suggestion) => (
-                      <TouchableOpacity
-                        key={suggestion.id}
-                        activeOpacity={0.88}
-                        style={styles.suggestionRow}
-                        onPress={() => {
-                          if (activeSearchField === 'pickup') {
-                            void handleSelectPickupSuggestion(suggestion);
-                            return;
-                          }
+                <ScrollView
+                  style={styles.suggestionScroll}
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}>
+                  <LocationSuggestionsList
+                    embedded
+                    variant="haul"
+                    tone={activeSearchField === 'pickup' ? 'pickup' : 'dropoff'}
+                    loading={activeSearchLoading}
+                    loadingLabel={copy.cargo.suggestionSearching}
+                    suggestions={activeSearchSuggestions}
+                    showEmpty={
+                      activeSearchField === 'dropoff' && dropoffInput.trim().length >= 3 && !activeSearchLoading
+                    }
+                    emptyLabel={copy.cargo.suggestionEmpty}
+                    onSelect={(suggestion) => {
+                      if (activeSearchField === 'pickup') {
+                        void handleSelectPickupSuggestion(suggestion);
+                        return;
+                      }
 
-                          void resolveAndRouteDropoff({
-                            query: suggestion.fullText,
-                            suggestion,
-                            manual: true,
-                          });
-                        }}>
-                        <View
-                          style={[
-                            styles.suggestionIconWrap,
-                            activeSearchField === 'dropoff' && styles.suggestionIconWrapBlue,
-                          ]}>
-                          <MaterialCommunityIcons
-                            name={activeSearchField === 'pickup' ? 'crosshairs-gps' : 'map-marker-radius-outline'}
-                            size={16}
-                            color={activeSearchField === 'pickup' ? cargoTheme.colors.primaryDark : '#1D4ED8'}
-                          />
-                        </View>
-                        <View style={styles.suggestionCopy}>
-                          <Text style={styles.suggestionTitle}>{suggestion.name}</Text>
-                          <Text numberOfLines={2} style={styles.suggestionText}>
-                            {suggestion.address || suggestion.fullText}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                ) : activeSearchField === 'dropoff' && dropoffInput.trim().length >= 3 && !activeSearchLoading ? (
-                  <Text style={styles.emptySearchText}>
-                    No places matched yet. Try a more specific street, landmark, or area.
-                  </Text>
-                ) : null}
-
-                <Text style={styles.searchResultsSectionLabel}>{locationChipsTitle}</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedPlacesRow}>
-                  {savedPlaces.map((place) => (
-                    <TouchableOpacity
-                      key={place.id}
-                      activeOpacity={0.88}
-                      style={styles.savedPlaceChip}
-                      onPress={() => {
-                        if (activeSearchField === 'pickup') {
-                          void applySavedPlaceToPickup(place);
-                          return;
-                        }
-
-                        void applySavedPlaceToDropoff(place);
-                      }}>
-                      <MaterialCommunityIcons
-                        name={place.icon}
-                        size={16}
-                        color={activeSearchField === 'pickup' ? cargoTheme.colors.primaryDark : '#1D4ED8'}
-                      />
-                      <Text style={styles.savedPlaceChipText}>{place.label}</Text>
-                    </TouchableOpacity>
-                  ))}
+                      void resolveAndRouteDropoff({
+                        query: suggestion.fullText,
+                        suggestion,
+                        manual: true,
+                      });
+                    }}
+                  />
                 </ScrollView>
-
-                <Text style={styles.routeHint}>{activeSearchHint}</Text>
               </View>
             ) : null}
-          </>
+          </View>
         ) : showCollapsedRouteChip ? (
-          <TouchableOpacity activeOpacity={0.9} style={styles.collapsedRouteChip} onPress={handleEditRoute}>
-            <View style={styles.collapsedRouteCopy}>
-              <Text style={styles.collapsedRouteEyebrow}>Edit route</Text>
-              <Text style={styles.collapsedRouteTitle}>
-                {formatCompactLocationLabel(pickupLabel, 'Pickup')} to{' '}
-                {formatCompactLocationLabel(dropoffLabel || dropoffInput, 'Destination')}
+          <View style={styles.locationChipRow}>
+            <TouchableOpacity activeOpacity={0.9} style={styles.locationChip} onPress={() => reopenRouteEditor('pickup')}>
+              <View style={styles.pickupDot} />
+              <Text numberOfLines={1} style={styles.locationChipText}>
+                {formatCompactLocationLabel(pickupLabel, copy.cargo.pickup)}
               </Text>
-              <Text style={styles.collapsedRouteMeta}>
-                {`${activeVehicleTitle} • ${activeCargoSizeLabel}`}
+              <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
+            </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.9} style={styles.locationChip} onPress={() => reopenRouteEditor('dropoff')}>
+              <View style={styles.dropoffSquare} />
+              <Text numberOfLines={1} style={styles.locationChipText}>
+                {formatCompactLocationLabel(dropoffLabel || dropoffInput, copy.cargo.dropoff)}
               </Text>
-            </View>
-            <View style={styles.editRouteChipButton}>
-              <MaterialCommunityIcons name="pencil-outline" size={18} color={cargoTheme.colors.text} />
-            </View>
-          </TouchableOpacity>
+              <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
+            </TouchableOpacity>
+          </View>
         ) : null}
       </View>
 
-      {showVehicleSheet ? (
-        <View style={styles.vehicleSheet}>
+      <TouchableOpacity
+        accessibilityRole="button"
+        activeOpacity={0.88}
+        style={[
+          styles.recenterFab,
+          { bottom: 16 },
+        ]}
+        onPress={() => {
+          if (validPickupPoint && validDropoffPoint) {
+            fitMapToPickupAndDropoff(validPickupPoint, validDropoffPoint, 0);
+            return;
+          }
+          if (validPickupPoint) {
+            focusMapOnPoint(validPickupPoint, 500);
+          }
+        }}>
+        <MaterialCommunityIcons name="crosshairs-gps" size={22} color={cargoTheme.colors.ink} />
+      </TouchableOpacity>
+
+      </View>
+
+      <Animated.View
+        style={[
+          styles.vehicleSheet,
+          {
+            height: sheetHeightAnim,
+            paddingHorizontal: targetSheetHeight > 0 ? 18 : 0,
+            paddingTop: targetSheetHeight > 0 ? 10 : 0,
+          },
+        ]}>
+        {targetSheetHeight > 0 ? (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.vehicleSheetInner}>
           <View style={styles.vehicleSheetHandle} />
-          {showCargoDetailsStep ? (
+          {showChooseStep ? (
             <>
-              <Text style={styles.vehicleSheetTitle}>Maelezo ya mzigo</Text>
-              <Text style={styles.vehicleSheetSubtitle}>Chagua ukubwa, kisha usafiri.</Text>
-
-              <View style={styles.cargoTypeRowWrap}>
-                <Text style={styles.cargoTypeRowLabel}>Ukubwa wa mzigo</Text>
-                <View style={styles.cargoSizeGrid}>
-                  {cargoLoadOptions.map((option) => {
-                    const isActive = selectedCargoType === option.key;
-                    return (
-                      <TouchableOpacity
-                        key={option.key}
-                        activeOpacity={0.9}
-                        style={[styles.cargoSizeCard, isActive && styles.cargoSizeCardActive]}
-                        onPress={() => handleCargoSizeSelect(option.key)}>
-                        <Text style={[styles.cargoSizeTitle, isActive && styles.cargoSizeTitleActive]}>
-                          {option.label}
-                        </Text>
-                        <Text numberOfLines={2} style={[styles.cargoSizeSubtitle, isActive && styles.cargoSizeSubtitleActive]}>
-                          {option.subtitle}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+              <Text style={styles.vehicleSheetTitle}>{copy.cargo.carrier}</Text>
+              <Text style={styles.sizeChipLabel}>{copy.cargo.sizeLabel}</Text>
+              <View style={styles.sizeChipRow}>
+                {cargoLoadOptions.map((option) => {
+                  const isActive = selectedCargoType === option.key;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      activeOpacity={0.88}
+                      style={[styles.sizeChip, isActive && styles.sizeChipActive]}
+                      onPress={() => handleCargoSizeSelect(option.key)}>
+                      <Text style={[styles.sizeChipText, isActive && styles.sizeChipTextActive]}>{option.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
 
-              <View style={styles.vehicleActionBar}>
-                {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-                <PrimaryButton
-                  label={copy.common.continue}
-                  icon="arrow-right"
-                  onPress={handleCargoDetailsContinue}
-                  style={styles.ctaButton}
-                />
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={styles.vehicleSheetTitle}>Choose carrier</Text>
-              <Text style={styles.vehicleSheetSubtitle}>Chagua TOYO au Kirikuu</Text>
-
-              {nearbyCarrierSummary ? (
-                <View style={styles.liveCarrierBanner}>
-                  <MaterialCommunityIcons name="map-marker-multiple-outline" size={16} color={cargoTheme.colors.primaryDark} />
-                  <Text style={styles.liveCarrierBannerText}>{nearbyCarrierSummary}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.vehicleList}>
+              <ScrollView
+                style={styles.vehicleListScroll}
+                contentContainerStyle={styles.vehicleList}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled">
                 {cargoVehicles.map((vehicle) => {
                   const isActive = vehicle.key === selectedVehicle;
-                  const vehiclePrice = displayVehicleQuotes[vehicle.key] || 0;
+                  const rangeLabel = `TZS ${routeMinFare.toLocaleString('en-US')}+`;
+                  const distanceLabel = routeMetrics ? formatDistance(routeMetrics.distanceMeters) : '';
+                  const travelLabel =
+                    routeMetrics?.source === 'google' ? formatRouteTravelTime(routeMetrics.durationSeconds) : null;
+                  const metaParts = [vehicle.capacity, travelLabel || distanceLabel].filter(Boolean);
                   return (
                     <TouchableOpacity
                       key={vehicle.key}
                       activeOpacity={0.9}
                       style={[styles.vehicleRow, isActive && styles.vehicleRowActive]}
                       onPress={() => handleVehicleSelect(vehicle.key)}>
-                      <View style={styles.vehiclePhotoWrap}>
-                        <Image source={vehicleImages[vehicle.key]} style={styles.vehiclePhoto} resizeMode="contain" />
+                      <View style={styles.vehicleAvatarWrap}>
+                        <Image source={vehicleImages[vehicle.key]} style={styles.vehicleAvatar} resizeMode="contain" />
                       </View>
                       <View style={styles.vehicleCopy}>
                         <Text numberOfLines={1} style={styles.vehicleRowTitle}>{vehicle.title}</Text>
-                        <Text numberOfLines={1} style={styles.vehicleRowMeta}>{vehicle.capacity}</Text>
+                        <Text numberOfLines={1} style={styles.vehicleRowMeta}>{metaParts.join(' · ')}</Text>
                       </View>
-                      <View style={styles.vehiclePriceCol}>
-                        <Text style={styles.vehicleRowPrice}>{vehiclePrice ? formatTzs(vehiclePrice) : '—'}</Text>
-                        {isActive ? (
-                          <View style={styles.vehicleRowCheck}>
-                            <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
-                          </View>
-                        ) : null}
-                      </View>
+                      <Text style={styles.vehicleRowPrice}>{rangeLabel}</Text>
                     </TouchableOpacity>
                   );
                 })}
-              </View>
+              </ScrollView>
 
-              <View style={styles.vehicleActionBar}>
+              <View style={[styles.vehicleSheetFooter, { paddingBottom: safeSheetBottom + 6 }]}>
+                <View style={styles.paymentRow}>
+                  <MaterialCommunityIcons name="cash" size={22} color={cargoTheme.colors.ink} />
+                  <Text style={styles.paymentRowLabel}>{copy.cargo.cash}</Text>
+                  <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
+                </View>
+
                 {formError ? <Text style={styles.formError}>{formError}</Text> : null}
                 <PrimaryButton
-                  label={activeVehiclePrice ? `${copy.common.continue} · ${formatTzs(activeVehiclePrice)}` : copy.common.continue}
-                  icon="arrow-right"
-                  onPress={handleContinue}
+                  label={copy.cargo.chooseVehicle.replace('{vehicle}', activeVehicleTitle)}
+                  onPress={handleChooseVehicle}
                   style={styles.ctaButton}
-                  disabled={!activeVehiclePrice}
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.vehicleSheetTitle}>{copy.cargo.offerTitle}</Text>
+              <Text style={styles.vehicleSheetSubtitle}>{copy.cargo.offerHint}</Text>
+              {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+              <View style={[styles.vehicleSheetFooter, { paddingBottom: safeSheetBottom + 6 }]}>
+                <PrimaryButton
+                  label={offerPrimaryLabel}
+                  onPress={() => void handleOfferPrimary()}
+                  style={styles.ctaButton}
+                  disabled={offerPrimaryDisabled}
                 />
               </View>
             </>
           )}
-        </View>
-      ) : null}
+        </KeyboardAvoidingView>
+        ) : null}
+      </Animated.View>
     </SafeAreaView>
   );
 }
-
-// ============================================
-// STYLES (unchanged)
-// ============================================
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
   },
+  offerScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  offerScreenInner: {
+    flex: 1,
+  },
+  offerScreenHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  offerScreenBody: {
+    flex: 1,
+  },
+  offerScreenContent: {
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 24,
+  },
+  offerScreenTitle: {
+    fontSize: 30,
+    lineHeight: 36,
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.ink,
+    letterSpacing: -0.8,
+    marginBottom: 8,
+  },
+  offerScreenSubtitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+    marginBottom: 8,
+  },
+  offerHint: {
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: typography.medium,
+    color: cargoTheme.colors.subtext,
+    marginBottom: 26,
+  },
+  offerScreenFooter: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
+  },
+  outOfReachScreen: {
+    flex: 1,
+    backgroundColor: '#F7F7F5',
+  },
+  outOfReachGlow: {
+    position: 'absolute',
+    top: -80,
+    alignSelf: 'center',
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    backgroundColor: '#FFE500',
+    opacity: 0.22,
+  },
+  outOfReachBack: {
+    width: 44,
+    height: 44,
+    marginLeft: 18,
+    marginTop: 10,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E3EEE7',
+    zIndex: 2,
+  },
+  outOfReachBody: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    paddingBottom: 56,
+  },
+  outOfReachArtWell: {
+    width: 280,
+    height: 280,
+    borderRadius: 36,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5F0EA',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+    shadowColor: '#14532D',
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
+    overflow: 'hidden',
+  },
+  outOfReachAvatar: {
+    width: 240,
+    height: 240,
+  },
+  outOfReachTitle: {
+    fontSize: 30,
+    lineHeight: 36,
+    fontFamily: typography.extrabold,
+    color: '#0F172A',
+    textAlign: 'center',
+    letterSpacing: -0.8,
+    marginBottom: 12,
+  },
+  outOfReachText: {
+    fontSize: 17,
+    lineHeight: 25,
+    fontFamily: typography.semibold,
+    color: '#334155',
+    textAlign: 'center',
+    maxWidth: 320,
+    marginBottom: 10,
+  },
+  outOfReachHint: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: typography.medium,
+    color: '#64748B',
+    textAlign: 'center',
+    maxWidth: 300,
+    marginBottom: 30,
+  },
+  outOfReachChecking: {
+    marginTop: 18,
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.semibold,
+    color: '#475569',
+    textAlign: 'center',
+  },
+  outOfReachButton: {
+    minHeight: cargoTheme.cta.minHeight,
+    minWidth: 220,
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
+    borderRadius: cargoTheme.cta.borderRadius,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: cargoTheme.cta.backgroundColor,
+  },
+  outOfReachButtonText: {
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    color: cargoTheme.cta.labelColor,
+    letterSpacing: cargoTheme.cta.letterSpacing,
+  },
+  mapPane: {
+    flex: 1,
+    minHeight: 180,
+  },
+  mapStage: {
+    ...StyleSheet.absoluteFillObject,
+  },
   map: {
     ...StyleSheet.absoluteFillObject,
+  },
+  mapCalloutLayer: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
   },
   mapUnavailableCard: {
     alignItems: 'center',
@@ -2216,123 +3221,16 @@ const styles = StyleSheet.create({
     color: '#334155',
     textAlign: 'center',
   },
-  mapPickupPin: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  mapPickupPinCore: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: ROUTE_LINE_FILL,
-  },
-  mapDropoffPin: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  mapDropoffPinCore: {
-    width: 11,
-    height: 11,
-    borderRadius: 3,
-    backgroundColor: cargoTheme.colors.ink,
-  },
-  liveCarrierMarkerShell: {
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-  },
-  liveCarrierMarkerShellActive: {
-    opacity: 1,
-    transform: [{ scale: 1.06 }],
-  },
-  liveCarrierMarkerShellMuted: {
-    opacity: 0.62,
-    transform: [{ scale: 0.84 }],
-  },
-  liveCarrierMarkerLabel: {
-    marginBottom: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: cargoTheme.colors.primaryDark,
-    borderWidth: 1,
-    borderColor: '#FFFFFF',
-  },
-  liveCarrierMarkerLabelText: {
-    fontSize: 10,
-    fontFamily: typography.bold,
-    color: '#FFFFFF',
-    letterSpacing: 0.3,
-  },
-  liveCarrierMarkerCard: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.96)',
-    borderWidth: 2,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.16,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  liveCarrierMarkerCardActive: {
-    borderColor: cargoTheme.colors.primaryDark,
-  },
-  liveCarrierMarkerCardMuted: {
-    borderColor: 'rgba(226, 232, 240, 0.96)',
-  },
-  liveCarrierMarkerHalo: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 26,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-  },
-  liveCarrierMarkerImage: {
-    width: 34,
-    height: 34,
-  },
-  liveCarrierMarkerImageActive: {
-    width: 36,
-    height: 36,
-  },
-  liveCarrierMarkerImageMuted: {
-    width: 28,
-    height: 28,
-  },
-  mapShade: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
   topOverlay: {
     position: 'absolute',
-    top: 48,
+    top: 12,
     left: 16,
     right: 16,
   },
   chromeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   chromeButton: {
     width: 40,
@@ -2340,149 +3238,82 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.96)',
+    backgroundColor: 'rgba(255,255,255,0.98)',
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.1,
     shadowRadius: 8,
-    elevation: 3,
+    elevation: 4,
   },
-  titleChip: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.96)',
+  scheduleBannerChip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
+    gap: 8,
+    backgroundColor: '#ECFDF3',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
   },
-  titleChipText: {
-    fontSize: 14,
-    fontFamily: typography.extrabold,
-    color: cargoTheme.colors.ink,
-    letterSpacing: -0.2,
+  scheduleBannerChipText: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.primaryDark,
   },
-  searchCard: {
-    backgroundColor: 'rgba(255,255,255,0.98)',
+  searchStack: {
     borderRadius: 22,
-    padding: 14,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.1,
     shadowRadius: 16,
     elevation: 7,
   },
-  searchCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
+  searchCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    padding: 10,
   },
-  searchCardTitle: {
-    fontSize: 16,
-    lineHeight: 20,
-    fontFamily: typography.extrabold,
-    color: cargoTheme.colors.text,
-    letterSpacing: -0.2,
-  },
-  searchCollapseButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  searchCollapseButtonText: {
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.text,
+  searchCardJoined: {
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
   },
   searchFieldShell: {
-    borderRadius: 24,
+    borderRadius: 18,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 4,
     backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E8EEF4',
   },
   searchFieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 54,
+    minHeight: 52,
+    gap: 10,
   },
   searchFieldHairline: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#E2E8F0',
-    marginVertical: 2,
-  },
-  routeTimeline: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  routeSpineCol: {
-    width: 18,
-    alignItems: 'center',
-    paddingTop: 20,
-    paddingBottom: 20,
-    marginRight: 12,
-  },
-  routeSpine: {
-    flex: 1,
-    width: 2,
-    marginVertical: 6,
-    alignItems: 'center',
-  },
-  routeSpineFill: {
-    flex: 1,
-    width: 2,
-    borderRadius: 999,
-    backgroundColor: '#86EFAC',
-  },
-  routeFields: {
-    flex: 1,
-    minWidth: 0,
-  },
-  routeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    marginLeft: 22,
   },
   pickupDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: ROUTE_LINE_FILL,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#16A34A',
   },
   dropoffSquare: {
-    width: 11,
-    height: 11,
-    borderRadius: 3,
-    backgroundColor: cargoTheme.colors.ink,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
+    width: 10,
+    height: 10,
+    borderRadius: 2,
+    backgroundColor: '#111827',
   },
   routeCopy: {
     flex: 1,
-  },
-  routeLabel: {
-    fontSize: 11,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 2,
-  },
-  routeValue: {
-    fontSize: 15,
-    lineHeight: 20,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.text,
+    minWidth: 0,
   },
   routeInput: {
     fontSize: 15,
@@ -2492,454 +3323,204 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     minHeight: 22,
   },
-  routeInlineHint: {
-    marginTop: 6,
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-  },
   routeActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginLeft: 12,
-  },
-  suggestionList: {
-    marginTop: 10,
-    marginLeft: 54,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    paddingTop: 10,
-    gap: 8,
+    gap: 10,
   },
   searchResultsCard: {
-    marginTop: 10,
-    maxHeight: 310,
-    backgroundColor: 'rgba(255,255,255,0.98)',
-    borderRadius: 24,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.86)',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 18,
-    elevation: 7,
+    maxHeight: 280,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  suggestionScroll: {
+    maxHeight: 220,
   },
   noticeWrap: {
-    marginBottom: 10,
-  },
-  resultsLoadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-  resultsLoadingText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-  },
-  suggestionListCompact: {
-    gap: 10,
-    marginBottom: 12,
-  },
-  suggestionRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    paddingVertical: 6,
-  },
-  suggestionIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 10,
-    backgroundColor: '#ECFDF3',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  suggestionIconWrapBlue: {
-    backgroundColor: '#EFF6FF',
-  },
-  suggestionCopy: {
-    flex: 1,
-  },
-  suggestionTitle: {
-    fontSize: 14,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.text,
-  },
-  suggestionText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: typography.body,
-    color: cargoTheme.colors.subtext,
-    marginTop: 2,
-  },
-  emptySearchText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.subtext,
-    marginBottom: 12,
-  },
-  searchResultsSectionLabel: {
-    fontSize: 11,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    marginHorizontal: 14,
     marginBottom: 8,
   },
+  searchResultsSectionLabel: {
+    marginLeft: 14,
+    marginBottom: 8,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.bold,
+    color: '#6B7280',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
   savedPlacesRow: {
-    gap: 10,
-    paddingBottom: 2,
-    flexDirection: 'row',
+    gap: 8,
+    paddingLeft: 14,
+    paddingRight: 14,
+    paddingBottom: 8,
   },
   savedPlaceChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: 6,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#DBEAFE',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FFF6B0',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   savedPlaceChipText: {
     fontSize: 13,
     fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
-  routeHint: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.primaryDark,
-    marginTop: 12,
-  },
-  mapModeRow: {
+  locationChipRow: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 14,
   },
-  mapModeChip: {
+  locationChip: {
     flex: 1,
-    minHeight: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    alignItems: 'center',
-    justifyContent: 'center',
+    minHeight: 40,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.92)',
     paddingHorizontal: 10,
-  },
-  mapModeChipActive: {
-    backgroundColor: cargoTheme.colors.primary,
-    borderColor: cargoTheme.colors.primary,
-  },
-  mapModeChipText: {
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.text,
-    textAlign: 'center',
-  },
-  mapModeChipTextActive: {
-    color: '#FFFFFF',
-  },
-  collapsedRouteChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: 'rgba(255,255,255,0.98)',
+    gap: 8,
     borderWidth: 1,
-    borderColor: 'rgba(226,232,240,0.92)',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    elevation: 7,
+    borderColor: 'rgba(255,255,255,0.8)',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 5,
+    elevation: 2,
   },
-  collapsedRouteCopy: {
+  locationChipText: {
     flex: 1,
-  },
-  collapsedRouteEyebrow: {
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: typography.semibold,
-    color: cargoTheme.colors.primaryDark,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  collapsedRouteTitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
-    letterSpacing: -0.2,
   },
-  collapsedRouteMeta: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: typography.body,
-    color: cargoTheme.colors.subtext,
-    marginTop: 2,
-  },
-  editRouteChipButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  recenterFab: {
+    position: 'absolute',
+    right: 16,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 5,
   },
   vehicleSheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    overflow: 'hidden',
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 18,
-    maxHeight: vehicleSheetMaxHeight,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 14,
-    elevation: 20,
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    elevation: 16,
+  },
+  vehicleSheetInner: {
+    flex: 1,
   },
   vehicleSheetHandle: {
     alignSelf: 'center',
-    width: 52,
-    height: 5,
+    width: 42,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: '#CBD5E1',
-    marginBottom: 12,
+    backgroundColor: '#E5E7EB',
+    marginBottom: 14,
   },
   vehicleSheetTitle: {
     fontSize: 20,
+    lineHeight: 24,
     fontFamily: typography.extrabold,
     color: cargoTheme.colors.text,
-    letterSpacing: -0.4,
+    letterSpacing: -0.5,
+    textAlign: 'center',
+    marginBottom: 8,
   },
   vehicleSheetSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
     fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
-    marginTop: 4,
-    marginBottom: 12,
+    textAlign: 'center',
+    marginBottom: 8,
   },
-  liveCarrierBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 12,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  liveCarrierBannerText: {
-    flex: 1,
+  sizeChipLabel: {
     fontSize: 12,
-    lineHeight: 18,
     fontFamily: typography.semibold,
-    color: cargoTheme.colors.primaryDark,
-  },
-  routeStatsGrid: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  routeStatCard: {
-    flex: 1,
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  routeStatLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
     color: cargoTheme.colors.subtext,
     marginBottom: 6,
   },
-  routeStatValue: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-  },
-  cargoTypeRowWrap: {
-    marginBottom: 12,
-  },
-  cargoTypeRowLabel: {
-    fontSize: 11,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  cargoTypeRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  cargoSizeGrid: {
+  sizeChipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-  },
-  cargoSizeCard: {
-    width: '47.5%',
-    minHeight: 68,
-    borderRadius: 16,
-    backgroundColor: '#F4F5F7',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    justifyContent: 'center',
-  },
-  cargoSizeCardActive: {
-    backgroundColor: '#0F172A',
-  },
-  cargoSizeTitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: typography.extrabold,
-    color: cargoTheme.colors.text,
-    marginBottom: 2,
-    letterSpacing: -0.2,
-  },
-  cargoSizeTitleActive: {
-    color: '#FFFFFF',
-  },
-  cargoSizeSubtitle: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: typography.body,
-    color: cargoTheme.colors.subtext,
-  },
-  cargoSizeSubtitleActive: {
-    color: '#CBD5E1',
-  },
-  cargoTypeButton: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 12,
-  },
-  cargoTypeButtonActive: {
-    backgroundColor: cargoTheme.colors.primary,
-    borderColor: cargoTheme.colors.primary,
-  },
-  cargoTypeLabel: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: cargoTheme.colors.primaryDark,
-  },
-  cargoTypeLabelActive: {
-    color: '#FFFFFF',
-  },
-  vehicleStepHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
     marginBottom: 10,
   },
-  editCargoDetailsButton: {
-    minHeight: 34,
+  sizeChip: {
+    minHeight: 32,
     borderRadius: 999,
-    paddingHorizontal: 11,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#ECFDF3',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  editCargoDetailsButtonText: {
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.primaryDark,
-  },
-  vehicleStepSummary: {
-    flex: 1,
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-    textAlign: 'right',
-  },
-  vehicleLoadingBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 16,
-    backgroundColor: '#ECFDF3',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    marginBottom: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F3F4F6',
   },
-  vehicleLoadingText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: cargoTheme.colors.primaryDark,
-    fontWeight: '700',
+  sizeChipActive: {
+    backgroundColor: '#111827',
+  },
+  sizeChipText: {
+    fontSize: 13,
+    fontFamily: typography.semibold,
+    color: '#111827',
+  },
+  sizeChipTextActive: {
+    color: '#FFFFFF',
+  },
+  vehicleListScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+    maxHeight: 210,
+  },
+  vehicleSheetFooter: {
+    flexShrink: 0,
+    paddingTop: 6,
   },
   vehicleList: {
-    gap: 10,
+    paddingBottom: 4,
   },
   vehicleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    minHeight: 108,
-    borderRadius: 22,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    minHeight: 64,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    borderRadius: 16,
   },
   vehicleRowActive: {
-    borderColor: cargoTheme.colors.primary,
-    backgroundColor: '#F0FDF4',
+    backgroundColor: '#FFFBEA',
   },
-  vehiclePhotoWrap: {
-    width: 118,
-    height: 88,
+  vehicleAvatarWrap: {
+    width: 64,
+    height: 64,
     borderRadius: 16,
     backgroundColor: '#F8FAFC',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  vehiclePhoto: {
-    width: '108%',
-    height: '108%',
+  vehicleAvatar: {
+    width: 58,
+    height: 58,
   },
   vehicleCopy: {
     flex: 1,
@@ -2952,124 +3533,306 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
   vehicleRowMeta: {
-    marginTop: 4,
+    marginTop: 3,
     fontSize: 12,
     lineHeight: 16,
     fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
-  vehiclePriceCol: {
-    alignItems: 'flex-end',
-    gap: 8,
-    paddingRight: 2,
-  },
   vehicleRowPrice: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: typography.extrabold,
     color: cargoTheme.colors.ink,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
+    textAlign: 'right',
+    maxWidth: 128,
   },
-  vehicleRowCheck: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  paymentRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 12,
+    minHeight: 46,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+    marginTop: 2,
+    marginBottom: 8,
+  },
+  paymentRowLabel: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.ink,
+  },
+  travelWithDriverBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginTop: 4,
+    marginBottom: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: cargoTheme.colors.ink,
     backgroundColor: cargoTheme.colors.primary,
   },
-  vehicleOptionCard: {
+  travelWithDriverCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  travelWithDriverTitle: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.bold,
+    color: cargoTheme.colors.ink,
+    letterSpacing: -0.2,
+  },
+  travelWithDriverText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.ink,
+  },
+  offerInputBlock: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+    alignItems: 'flex-end',
+    gap: 10,
+    marginTop: 8,
   },
-  vehicleOptionCardActive: {
-    borderColor: cargoTheme.colors.primary,
-    backgroundColor: '#F0FDF4',
-    shadowColor: '#16A34A',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    elevation: 4,
-  },
-  vehicleImageWrap: {
-    width: 76,
-    height: 62,
+  offerStepperRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    gap: 14,
+    marginTop: 12,
   },
-  vehicleImage: {
-    width: '82%',
-    height: '82%',
+  offerStepButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  vehicleOptionCopy: {
+  offerStepButtonDisabled: {
+    backgroundColor: '#D1D5DB',
+  },
+  offerStepButtonText: {
+    color: '#FFFFFF',
+    fontSize: 28,
+    lineHeight: 32,
+    fontFamily: typography.extrabold,
+    marginTop: -2,
+  },
+  offerAmountWrap: {
     flex: 1,
+    alignItems: 'center',
   },
-  vehicleOptionHeader: {
+  offerCurrency: {
+    fontSize: 16,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  offerInput: {
+    width: '100%',
+    minHeight: 52,
+    fontSize: 40,
+    lineHeight: 46,
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.ink,
+    letterSpacing: -1,
+    paddingVertical: 0,
+    textAlign: 'center',
+  },
+  offerUnderline: {
+    height: 2,
+    backgroundColor: '#E5E7EB',
+    marginTop: 10,
+    marginBottom: 16,
+  },
+  offerLooking: {
+    marginTop: 18,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.medium,
+    color: cargoTheme.colors.subtext,
+    textAlign: 'center',
+  },
+  offerDriverCard: {
+    marginTop: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  vehicleTitle: {
+  offerDriverAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#FFE500',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offerDriverCopy: {
+    flex: 1,
+  },
+  offerDriverName: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontFamily: typography.extrabold,
+    color: cargoTheme.colors.ink,
+  },
+  offerDriverVehicle: {
+    marginTop: 2,
     fontSize: 14,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.subtext,
   },
-  vehiclePrice: {
+  offerDriverFare: {
+    marginTop: 4,
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.ink,
+  },
+  driverPriceCard: {
+    backgroundColor: '#FFE500',
+    borderRadius: 22,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    marginBottom: 22,
+  },
+  driverPriceCurrency: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: typography.bold,
+    color: '#111827',
+    letterSpacing: 1.2,
+  },
+  driverPriceAmount: {
+    marginTop: 2,
+    fontSize: 44,
+    lineHeight: 50,
+    fontFamily: typography.extrabold,
+    color: '#111827',
+    letterSpacing: -1.2,
+  },
+  driverPriceNote: {
+    marginTop: 12,
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: typography.semibold,
+    color: '#111827',
+    textAlign: 'center',
+  },
+  chanceLine: {
+    marginTop: -8,
+    marginBottom: 14,
     fontSize: 13,
-    fontWeight: '800',
-    color: cargoTheme.colors.primaryDark,
+    lineHeight: 18,
+    fontFamily: typography.semibold,
+    color: '#111827',
+    textAlign: 'center',
   },
-  vehicleMeta: {
+  offerNoteLabel: {
+    marginTop: 16,
     fontSize: 12,
     lineHeight: 16,
-    color: cargoTheme.colors.subtext,
-    marginTop: 4,
+    fontFamily: typography.semibold,
+    color: '#6B7280',
   },
-  vehicleOptionMetaRow: {
+  offerNoteChips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
     marginTop: 8,
   },
-  vehicleMetaPill: {
+  offerNoteChip: {
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  vehicleMetaPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: cargoTheme.colors.text,
+  offerNoteChipActive: {
+    backgroundColor: '#FFE500',
   },
-  vehicleSelectBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
+  offerNoteChipText: {
+    fontFamily: typography.semibold,
+    color: '#6B7280',
+    fontSize: 13,
   },
-  vehicleSelectBadgeActive: {
-    backgroundColor: cargoTheme.colors.primary,
-    borderColor: cargoTheme.colors.primary,
+  offerNoteChipTextActive: {
+    color: '#111827',
   },
-  vehicleActionBar: {
-    alignItems: 'stretch',
+  offerPhone: {
     marginTop: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    paddingVertical: 10,
+    fontFamily: typography.semibold,
+    fontSize: 16,
+    color: '#111827',
+  },
+  offerCallRow: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  offerCallNumber: {
+    fontFamily: typography.semibold,
+    fontSize: 16,
+    color: '#111827',
+  },
+  offerCallAction: {
+    fontFamily: typography.bold,
+    fontSize: 15,
+    color: '#111827',
+  },
+  offerNoteInput: {
+    marginTop: 6,
+    minHeight: 44,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: '#111827',
+    paddingVertical: 8,
+  },
+  driverPriceMeta: {
+    marginTop: 6,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: typography.semibold,
+    color: '#111827',
+  },
+  yourFareLabel: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.bold,
+    color: cargoTheme.colors.subtext,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  offerSuggested: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.medium,
+    color: cargoTheme.colors.subtext,
+    marginBottom: 16,
+    textAlign: 'center',
   },
   formError: {
     fontSize: 12,
@@ -3079,23 +3842,43 @@ const styles = StyleSheet.create({
   },
   ctaButton: {
     width: '100%',
+    minHeight: 54,
+    flexShrink: 0,
+  },
+  offerSecondaryButton: {
+    width: '100%',
+    minHeight: 48,
+    borderRadius: cargoTheme.cta.borderRadius,
+    borderWidth: 1.5,
+    borderColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  offerSecondaryButtonText: {
+    color: '#111827',
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: typography.bold,
   },
   primaryButton: {
-    backgroundColor: cargoTheme.colors.primary,
-    borderRadius: 999,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+    minHeight: cargoTheme.cta.minHeight,
+    backgroundColor: '#111827',
+    borderRadius: cargoTheme.cta.borderRadius,
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
+    flexShrink: 0,
   },
   primaryButtonDisabled: {
-    backgroundColor: '#94A3B8',
+    opacity: 0.55,
   },
   primaryButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontFamily: typography.extrabold,
-    letterSpacing: -0.2,
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    letterSpacing: cargoTheme.cta.letterSpacing,
   },
 });

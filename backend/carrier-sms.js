@@ -581,14 +581,291 @@ async function maybeNotifyRecipientOnShipmentChange(db, orderId, before, after) 
   return result;
 }
 
+function moneyLabel(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  return `TZS ${Math.round(amount).toLocaleString('en-US')}`;
+}
+
+function partyNames(order, shipment) {
+  const senderName = String(
+    shipment?.senderName || shipment?.customerName || order?.senderName || order?.customerName || 'Mtumaji'
+  ).trim();
+  const recipientName = String(
+    shipment?.recipientName || order?.recipientName || order?.receiverName || 'Mpokeaji'
+  ).trim();
+  const senderPhone = String(
+    shipment?.senderPhone || shipment?.customerPhone || order?.senderPhone || order?.customerPhone || ''
+  ).trim();
+  const recipientPhone = String(
+    shipment?.recipientPhone || order?.recipientPhone || order?.receiverPhone || ''
+  ).trim();
+  return { senderName, recipientName, senderPhone, recipientPhone };
+}
+
+function buildOrderPlacedSenderBody(order, shipment, orderId) {
+  const code = parcelCodeOf(shipment || order, orderId);
+  const dest = clipSms(
+    shipment?.destination || order?.outsideDestinationCity || order?.dropoffLabel || '',
+    40
+  );
+  const recipient = clipSms(partyNames(order, shipment).recipientName, 28);
+  let body = `HAUL: Oda ${code} imepokelewa.`;
+  if (dest) body += ` Kwenda ${dest}.`;
+  if (recipient && recipient !== 'Mpokeaji') body += ` Mpokeaji: ${recipient}.`;
+  body += ' Tunatafuta kampuni ya kusafirisha. Fuatilia kwenye HAUL.';
+  return body.slice(0, 320);
+}
+
+function buildOrderPlacedRecipientBody(order, shipment, orderId) {
+  const code = parcelCodeOf(shipment || order, orderId);
+  const { senderName } = partyNames(order, shipment);
+  const from = clipSms(shipment?.origin || order?.outsideOriginCity || order?.pickupLabel || 'Dar', 32);
+  let body = `HAUL: Mzigo ${code} unakuja kwako.`;
+  if (senderName && senderName !== 'Mtumaji') body += ` Kutoka ${clipSms(senderName, 28)}.`;
+  if (from) body += ` Kutoka ${from}.`;
+  body += ' Tutakujulisha kampuni inapopatikana. Fuatilia kwa msimbo huu kwenye HAUL.';
+  return body.slice(0, 320);
+}
+
+function buildCompanyOfferBody(order, shipment, orderId, carrier) {
+  const code = parcelCodeOf(shipment || order, orderId);
+  const { senderName, senderPhone, recipientName, recipientPhone } = partyNames(order, shipment);
+  const pickup = clipSms(shipment?.pickupLabel || shipment?.origin || order?.pickupLabel || '', 36);
+  const dest = clipSms(shipment?.destination || order?.outsideDestinationCity || '', 36);
+  const cargo = clipSms(
+    [
+      shipment?.parcelDescription || order?.parcelTypeLabel || 'Mzigo',
+      Number(shipment?.weightKg || order?.outsideParcelWeightKg) > 0
+        ? `${Number(shipment?.weightKg || order?.outsideParcelWeightKg)}kg`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    40
+  );
+  const price = moneyLabel(shipment?.cashExpected || shipment?.carrierNet || order?.declaredValueTzs);
+  const company = clipSms(carrier?.tradingName || carrier?.companyName || 'Kampuni', 24);
+  let body = `HAUL oda ${code}`;
+  if (company) body += ` · ${company}`;
+  body += '.';
+  if (pickup && dest) body += ` ${pickup} → ${dest}.`;
+  else if (dest) body += ` Kwenda ${dest}.`;
+  if (cargo) body += ` ${cargo}.`;
+  body += ` Mtumaji: ${clipSms(senderName, 20)}${senderPhone ? ` ${clipSms(senderPhone, 14)}` : ''}.`;
+  body += ` Mpokeaji: ${clipSms(recipientName, 20)}${recipientPhone ? ` ${clipSms(recipientPhone, 14)}` : ''}.`;
+  if (price) body += ` ${price}.`;
+  body += ' Fungua HAUL Agents kukubali.';
+  return body.slice(0, 320);
+}
+
+function buildSenderCompanyFoundBody(order, shipment, orderId, carrier) {
+  const code = parcelCodeOf(shipment || order, orderId);
+  const company = clipSms(
+    carrier?.tradingName || carrier?.companyName || shipment?.carrierCompanyName || 'Kampuni',
+    28
+  );
+  const dest = clipSms(shipment?.destination || order?.outsideDestinationCity || '', 36);
+  let body = `HAUL: Kampuni imepatikana kwa ${code}`;
+  if (company) body += ` · ${company}`;
+  body += '.';
+  if (dest) body += ` Kwenda ${dest}.`;
+  body += ' Yuko njiani kuchukua mzigo. Fuatilia kwenye HAUL.';
+  return body.slice(0, 320);
+}
+
+async function notifyAdminSmsFailure(db, { orderId, shipment, detail, title, message }) {
+  const code = parcelCodeOf(shipment, orderId);
+  const key = `sms_fail_${String(detail || 'error').slice(0, 24)}_${orderId}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  const ref = db.collection('adminNotifications').doc(key);
+  const existing = await ref.get();
+  const text =
+    message ||
+    `SMS haikutumwa kwa oda ${code}: ${String(detail || 'error').slice(0, 120)}`;
+  if (!existing.exists) {
+    await ref.set({
+      type: 'sms_send_failed',
+      email: config.adminEmail,
+      title: title || 'SMS haikutumwa',
+      message: text,
+      orderId,
+      parcelCode: code,
+      detail: String(detail || '').slice(0, 180),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  }
+  if (isSmsBalanceError({ code: detail, message: detail })) {
+    await notifyAdminSmsBalance(db, { orderId, shipment, detail });
+  }
+}
+
+async function sendIdempotentSms(db, { orderId, shipment, to, body, jobKey, audience, event }) {
+  const phone = normalizeSmsPhone(to);
+  if (!phone) return { skipped: true, reason: 'no_phone', audience };
+  const jobId = `${orderId}_${jobKey}`;
+  const ref = db.collection('smsJobs').doc(jobId);
+  const snap = await ref.get();
+  if (jobWasSent(snap)) return { sent: true, skipped: true, jobId, audience };
+
+  try {
+    assertMamboLive();
+  } catch (error) {
+    await writeSmsJob(ref, snap, {
+      orderId,
+      event,
+      audience,
+      to: phone,
+      toMasked: maskPhone(phone),
+      body,
+      status: 'failed',
+      errorCode: error.code || 'sms_not_configured',
+      error: String(error.message || '').slice(0, 180),
+    });
+    await notifyAdminSmsFailure(db, {
+      orderId,
+      shipment,
+      detail: error.code || error.message,
+      title: 'SMS haijawekwa',
+      message: `Oda ${parcelCodeOf(shipment, orderId)}: ${error.message}`,
+    });
+    return { sent: false, skipped: true, jobId, audience, code: error.code };
+  }
+
+  try {
+    const result = await sendSms(phone, body, { event, orderId, jobId, audience });
+    await writeSmsJob(ref, snap, {
+      orderId,
+      event,
+      audience,
+      to: phone,
+      toMasked: maskPhone(phone),
+      body,
+      status: 'sent',
+      provider: result.provider || 'mambo',
+      messageId: result.messageId || null,
+      jobId: result.jobId || jobId,
+    });
+    console.info('carrier-sms sent', { orderId, audience, event, toMasked: maskPhone(phone) });
+    return { sent: true, jobId, audience, provider: result.provider };
+  } catch (error) {
+    const code = error.code || (isSmsBalanceError(error) ? 'mambo_insufficient_balance' : 'sms_failed');
+    await writeSmsJob(ref, snap, {
+      orderId,
+      event,
+      audience,
+      to: phone,
+      toMasked: maskPhone(phone),
+      body,
+      status: 'failed',
+      errorCode: code,
+      error: String(error.message || error.causeDetail || '').slice(0, 180),
+    });
+    await notifyAdminSmsFailure(db, {
+      orderId,
+      shipment,
+      detail: code,
+      title: isSmsBalanceError(error) ? 'Salio la SMS limeisha' : 'SMS haikutumwa',
+      message: `Oda ${parcelCodeOf(shipment, orderId)} (${audience}): ${String(error.message || code).slice(0, 140)}`,
+    });
+    return { sent: false, jobId, audience, code, balanceExhausted: isSmsBalanceError(error) };
+  }
+}
+
+/** Sender + recipient SMS when a bus parcel order is placed. Idempotent. */
+async function sendOrderPlacedPartySms(db, { orderId, order, shipment }) {
+  const ship = shipment || {};
+  const phones = await resolveArrivalPhones(db, orderId, { ...ship, ...order, userId: order?.userId });
+  const senderBody = buildOrderPlacedSenderBody(order, ship, orderId);
+  const recipientBody = buildOrderPlacedRecipientBody(order, ship, orderId);
+  const sender = await sendIdempotentSms(db, {
+    orderId,
+    shipment: ship,
+    to: phones.sender,
+    body: senderBody,
+    jobKey: 'placed_sender',
+    audience: 'sender',
+    event: 'order_placed',
+  });
+  const recipient = await sendIdempotentSms(db, {
+    orderId,
+    shipment: ship,
+    to: phones.recipient,
+    body: recipientBody,
+    jobKey: 'placed_recipient',
+    audience: 'recipient',
+    event: 'order_placed',
+  });
+  return { sender, recipient };
+}
+
+async function loadCarrierDoc(db, carrierId) {
+  if (!carrierId) return null;
+  try {
+    const snap = await db.collection('carriers').doc(carrierId).get();
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** SMS to the transport company when an offer is assigned. */
+async function sendCompanyOfferSms(db, { orderId, shipment, carrierId, order }) {
+  const carrier = await loadCarrierDoc(db, carrierId);
+  const to = String(carrier?.phone || carrier?.phoneNormalized || shipment?.carrierPhone || '').trim();
+  const body = buildCompanyOfferBody(order, shipment, orderId, carrier || {});
+  // Persist company label for later arrival/sender copy.
+  if (carrier) {
+    await db.collection('carrierShipments').doc(orderId).set(
+      {
+        carrierCompanyName: String(carrier.tradingName || carrier.companyName || '').trim(),
+        carrierPhone: String(carrier.phone || carrier.phoneNormalized || '').trim(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+  return sendIdempotentSms(db, {
+    orderId,
+    shipment,
+    to,
+    body,
+    jobKey: `offer_company_${carrierId || 'x'}`.slice(0, 80),
+    audience: 'company',
+    event: 'company_offer',
+  });
+}
+
+/** SMS to mtumaji when a company has been found / offered. */
+async function sendSenderCompanyFoundSms(db, { orderId, shipment, carrierId, order }) {
+  const carrier = await loadCarrierDoc(db, carrierId);
+  const phones = await resolveArrivalPhones(db, orderId, { ...shipment, ...order, userId: order?.userId });
+  const body = buildSenderCompanyFoundBody(order, shipment, orderId, carrier || {});
+  return sendIdempotentSms(db, {
+    orderId,
+    shipment,
+    to: phones.sender,
+    body,
+    jobKey: 'company_found_sender',
+    audience: 'sender',
+    event: 'company_found',
+  });
+}
+
 module.exports = {
   buildArrivalBody,
   buildBody,
+  buildCompanyOfferBody,
+  buildOrderPlacedRecipientBody,
+  buildOrderPlacedSenderBody,
+  buildSenderCompanyFoundBody,
   enqueueRecipientSms,
   maskPhone,
   maybeNotifyRecipientOnShipmentChange,
   normalizeSmsPhone,
   notifyAdminSmsBalance,
   sendArrivalNotices,
+  sendCompanyOfferSms,
+  sendOrderPlacedPartySms,
+  sendSenderCompanyFoundSms,
   smsEventFromTransition,
 };

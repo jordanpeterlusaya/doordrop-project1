@@ -282,6 +282,23 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
     const after = event.data?.after?.data() || null;
     if (!after) return;
     const orderId = event.params.orderId;
+    const beforeStatus = String(before?.status || '');
+    const afterStatus = String(after.status || '');
+
+    // Customer cancel before pickup → clear agent offer + notify.
+    if (beforeStatus !== 'cancelled' && afterStatus === 'cancelled') {
+      try {
+        const { clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+        await clearCarrierOfferOnCustomerCancel(getFirestoreDb(), orderId, {
+          id: orderId,
+          ...after,
+        });
+      } catch (error) {
+        console.error('clearCarrierOfferOnCustomerCancel failed', orderId, error);
+      }
+      return;
+    }
+
     const { isBusParcel, matchOrderById } = require('./carrier-matching');
     const afterOrder = { id: orderId, ...after };
     if (!isBusParcel(afterOrder)) return;
