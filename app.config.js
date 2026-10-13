@@ -35,7 +35,7 @@ function loadEnvFile(filename) {
 loadEnvFile('.env.local');
 loadEnvFile('.env');
 
-const androidPackage = 'com.doordrop.app';
+const androidPackage = 'com.doordrop.mobile';
 const androidGoogleServicesFile = './google-services.json';
 const googleMapsApiKey =
   process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
@@ -47,15 +47,18 @@ const googleMapsApiKey =
 
 const doordropApiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const easBuildProfile = process.env.EAS_BUILD_PROFILE || '';
-const easOwner = process.env.DOORDROP_EAS_OWNER || 'jordanpeter';
-const easProjectId = (process.env.DOORDROP_EAS_PROJECT_ID || '9f130ec2-8b0c-404e-81c5-fd11f44a769f').trim();
+const easOwner = process.env.DOORDROP_EAS_OWNER || 'lusayaapeters-team';
+const easProjectId = (
+  process.env.DOORDROP_EAS_PROJECT_ID || '7e8f96f2-2fb2-4775-b540-815429462767'
+).trim();
 
 const isAndroidBuildContext =
   process.env.EAS_BUILD_PLATFORM === 'android' ||
   process.argv.some((value) => /android|prebuild|run:android/i.test(value));
-const requiresPublicApiBaseUrl =
-  isAndroidBuildContext && (easBuildProfile === 'preview' || easBuildProfile === 'production');
-const androidUsesCleartextTraffic = !requiresPublicApiBaseUrl;
+const isStoreReleaseProfile = ['preview', 'production', 'standalone'].includes(easBuildProfile);
+const requiresPublicApiBaseUrl = isAndroidBuildContext && isStoreReleaseProfile;
+const androidUsesCleartextTraffic = !isStoreReleaseProfile;
+const includeDevClient = !isStoreReleaseProfile;
 
 function warnConfig(message, details) {
   if (details === undefined) {
@@ -214,17 +217,17 @@ if (!androidGoogleServicesConfig.configured) {
 module.exports = {
   expo: {
     owner: easOwner,
-    name: 'DoorDrop',
+    name: 'HAUL',
     slug: 'DoorDrop',
     scheme: 'doordrop',
     version: '1.0.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
-    icon: './assets/images/doordrop.png',
+    icon: './assets/images/haul-icon.png',
     splash: {
-      image: './assets/images/doordrop.png',
-      resizeMode: 'contain',
-      backgroundColor: '#16A34A',
+      image: './assets/images/haul-splash-blank.png',
+      resizeMode: 'cover',
+      backgroundColor: '#FFE500',
     },
     assetBundlePatterns: ['**/*'],
     android: {
@@ -234,29 +237,98 @@ module.exports = {
             googleServicesFile: androidGoogleServicesConfig.file,
           }
         : {}),
-      versionCode: 1,
+      versionCode: 2,
       usesCleartextTraffic: androidUsesCleartextTraffic,
       adaptiveIcon: {
-        foregroundImage: './assets/images/doordrop.png',
-        backgroundColor: '#ffffff',
+        foregroundImage: './assets/images/haul-adaptive-foreground.png',
+        backgroundColor: '#FFE500',
       },
       config: {
         googleMaps: {
           apiKey: googleMapsApiKey,
         },
       },
-      permissions: ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'POST_NOTIFICATIONS'],
+      softwareKeyboardLayoutMode: 'resize',
+      intentFilters: [
+        {
+          action: 'SEND',
+          category: ['DEFAULT'],
+          data: [{ mimeType: 'image/*' }],
+        },
+        {
+          action: 'SEND',
+          category: ['DEFAULT'],
+          data: [{ mimeType: 'text/plain' }],
+        },
+        {
+          action: 'SEND',
+          category: ['DEFAULT'],
+          data: [{ mimeType: 'text/*' }],
+        },
+        {
+          action: 'SEND_MULTIPLE',
+          category: ['DEFAULT'],
+          data: [{ mimeType: 'image/*' }],
+        },
+      ],
+      permissions: [
+        'ACCESS_FINE_LOCATION',
+        'ACCESS_COARSE_LOCATION',
+        'POST_NOTIFICATIONS',
+        'CAMERA',
+        'READ_CONTACTS',
+      ],
+      // Use Android Photo Picker (no broad gallery access) for Play photo/video policy.
+      blockedPermissions: [
+        'android.permission.RECORD_AUDIO',
+        'android.permission.SYSTEM_ALERT_WINDOW',
+        'android.permission.WRITE_EXTERNAL_STORAGE',
+        'android.permission.WRITE_CONTACTS',
+        'android.permission.READ_MEDIA_IMAGES',
+        'android.permission.READ_MEDIA_VIDEO',
+        'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+        'android.permission.READ_EXTERNAL_STORAGE',
+      ],
     },
     ios: {
       bundleIdentifier: androidPackage,
       supportsTablet: true,
+      infoPlist: {
+        NSPhotoLibraryUsageDescription:
+          'DoorDrop inahitaji picha ili uambatanishe screenshot ya bidhaa.',
+        NSPhotoLibraryAddUsageDescription:
+          'DoorDrop inahitaji ruhusa ya picha kwa oda za Ninunulie.',
+        NSCameraUsageDescription: 'DoorDrop inahitaji kamera ili upige picha ya bidhaa.',
+        NSContactsUsageDescription:
+          'DoorDrop inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
+        NSLocationWhenInUseUsageDescription:
+          'DoorDrop inahitaji location yako kuonyesha pickup na delivery.',
+      },
     },
     plugins: [
+      'expo-router',
+      ...(includeDevClient ? ['expo-dev-client'] : []),
+      [
+        'expo-image-picker',
+        {
+          // iOS still needs a usage string; Android uses Photo Picker without READ_MEDIA_*.
+          photosPermission: 'DoorDrop inahitaji picha ili uambatanishe screenshot ya bidhaa.',
+          cameraPermission: 'DoorDrop inahitaji kamera ili upige picha ya bidhaa.',
+          microphonePermission: false,
+        },
+      ],
+      [
+        'expo-contacts',
+        {
+          contactsPermission:
+            'DoorDrop inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
+        },
+      ],
       [
         'expo-notifications',
         {
-          icon: './assets/images/doordrop-adaptive-monochrome.png',
-          color: '#12B981',
+          icon: './assets/images/haul-notification-icon.png',
+          color: '#FFE500',
           defaultChannel: 'default',
         },
       ],
@@ -264,6 +336,7 @@ module.exports = {
         'expo-location',
         {
           locationAlwaysAndWhenInUsePermission: 'Allow DoorDrop to use your location',
+          locationWhenInUsePermission: 'Allow DoorDrop to use your location while using the app',
         },
       ],
       [
@@ -272,6 +345,8 @@ module.exports = {
           apiKey: googleMapsApiKey,
         },
       ],
+      './plugins/with-ninunulie-share-intent',
+      './plugins/withStandaloneRelease',
     ],
     extra: {
       ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
@@ -280,6 +355,14 @@ module.exports = {
       hasApiBaseUrl: Boolean(doordropApiBaseUrl),
       googleMapsApiKey,
       hasGoogleMapsApiKey: Boolean(googleMapsApiKey),
+      firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || '',
+      firebaseAuthDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'efootball-app-9d175.firebaseapp.com',
+      firebaseProjectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'efootball-app-9d175',
+      firebaseStorageBucket:
+        process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'efootball-app-9d175.firebasestorage.app',
+      firebaseMessagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '729242246964',
+      firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '1:729242246964:web:bdb35a59a681a4a7420f61',
+      firebaseMeasurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID || 'G-G3XDE8M7L5',
       pushNotifications: {
         androidNativeFcmConfigured: androidGoogleServicesConfig.configured,
         androidPackage,

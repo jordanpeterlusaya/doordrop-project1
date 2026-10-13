@@ -1,7 +1,10 @@
 const crypto = require('crypto');
 const { FieldValue } = require('firebase-admin/firestore');
 
-const { maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
+const { config } = require('./config');
+const { isSmsBalanceError, maskPhone, normalizeSmsPhone, sendSms, smsConfigured } = require('./sms-provider');
+
+const OTP_USER_UNAVAILABLE = 'Kuna tatizo limejitokeza. Jaribu tena baadaye.';
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
@@ -112,6 +115,45 @@ function getDb() {
   return getFirestore();
 }
 
+async function notifyAdminCustomerOtpBalance(db, { phone, detail }) {
+  const adminEmail = String(config.adminEmail || '').trim().toLowerCase();
+  const day = new Date().toISOString().slice(0, 10);
+  const ref = db.collection('adminNotifications').doc(`customer_otp_sms_balance_${day}`);
+  const existing = await ref.get();
+  const message =
+    'Usajili wa mteja umeshindwa kutuma OTP kwa sababu salio la Mambo SMS limeisha.';
+  if (!existing.exists) {
+    await ref.set({
+      type: 'sms_balance_exhausted',
+      email: adminEmail,
+      title: 'Salio la SMS limeisha',
+      message,
+      purpose: 'customer_otp',
+      phoneMasked: maskPhone(phone),
+      detail: String(detail || 'mambo_insufficient_balance').slice(0, 180),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  }
+  if (!adminEmail) return;
+  try {
+    const users = await db.collection('users').where('email', '==', adminEmail).limit(1).get();
+    if (users.empty) return;
+    await db.collection('userNotifications').doc(`customer_otp_sms_balance_${day}`).set(
+      {
+        userId: users.docs[0].id,
+        title: 'Salio la SMS limeisha',
+        message,
+        type: 'admin_sms_balance',
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error('admin customer otp sms balance notification failed', error?.message || error);
+  }
+}
+
 async function handleSendCustomerOtp(req) {
   const body = await readJsonBody(req);
   const phone = normalizeSmsPhone(body.phone);
@@ -189,6 +231,20 @@ async function handleSendCustomerOtp(req) {
         code: errCode || undefined,
         reason: raw.slice(0, 160),
       });
+      if (isSmsBalanceError(error)) {
+        try {
+          await notifyAdminCustomerOtpBalance(db, {
+            phone,
+            detail: error.causeDetail || error.code || error.message,
+          });
+        } catch (notifyError) {
+          console.error(
+            'admin customer otp sms balance notification failed',
+            notifyError?.message || notifyError
+          );
+        }
+        throw serviceUnavailable(OTP_USER_UNAVAILABLE, 'sms_temporarily_unavailable');
+      }
       if (Number.isInteger(error?.statusCode) && error.message && !/^mambo_\d+/.test(error.message)) {
         throw error;
       }

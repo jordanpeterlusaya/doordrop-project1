@@ -115,7 +115,12 @@ function RegisterScreenContent() {
         },
       });
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Imeshindwa kutuma msimbo.');
+      const raw = e instanceof Error ? e.message.trim() : '';
+      const leakedBalance =
+        /salio|balance|sender credit|no credit|low credit|out of credit|credit exhausted|insufficient/i.test(
+          raw
+        );
+      setFormError(leakedBalance || !raw ? 'Kuna tatizo limejitokeza. Jaribu tena baadaye.' : raw);
     } finally {
       setSendingOtp(false);
     }

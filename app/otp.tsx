@@ -25,6 +25,17 @@ import { useLanguage } from '@/providers/language-provider';
 
 export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
+const OTP_UNAVAILABLE = 'Kuna tatizo limejitokeza. Jaribu tena baadaye.';
+
+function otpErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message.trim() : '';
+  if (!message) return fallback;
+  if (/salio|balance|sender credit|no credit|low credit|out of credit|credit exhausted|insufficient/i.test(message)) {
+    return OTP_UNAVAILABLE;
+  }
+  return message;
+}
+
 function OtpScreenContent() {
   const router = useRouter();
   const copy = useAppCopy();
@@ -128,7 +139,7 @@ function OtpScreenContent() {
       setPhoneMasked(result.phoneMasked);
       await completeSignup(result.otpTicket);
     } catch (e) {
-      setError(e instanceof Error ? e.message : copy.otp.invalidCode);
+      setError(otpErrorMessage(e, copy.otp.invalidCode));
     } finally {
       setVerifying(false);
     }
@@ -146,7 +157,7 @@ function OtpScreenContent() {
       if (result.otpBypass) setOtpBypass(true);
       setCode('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : copy.otp.resendFailed);
+      setError(otpErrorMessage(e, copy.otp.resendFailed));
     } finally {
       setResending(false);
     }
