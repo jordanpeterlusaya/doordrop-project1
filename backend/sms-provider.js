@@ -72,15 +72,22 @@ function mamboToken() {
   return String(process.env.MAMBO_SMS_API_TOKEN || process.env.SMS_API_KEY || '').trim();
 }
 
+/** Exact sender_name from GET /sender-ids. Do not fall back to Mambo's testing sender. */
+const APPROVED_MAMBO_SENDER_ID = 'HAUL APP';
+
 function mamboSenderId() {
-  // MAMBO_SENDER_ID is the switch: MAMBO SMS while HAUL is unapproved, then HAUL.
-  // Strip wrapping quotes from .env ("MAMBO SMS") so Mambo gets the exact approved name.
-  return String(
+  // Production sender is the approved Mambo name. Empty or testing values
+  // (MAMBO / MAMBO SMS) resolve to HAUL APP so live traffic cannot use the test sender.
+  const configured = String(
     process.env.MAMBO_SENDER_ID || process.env.MAMBO_SMS_SENDER_ID || process.env.SMS_SENDER_ID || ''
   )
     .trim()
     .replace(/^['"]|['"]$/g, '')
-    .trim();
+    .trim()
+    .replace(/\s+/g, ' ');
+  const retired = configured.toUpperCase() === 'MAMBO' || configured.toUpperCase() === 'MAMBO SMS';
+  if (!configured || retired) return APPROVED_MAMBO_SENDER_ID;
+  return configured;
 }
 
 function mamboBaseUrl() {
@@ -163,7 +170,7 @@ async function sendViaMambo(to, body) {
       lower.includes('sender id invalid');
     if (senderInvalid) {
       const error = new Error(
-        'Sender ID ya Mambo haijakubaliwa. Weka MAMBO_SENDER_ID kuwa sender ya majaribio (MAMBO SMS), si jina linalosubiri idhini.'
+        `Sender ID ya Mambo imekataliwa (${senderId}).${detail ? ` ${detail}` : ''}`
       );
       error.statusCode = 503;
       error.code = 'mambo_sender_id_invalid';

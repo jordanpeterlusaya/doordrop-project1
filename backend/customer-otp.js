@@ -63,8 +63,8 @@ function allowDevWithoutSms() {
 }
 
 /**
- * Shared with carrier OTP while Mambo Sender ID is pending.
- * Prefer real SMS — only enable when Mambo rejects delivery.
+ * Skips SMS and accepts any 4–8 digit code. Leave disabled in production so
+ * customer OTP is sent with the approved Mambo sender (HAUL APP).
  */
 function isOtpBypassEnabled() {
   const raw = String(

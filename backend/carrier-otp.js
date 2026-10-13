@@ -63,9 +63,8 @@ function allowDevWithoutSms() {
 }
 
 /**
- * Temporary production bypass while Mambo Sender ID (e.g. HAUL) awaits approval.
- * Set CARRIER_OTP_BYPASS_ENABLED=true (or OTP_BYPASS_ENABLED=true) to accept any
- * 4–8 digit code and skip real SMS delivery. MUST be disabled once Sender ID is live.
+ * Skips SMS and accepts any 4–8 digit code. Leave disabled in production so
+ * agent OTP is sent with the approved Mambo sender (HAUL APP).
  */
 function isOtpBypassEnabled() {
   const raw = String(

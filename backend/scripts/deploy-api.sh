@@ -11,7 +11,7 @@ bash "$ROOT/scripts/prepare-firebase-env.sh"
 echo "==> Deploying Cloud Functions: api + carrier matching"
 cd "$ROOT/.."
 export FUNCTIONS_DISCOVERY_TIMEOUT="${FUNCTIONS_DISCOVERY_TIMEOUT:-90}"
-npx firebase-tools deploy --only functions:api,functions:onParcelOrderMatchCarrier,functions:advanceCarrierOffers,functions:onCarrierShipmentRematch --project "$PROJECT"
+npx firebase-tools deploy --only functions:api,functions:onParcelOrderMatchCarrier,functions:onParcelOrderMatchCarrierUpdate,functions:advanceCarrierOffers,functions:onCarrierShipmentRematch --project "$PROJECT" --non-interactive --force
 
 echo "==> Checking /health"
 for attempt in 1 2 3 4 5; do

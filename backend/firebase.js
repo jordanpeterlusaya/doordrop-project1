@@ -11,11 +11,11 @@ const mongikeApiKey = defineString('MONGIKE_API_KEY');
 const googleServerApiKey = defineString('GOOGLE_SERVER_API_KEY');
 const smsProvider = defineString('SMS_PROVIDER', { default: '' });
 const mamboSmsApiToken = defineString('MAMBO_SMS_API_TOKEN', { default: '' });
-const mamboSmsSenderId = defineString('MAMBO_SMS_SENDER_ID', { default: '' });
-const mamboSenderIdParam = defineString('MAMBO_SENDER_ID', { default: '' });
+const mamboSmsSenderId = defineString('MAMBO_SMS_SENDER_ID', { default: 'HAUL APP' });
+const mamboSenderIdParam = defineString('MAMBO_SENDER_ID', { default: 'HAUL APP' });
 const mamboSmsBaseUrl = defineString('MAMBO_SMS_BASE_URL', { default: '' });
 const mamboSmsMobileFormat = defineString('MAMBO_SMS_MOBILE_FORMAT', { default: '255' });
-// TEMP: set true in backend/.env until Mambo Sender ID is approved; then false + redeploy.
+// OTP bypass skips SMS. Leave false in production so OTP uses MAMBO_SENDER_ID (HAUL APP).
 const carrierOtpBypassEnabled = defineString('CARRIER_OTP_BYPASS_ENABLED', { default: '' });
 
 let firestore = null;
