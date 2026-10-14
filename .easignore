@@ -41,6 +41,9 @@ doordropdrive/node_modules/
 doordropdrive/.expo/
 doordropdrive/android/
 doordropdrive/ios/
+haulcargo-agents-app/android/
+haulcargo-agents-app/ios/
+haulcargo-agents-app/.expo/
 backend/
 admin-website/
 company-website/
