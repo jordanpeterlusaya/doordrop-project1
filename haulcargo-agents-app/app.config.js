@@ -28,7 +28,11 @@ const googleMapsApiKey =
 
 const googleServicesFile = path.join(__dirname, 'google-services.json');
 const hasGoogleServices = fs.existsSync(googleServicesFile);
-const easProjectId = String(process.env.HAUL_AGENTS_EAS_PROJECT_ID || '').trim();
+const easProjectId = String(
+  process.env.HAUL_AGENTS_EAS_PROJECT_ID || '81d51efa-31d8-4eb4-aed6-6fbe0664c546'
+).trim();
+const easBuildProfile = process.env.EAS_BUILD_PROFILE || '';
+const isReleaseProfile = ['preview', 'production', 'standalone'].includes(easBuildProfile);
 
 module.exports = {
   expo: {
@@ -38,6 +42,7 @@ module.exports = {
     orientation: 'portrait',
     icon: './assets/icon.png',
     scheme: 'haulcargoagents',
+    owner: 'lusayaapeters-team',
     userInterfaceStyle: 'light',
     newArchEnabled: true,
     splash: {
@@ -65,7 +70,7 @@ module.exports = {
       bundler: 'metro',
     },
     plugins: [
-      'expo-dev-client',
+      ...(isReleaseProfile ? [] : ['expo-dev-client']),
       'expo-router',
       'expo-font',
       'expo-sharing',

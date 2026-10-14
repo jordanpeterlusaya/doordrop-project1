@@ -1,0 +1,44 @@
+{
+  "cli": {
+    "version": ">= 18.7.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
+      }
+    },
+    "standalone": {
+      "distribution": "internal",
+      "environment": "production",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "environment": "production",
+      "distribution": "store",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
