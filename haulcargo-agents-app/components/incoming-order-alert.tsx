@@ -5,6 +5,8 @@ import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PickupDirectionButton } from '@/components/pickup-direction-button';
+import { WarningSheet } from '@/components/warning-sheet';
+import { KATAA_CONFIRM } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, rejectOffer } from '@/lib/carrier-actions';
@@ -17,6 +19,7 @@ export function IncomingOrderAlert() {
   const { offerBanner, dismissOfferBanner, carrier, user } = useCarrierSession();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   if (!offerBanner || !carrier?.id) return null;
 
@@ -53,28 +56,26 @@ export function IncomingOrderAlert() {
   const handleReject = () => {
     if (busy) return;
     stopIncomingOrderAlarm('reject');
-    Alert.alert('Kataa oda', undefined, [
-      { text: 'Ghairi', style: 'cancel' },
-      {
-        text: 'Kataa',
-        style: 'destructive',
-        onPress: () => {
-          setBusy(true);
-          void rejectOffer(offerBanner.shipmentId, carrierId, email)
-            .then(() => {
-              dismissOfferBanner();
-            })
-            .catch((err) => {
-              const msg = agentStatusError(err instanceof Error ? err.message : 'Imeshindwa.');
-              if (msg) Alert.alert('Imeshindwa', msg);
-            })
-            .finally(() => setBusy(false));
-        },
-      },
-    ]);
+    setConfirming(true);
+  };
+
+  const confirmReject = () => {
+    if (busy || !offerBanner) return;
+    setConfirming(false);
+    setBusy(true);
+    void rejectOffer(offerBanner.shipmentId, carrierId, email)
+      .then(() => {
+        dismissOfferBanner();
+      })
+      .catch((err) => {
+        const msg = agentStatusError(err instanceof Error ? err.message : 'Imeshindwa.');
+        if (msg) Alert.alert('Imeshindwa', msg);
+      })
+      .finally(() => setBusy(false));
   };
 
   return (
+    <>
     <View pointerEvents="box-none" style={[styles.host, { bottom: tabClearance }]}>
       <View style={styles.card} accessibilityRole="alert">
         <View style={styles.head}>
@@ -123,6 +124,18 @@ export function IncomingOrderAlert() {
         </View>
       </View>
     </View>
+    <WarningSheet
+      visible={confirming}
+      title={KATAA_CONFIRM.title}
+      message={KATAA_CONFIRM.message}
+      onDismiss={() => setConfirming(false)}
+      primaryLabel={KATAA_CONFIRM.confirmLabel}
+      onPrimary={confirmReject}
+      primaryBusy={busy}
+      secondaryLabel={KATAA_CONFIRM.backLabel}
+      onSecondary={() => setConfirming(false)}
+    />
+    </>
   );
 }
 

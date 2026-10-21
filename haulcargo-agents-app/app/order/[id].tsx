@@ -2,13 +2,15 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DeskRail } from '@/components/desk-rail';
 import { OfferCountdown } from '@/components/offer-countdown';
 import { PickupDirectionButton } from '@/components/pickup-direction-button';
 import { PrimaryButton } from '@/components/ui';
+import { WarningSheet } from '@/components/warning-sheet';
+import { KATAA_CONFIRM } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, advanceDeskStep, cancelAcceptedJob, rejectOffer } from '@/lib/carrier-actions';
@@ -52,6 +54,7 @@ export default function OrderDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
+  const [kataa, setKataa] = useState<null | 'offer' | 'job'>(null);
 
   const email = user?.email || '';
 
@@ -106,25 +109,20 @@ export default function OrderDetailScreen() {
   };
 
   const confirmReject = () => {
-    Alert.alert('Kataa oda', undefined, [
-      { text: 'Ghairi', style: 'cancel' },
-      {
-        text: 'Kataa',
-        style: 'destructive',
-        onPress: () => void run(() => rejectOffer(item.id, carrierId, email)),
-      },
-    ]);
+    if (busy) return;
+    setKataa('offer');
   };
 
   const confirmCancel = () => {
-    Alert.alert('Futa oda', 'Kufuta baada ya kukubali kunaondoa mfululizo. Akaunti inaweza kufungwa.', [
-      { text: 'Rudi', style: 'cancel' },
-      {
-        text: 'Futa',
-        style: 'destructive',
-        onPress: () => void run(() => cancelAcceptedJob(item.id, carrierId, email)),
-      },
-    ]);
+    if (busy) return;
+    setKataa('job');
+  };
+
+  const confirmKataa = () => {
+    const mode = kataa;
+    setKataa(null);
+    if (mode === 'offer') void run(() => rejectOffer(item.id, carrierId, email));
+    if (mode === 'job') void run(() => cancelAcceptedJob(item.id, carrierId, email));
   };
 
   const goNext = () => {
@@ -237,6 +235,17 @@ export default function OrderDetailScreen() {
           {liveOffer ? <PrimaryButton label="Kataa" variant="outline" disabled={busy} onPress={confirmReject} /> : null}
         </View>
       ) : null}
+      <WarningSheet
+        visible={kataa != null}
+        title={KATAA_CONFIRM.title}
+        message={KATAA_CONFIRM.message}
+        onDismiss={() => setKataa(null)}
+        primaryLabel={KATAA_CONFIRM.confirmLabel}
+        onPrimary={confirmKataa}
+        primaryBusy={busy}
+        secondaryLabel={KATAA_CONFIRM.backLabel}
+        onSecondary={() => setKataa(null)}
+      />
     </View>
   );
 }

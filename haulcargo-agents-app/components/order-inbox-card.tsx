@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { OfferCountdown } from '@/components/offer-countdown';
+import { WarningSheet } from '@/components/warning-sheet';
+import { KATAA_CONFIRM } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, advanceDeskStep, rejectOffer } from '@/lib/carrier-actions';
@@ -34,6 +36,7 @@ function routeLine(item: CarrierShipment) {
 export function OrderInboxCard({ item, carrierId }: Props) {
   const { user } = useCarrierSession();
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const offer = isIncomingOffer(item, carrierId);
   const liveOffer = offer && offerStillValid(item);
   const next = !offer && item.carrierId === carrierId ? nextDeskStep(item) : null;
@@ -58,14 +61,8 @@ export function OrderInboxCard({ item, carrierId }: Props) {
   };
 
   const onReject = () => {
-    Alert.alert('Kataa oda', undefined, [
-      { text: 'Ghairi', style: 'cancel' },
-      {
-        text: 'Kataa',
-        style: 'destructive',
-        onPress: () => run(rejectOffer(item.id, carrierId, email)),
-      },
-    ]);
+    if (busy) return;
+    setConfirming(true);
   };
 
   const onAdvance = () => {
@@ -74,6 +71,7 @@ export function OrderInboxCard({ item, carrierId }: Props) {
   };
 
   return (
+    <>
     <Pressable
       onPress={() => router.push(`/order/${item.id}`)}
       accessibilityRole="button"
@@ -141,6 +139,21 @@ export function OrderInboxCard({ item, carrierId }: Props) {
         </Pressable>
       ) : null}
     </Pressable>
+    <WarningSheet
+      visible={confirming}
+      title={KATAA_CONFIRM.title}
+      message={KATAA_CONFIRM.message}
+      onDismiss={() => setConfirming(false)}
+      primaryLabel={KATAA_CONFIRM.confirmLabel}
+      onPrimary={() => {
+        setConfirming(false);
+        run(rejectOffer(item.id, carrierId, email));
+      }}
+      primaryBusy={busy}
+      secondaryLabel={KATAA_CONFIRM.backLabel}
+      onSecondary={() => setConfirming(false)}
+    />
+    </>
   );
 }
 
