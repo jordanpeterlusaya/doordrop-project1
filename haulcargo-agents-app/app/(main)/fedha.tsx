@@ -1,45 +1,45 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { CommissionPaySheet, type PayNetworkKey } from '@/components/commission-pay-sheet';
 import { EarnedIcon, OwedIcon } from '@/components/money-icons';
 import { TierMedal } from '@/components/tier-medal';
 import { Screen } from '@/components/ui';
-import { COMMISSION_PAY_THRESHOLD_TZS, tierBenefitLabel } from '@/constants/carrier-desk';
+import { commissionPayCeiling, tierBenefitLabel } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { deskStanding } from '@/lib/desk-standing';
-import { requestCommissionUssd, verifyCommissionUssd } from '@/lib/carrier-commission-api';
-import { agentStatusError, fireTimeMs, isCompletedShipment, money, shipmentCode } from '@/lib/carrier-helpers';
+import { isValidTzPhone } from '@/lib/phone';
+import { deskStanding, unpaidHaulFee } from '@/lib/desk-standing';
+import { loadCommissionPayIntent, saveCommissionPayIntent } from '@/lib/commission-intent';
+import { fireTimeMs, isCompletedShipment, money, shipmentCode } from '@/lib/carrier-helpers';
 import type { CarrierShipment } from '@/lib/carrier-types';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-const NETWORKS = [
-  { key: 'mpesa', label: 'M-Pesa' },
-  { key: 'mixx', label: 'Mixx' },
-  { key: 'airtel', label: 'Airtel' },
-] as const;
-
-function isUssdHold(item: CarrierShipment) {
-  return (
-    String(item.cashStatus || '').toLowerCase() === 'pending_reconciliation' &&
-    String(item.commissionPaymentId || '').startsWith('HCC-')
-  );
-}
-
 export default function FedhaScreen() {
-  const { carrier, shipments, refreshCarrier, decisions } = useCarrierSession();
+  const { carrier, shipments, decisions } = useCarrierSession();
   const carrierId = carrier?.id || '';
-  const [phone, setPhone] = useState(carrier?.commissionPayerPhone || carrier?.phone || '');
-  const [network, setNetwork] = useState<(typeof NETWORKS)[number]['key']>('mpesa');
-  const [paying, setPaying] = useState(false);
-  const [error, setError] = useState('');
-  const [confirmed, setConfirmed] = useState(false);
-  const heldAmount = useRef<number | null>(null);
+  const [phone, setPhone] = useState(carrier?.phone || '');
+  const [network, setNetwork] = useState<PayNetworkKey>('mpesa');
+  const [phoneHint, setPhoneHint] = useState('');
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
-    const next = carrier?.commissionPayerPhone || carrier?.phone || '';
+    const next = carrier?.phone || '';
     if (next) setPhone((current) => current || next);
-  }, [carrier?.commissionPayerPhone, carrier?.phone]);
+  }, [carrier?.phone]);
+
+  useEffect(() => {
+    if (!carrierId) return;
+    let stopped = false;
+    void loadCommissionPayIntent(carrierId).then((intent) => {
+      if (stopped || !intent) return;
+      if (intent.phone) setPhone(intent.phone);
+      setNetwork(intent.network);
+    });
+    return () => {
+      stopped = true;
+    };
+  }, [carrierId]);
 
   const delivered = useMemo(() => {
     return shipments
@@ -47,92 +47,29 @@ export default function FedhaScreen() {
       .sort((a, b) => (fireTimeMs(b.arrivedAt) || fireTimeMs(b.deliveredAt) || 0) - (fireTimeMs(a.arrivedAt) || fireTimeMs(a.deliveredAt) || 0));
   }, [shipments, carrierId]);
 
-  const totals = useMemo(() => {
-    let mapato = 0;
-    let unpaid = 0;
-    let holding = false;
-    for (const item of delivered) {
-      mapato += Number(item.carrierNet) || 0;
-      const fee = Number(item.haulFee) || 0;
-      if (String(item.cashStatus || '').toLowerCase() !== 'reconciled' && fee > 0) unpaid += fee;
-      if (isUssdHold(item)) holding = true;
-    }
-    return { mapato, unpaid, holding };
-  }, [delivered]);
+  const mapato = useMemo(() => delivered.reduce((sum, item) => sum + (Number(item.carrierNet) || 0), 0), [delivered]);
+  const unpaid = useMemo(() => unpaidHaulFee(shipments, carrierId), [shipments, carrierId]);
 
   const standing = useMemo(
     () => deskStanding(shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels),
     [shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels],
   );
-  const due = totals.unpaid >= COMMISSION_PAY_THRESHOLD_TZS && !totals.holding;
-  const debtNote =
-    totals.unpaid <= 0
-      ? 'Hakuna deni'
-      : totals.unpaid < COMMISSION_PAY_THRESHOLD_TZS
-        ? `Lipa ukifika ${money(COMMISSION_PAY_THRESHOLD_TZS)}`
-        : '';
+  const ceiling = commissionPayCeiling(standing);
+  const blocked = unpaid >= ceiling;
 
-  useEffect(() => {
-    if (totals.holding) {
-      heldAmount.current = totals.unpaid;
+  const rememberIntent = () => {
+    if (!isValidTzPhone(phone)) {
+      setPhoneHint('Weka namba ya simu.');
       return;
     }
-    if (heldAmount.current != null && totals.unpaid < heldAmount.current) {
-      setConfirmed(true);
-      setError('');
-    }
-    heldAmount.current = null;
-  }, [totals.holding, totals.unpaid]);
-
-  useEffect(() => {
-    if (!totals.holding && !paying) return;
-    let stopped = false;
-    const tick = () => {
-      void verifyCommissionUssd()
-        .then((result) => {
-          if (stopped) return;
-          if (result.settled) setConfirmed(true);
-        })
-        .catch(() => undefined);
-    };
-    tick();
-    const id = setInterval(tick, 8000);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-    };
-  }, [totals.holding, paying]);
-
-  const sendPush = () => {
-    const trimmed = phone.trim();
-    if (trimmed.length < 9) {
-      setError('Weka namba ya simu.');
-      return;
-    }
-    Alert.alert('Lipa kamisheni', `${money(totals.unpaid)} · ${trimmed}`, [
-      { text: 'Ghairi', style: 'cancel' },
-      {
-        text: 'Tuma USSD',
-        onPress: () => {
-          setPaying(true);
-          setError('');
-          setConfirmed(false);
-          void requestCommissionUssd({ phoneNumber: trimmed, network })
-            .then(async (result) => {
-              if (result.status === 'below_threshold') {
-                setError('Kamisheni bado haijafika kiwango.');
-                return;
-              }
-              await refreshCarrier().catch(() => undefined);
-            })
-            .catch((err) => {
-              const message = agentStatusError(err instanceof Error ? err.message : '');
-              setError(message || 'USSD haijatumwa. Jaribu tena.');
-            })
-            .finally(() => setPaying(false));
-        },
-      },
-    ]);
+    setPhoneHint('');
+    void saveCommissionPayIntent({
+      carrierId,
+      phone: phone.trim(),
+      network,
+      amount: unpaid,
+      at: new Date().toISOString(),
+    }).catch(() => undefined);
   };
 
   return (
@@ -153,7 +90,7 @@ export default function FedhaScreen() {
           </View>
           <Text style={styles.figureLabel}>Umepata</Text>
           <Text style={styles.figureValue} numberOfLines={1} adjustsFontSizeToFit>
-            {money(totals.mapato)}
+            {money(mapato)}
           </Text>
           <Text style={styles.figureHint}>Pesa yako</Text>
         </View>
@@ -163,78 +100,68 @@ export default function FedhaScreen() {
           </View>
           <Text style={styles.figureLabel}>Unadaiwa</Text>
           <Text style={styles.figureValue} numberOfLines={1} adjustsFontSizeToFit>
-            {money(totals.unpaid)}
+            {money(unpaid)}
           </Text>
           <Text style={styles.figureHint}>Kamisheni</Text>
         </View>
       </View>
-      {debtNote ? <Text style={styles.debtNote}>{debtNote}</Text> : null}
 
-      {due || totals.holding || (confirmed && !totals.holding) || error ? (
-      <View style={styles.panel}>
-        {confirmed && !totals.holding ? <Text style={styles.ok}>Imethibitishwa</Text> : null}
-        {totals.holding ? <Text style={styles.wait}>Inasubiri USSD</Text> : null}
+      {unpaid <= 0 ? <Text style={styles.debtNote}>Hakuna deni</Text> : null}
+      {blocked ? (
+        <Text style={styles.blocked}>Ofa mpya zimesimama mpaka kamisheni ilipwe.</Text>
+      ) : (
+        <Text style={styles.debtNote}>{`Lipa ukifika ${money(ceiling)}`}</Text>
+      )}
 
-        {due ? (
-          <View style={styles.payBlock}>
-            <TextInput
-              value={phone}
-              onChangeText={setPhone}
-              keyboardType="phone-pad"
-              placeholder="07XXXXXXXX"
-              placeholderTextColor={theme.muted}
-              style={styles.input}
-              accessibilityLabel="Namba ya simu"
-            />
-            <View style={styles.networks}>
-              {NETWORKS.map((item) => {
-                const selected = network === item.key;
-                return (
-                  <Pressable
-                    key={item.key}
-                    onPress={() => setNetwork(item.key)}
-                    accessibilityRole="button"
-                    style={[styles.network, selected && styles.networkOn]}>
-                    <Text style={[styles.networkText, selected && styles.networkTextOn]}>{item.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <Pressable
-              onPress={sendPush}
-              disabled={paying}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.pay, pressed && styles.payPressed, paying && styles.payBusy]}>
-              <Text style={styles.payText}>{paying ? 'Inatuma…' : 'Lipa kamisheni'}</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
+      {unpaid > 0 ? (
+        <Pressable
+          onPress={() => setSheetOpen(true)}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.openPay, pressed && styles.openPayPressed]}>
+          <Text style={styles.openPayText}>Lipa kamisheni</Text>
+        </Pressable>
       ) : null}
+
+      <CommissionPaySheet
+        visible={sheetOpen}
+        amount={unpaid}
+        phone={phone}
+        network={network}
+        phoneHint={phoneHint}
+        onChangePhone={(value) => {
+          setPhone(value);
+          if (phoneHint) setPhoneHint('');
+        }}
+        onChangeNetwork={setNetwork}
+        onPay={rememberIntent}
+        onClose={() => setSheetOpen(false)}
+      />
 
       {delivered.length === 0 ? (
         <Text style={styles.empty}>Hakuna mzigo uliofika.</Text>
       ) : (
         <View style={styles.list}>
           <Text style={styles.listLabel}>Mizigo iliyofika</Text>
-          {delivered.map((item) => {
-            const fee = Number(item.haulFee) || 0;
-            const reconciled = String(item.cashStatus || '').toLowerCase() === 'reconciled';
-            return (
-              <View key={item.id} style={styles.row}>
-                <Text style={styles.code}>{shipmentCode(item)}</Text>
-                <View style={styles.rowMoney}>
-                  <Text style={styles.amt}>{money(item.carrierNet)}</Text>
-                  {fee > 0 && !reconciled ? <Text style={styles.fee}>Deni {money(fee)}</Text> : null}
-                </View>
-              </View>
-            );
-          })}
+          {delivered.map((item) => (
+            <DeliveredRow key={item.id} item={item} />
+          ))}
         </View>
       )}
     </Screen>
+  );
+}
+
+function DeliveredRow({ item }: { item: CarrierShipment }) {
+  const fee = Number(item.haulFee) || 0;
+  const reconciled = String(item.cashStatus || '').toLowerCase() === 'reconciled';
+  return (
+    <View style={styles.row}>
+      <Text style={styles.code}>{shipmentCode(item)}</Text>
+      <View style={styles.rowMoney}>
+        <Text style={styles.amt}>{money(item.carrierNet)}</Text>
+        {fee > 0 && !reconciled ? <Text style={styles.fee}>Deni {money(fee)}</Text> : null}
+      </View>
+    </View>
   );
 }
 
@@ -312,83 +239,31 @@ const styles = StyleSheet.create({
   },
   debtNote: {
     marginTop: 8,
-    marginBottom: 4,
     fontFamily: typography.body,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 18,
     color: theme.muted,
   },
-  panel: {
-    marginTop: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
-    borderRadius: 12,
-    backgroundColor: theme.white,
-    padding: 14,
-  },
-  ok: {
-    marginTop: 10,
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    color: theme.success,
-  },
-  wait: {
-    marginTop: 10,
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    color: theme.muted,
-  },
-  payBlock: { gap: 8 },
-  input: {
-    minHeight: 44,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    fontFamily: typography.body,
-    fontSize: 15,
-    color: theme.ink,
-    backgroundColor: theme.white,
-  },
-  networks: { flexDirection: 'row', gap: 6 },
-  network: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
-  },
-  networkOn: {
-    backgroundColor: '#000000',
-    borderColor: '#000000',
-  },
-  networkText: {
-    fontFamily: typography.semibold,
-    fontSize: 12,
-    color: theme.ink,
-  },
-  networkTextOn: { color: theme.white },
-  pay: {
-    marginTop: 4,
-    minHeight: 44,
-    borderRadius: 8,
-    backgroundColor: '#000000',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  payPressed: { backgroundColor: '#1A1A1A' },
-  payBusy: { backgroundColor: theme.cta.disabledBackgroundColor },
-  payText: {
-    fontFamily: typography.semibold,
-    fontSize: 15,
-    color: '#FFFFFF',
-  },
-  error: {
-    marginTop: 10,
+  blocked: {
+    marginTop: 8,
     fontFamily: typography.semibold,
     fontSize: 13,
     lineHeight: 18,
-    color: theme.danger,
+    color: theme.ink,
+  },
+  openPay: {
+    marginTop: 12,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: '#0B1220',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  openPayPressed: { opacity: 0.9 },
+  openPayText: {
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    color: '#FFFFFF',
   },
   empty: {
     marginTop: 22,

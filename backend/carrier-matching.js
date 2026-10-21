@@ -3,11 +3,17 @@ const { FieldValue } = require('firebase-admin/firestore');
 const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
 /** Bronze rate. Higher streak tiers use TIER_RULES. 20% is also the high-cancel rate. */
 const HAUL_FEE_RATE = 0.2;
+/**
+ * Unpaid haulFee ceiling before new offers stop. Higher streak tiers can
+ * owe more. The 20% cancel punishment uses the Bronze ceiling.
+ * Keep identical to payCeilingTzs in haulcargo-agents-app/constants/carrier-desk.ts.
+ * Active jobs are not touched.
+ */
 const TIER_RULES = [
-  { id: 'bronze', minStreak: 0, feePercent: 20, feeRate: 0.2, priorityBonus: 0 },
-  { id: 'silver', minStreak: 100, feePercent: 18, feeRate: 0.18, priorityBonus: 6 },
-  { id: 'gold', minStreak: 250, feePercent: 17, feeRate: 0.17, priorityBonus: 16 },
-  { id: 'platinum', minStreak: 500, feePercent: 15, feeRate: 0.15, priorityBonus: 40 },
+  { id: 'bronze', minStreak: 0, feePercent: 20, feeRate: 0.2, priorityBonus: 0, payCeilingTzs: 30_000 },
+  { id: 'silver', minStreak: 100, feePercent: 18, feeRate: 0.18, priorityBonus: 6, payCeilingTzs: 60_000 },
+  { id: 'gold', minStreak: 250, feePercent: 17, feeRate: 0.17, priorityBonus: 16, payCeilingTzs: 100_000 },
+  { id: 'platinum', minStreak: 500, feePercent: 15, feeRate: 0.15, priorityBonus: 40, payCeilingTzs: 150_000 },
 ];
 const MAX_OFFERS = 3;
 const DAR_TIME_ZONE = 'Africa/Dar_es_Salaam';
@@ -342,6 +348,12 @@ function carrierStanding(input) {
   };
 }
 
+/** Streak-tier ceiling. The 20% cancel punishment group uses Bronze. */
+function commissionPayCeiling(standing) {
+  if (!standing || standing.highCommission) return TIER_RULES[0].payCeilingTzs;
+  return Number(standing.tier?.payCeilingTzs) || TIER_RULES[0].payCeilingTzs;
+}
+
 function scoreCarrier(order, carrier, routes, vehicles) {
   void routes;
   const coverage = coverageForOrder(order, carrier);
@@ -370,6 +382,7 @@ function scoreCarrier(order, carrier, routes, vehicles) {
       postAcceptCancels: carrier.postAcceptCancels,
     });
   if (standing.closure) return null;
+  if ((Number(carrier.unpaidHaulFee) || 0) >= commissionPayCeiling(standing)) return null;
   score += standing.priorityBonus;
   score = Math.max(1, Math.min(199, score));
   return {
@@ -390,6 +403,7 @@ function scoreCarrier(order, carrier, routes, vehicles) {
 function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, options = {}) {
   const completedByCarrier = options.completedByCarrier instanceof Map ? options.completedByCarrier : new Map();
   const standingByCarrier = options.standingByCarrier instanceof Map ? options.standingByCarrier : new Map();
+  const unpaidByCarrier = options.unpaidByCarrier instanceof Map ? options.unpaidByCarrier : null;
   return (carriers || [])
     .filter((carrier) => normalize(carrier.status) === 'verified')
     .filter((carrier) => !carrier.offersPaused && !carrier.fraudHold)
@@ -400,6 +414,7 @@ function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, optio
           ...carrier,
           completedShipments: completedByCarrier.get(carrier.id) || carrier.completedShipments || 0,
           deskStanding: standingByCarrier.get(carrier.id) || carrier.deskStanding,
+          unpaidHaulFee: unpaidByCarrier ? unpaidByCarrier.get(carrier.id) || 0 : carrier.unpaidHaulFee,
         },
         routesByCarrier.get(carrier.id) || [],
         vehiclesByCarrier.get(carrier.id) || []
@@ -799,6 +814,7 @@ async function loadDeskStats(db, carrierIds) {
     db.collection('carrierShipments').where('trackStep', 'in', ['arrived', 'handed']).get(),
   ]);
   const times = new Map();
+  const unpaid = new Map();
   const seen = new Set();
   const add = (doc) => {
     if (seen.has(doc.id)) return;
@@ -809,6 +825,9 @@ async function loadDeskStats(db, carrierIds) {
     const list = times.get(carrierId) || [];
     list.push(shipmentEventMs(data));
     times.set(carrierId, list);
+    if (String(data.cashStatus || '').toLowerCase() === 'reconciled') return;
+    const fee = Math.max(0, Math.round(Number(data.haulFee) || 0));
+    if (fee > 0) unpaid.set(carrierId, (unpaid.get(carrierId) || 0) + fee);
   };
   byStatus.docs.forEach(add);
   byStep.docs.forEach(add);
@@ -835,7 +854,7 @@ async function loadDeskStats(db, carrierIds) {
       breaks.set(id, { breakTimes, postAccept, undated, docs: snap.size });
     })
   );
-  const stats = { times, breaks };
+  const stats = { times, breaks, unpaid };
   deskCache = { at: now, stats };
   return stats;
 }
@@ -919,10 +938,15 @@ async function offerNext(db, orderId, order, shipmentHint) {
       });
       continue;
     }
+    const unpaidHaulFee = stats.unpaid?.get(carrier.id) || 0;
+    if (unpaidHaulFee >= commissionPayCeiling(standing)) continue;
     standingByCarrier.set(carrier.id, standing);
     eligible.push(carrier);
   }
-  const ranked = rankCarriers(order, eligible, routesByCarrier, vehiclesByCarrier, { standingByCarrier });
+  const ranked = rankCarriers(order, eligible, routesByCarrier, vehiclesByCarrier, {
+    standingByCarrier,
+    unpaidByCarrier: stats.unpaid,
+  });
   const ref = db.collection('carrierShipments').doc(orderId);
 
   const result = await db.runTransaction(async (tx) => {
@@ -1243,6 +1267,7 @@ module.exports = {
   advanceCarrierOffers,
   cashSplit,
   carrierStanding,
+  commissionPayCeiling,
   completionStreak,
   coverageForOrder,
   detectTzRegion,

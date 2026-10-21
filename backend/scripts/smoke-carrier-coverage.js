@@ -1,5 +1,6 @@
 /** Quick smoke for coverage + SMS helpers without Firebase. */
 const {
+  commissionPayCeiling,
   coverageForOrder,
   detectTzRegion,
   looksInternational,
@@ -129,6 +130,28 @@ assert(platScore.score > goldScore.score && goldScore.score > scored.score, 'lon
 assert(goldScore.haulFeeRate === 0.17 && platScore.haulFeeRate === 0.15, 'offer rate follows the streak');
 assert(punishedScore.haulFeeRate === 0.2 && punishedScore.score < goldScore.score, 'high cancel loses the discount and the priority');
 assert(!scoreCarrier(darToMwanza, { ...darRegions, id: 'paused', streak: 500, offersPaused: true }, [staleRoute], [{ status: 'active' }]), 'paused carrier gets no offer');
+assert(commissionPayCeiling(carrierStanding({ streak: 4, completed: 4, rejects: 0 })) === 30000, 'bronze ceiling 30000');
+assert(commissionPayCeiling(carrierStanding({ streak: 100, completed: 100, rejects: 0 })) === 60000, 'silver ceiling 60000');
+assert(commissionPayCeiling(carrierStanding({ streak: 250, completed: 250, rejects: 0 })) === 100000, 'gold ceiling 100000');
+assert(commissionPayCeiling(carrierStanding({ streak: 500, completed: 500, rejects: 0 })) === 150000, 'platinum ceiling 150000');
+assert(commissionPayCeiling(carrierStanding({ streak: 250, completed: 20, rejects: 10 })) === 30000, 'punished gold uses bronze ceiling');
+const offerAt = (id, streak, unpaid, extra = {}) =>
+  scoreCarrier(
+    darToMwanza,
+    { ...darRegions, id, streak, completedShipments: extra.completedShipments ?? streak, rejected: extra.rejected || 0, unpaidHaulFee: unpaid },
+    [staleRoute],
+    [{ status: 'active' }]
+  );
+assert(!offerAt('bronze-block', 0, 30000), 'bronze blocks at 30000');
+assert(offerAt('bronze-open', 4, 29999), 'bronze open below 30000');
+assert(offerAt('silver-open', 100, 30000), 'silver still open at 30000');
+assert(!offerAt('silver-block', 100, 60000), 'silver blocks at 60000');
+assert(offerAt('gold-open', 250, 60000), 'gold still open at 60000');
+assert(!offerAt('gold-block', 250, 100000), 'gold blocks at 100000');
+assert(offerAt('plat-open', 500, 100000), 'platinum still open at 100000');
+assert(!offerAt('plat-block', 500, 150000), 'platinum blocks at 150000');
+assert(!offerAt('punish-block', 250, 30000, { completedShipments: 20, rejected: 10 }), 'punished gold blocks at 30000');
+assert(offerAt('punish-open', 250, 29999, { completedShipments: 20, rejected: 10 }), 'punished gold open below 30000');
 assert(!scoreCarrier(darToMwanza, { ...darRegions, id: 'strikes', streak: 10, completedShipments: 10, rejected: 3, postAcceptCancels: 3 }, [staleRoute], [{ status: 'active' }]), 'three post-accept cancels get no offer');
 
 assert(smsEventFromTransition('assigned', 'accepted') === 'accepted', 'sms accept');

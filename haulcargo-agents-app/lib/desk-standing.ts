@@ -42,3 +42,15 @@ export function deskStanding(
     postAcceptCancels,
   });
 }
+
+/** Unpaid haulFee on finished jobs. Reconciled rows are already paid. */
+export function unpaidHaulFee(shipments: CarrierShipment[], carrierId: string) {
+  let unpaid = 0;
+  for (const item of shipments) {
+    if (item.carrierId !== carrierId || !isCompletedShipment(item)) continue;
+    if (String(item.cashStatus || '').toLowerCase() === 'reconciled') continue;
+    const fee = Math.max(0, Math.round(Number(item.haulFee) || 0));
+    if (fee > 0) unpaid += fee;
+  }
+  return unpaid;
+}

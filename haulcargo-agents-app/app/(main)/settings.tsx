@@ -74,7 +74,7 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <TierCard standing={standing} offersPaused={Boolean(carrier.offersPaused || carrier.fraudHold)} />
+      <TierCard standing={standing} />
 
       <View style={styles.statusCard}>
         <View style={styles.statusRow}>

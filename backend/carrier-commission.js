@@ -3,10 +3,9 @@ const { FieldValue } = require('firebase-admin/firestore');
 const { ensureFirebaseAdmin, readJsonBodyLimited, requireAuthenticatedUser } = require('./media-upload');
 
 /**
- * Unpaid HAUL commission (the haulFee stored when the offer was created)
- * is pushed once the balance reaches this amount. Tier rates change that
- * stored fee for new offers only. Keep identical to
- * COMMISSION_PAY_THRESHOLD_TZS in haulcargo-agents-app/constants/carrier-desk.ts.
+ * USSD collect minimum only. New-offer paywall ceilings are per tier in
+ * carrier-matching.js (Bronze 30000, Silver 60000, Gold 100000, Platinum 150000).
+ * Tier rates change the stored haulFee for new offers only.
  *
  * Bronze 0–99, Silver 100–249, Gold 250–499, Platinum 500+ are an unbroken
  * streak of Imefika/delivered shipments. A company reject resets that streak.

@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { TierMedal } from '@/components/tier-medal';
-import { tierWarning, type CarrierStanding } from '@/constants/carrier-desk';
+import { type CarrierStanding } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 
@@ -18,12 +18,10 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 /** Full gamification on Akaunti. Homepage stays the short desk. */
-export function TierCard({ standing, offersPaused = false }: { standing: CarrierStanding; offersPaused?: boolean }) {
-  const warning = tierWarning(standing, offersPaused);
-  const closure = warning.startsWith('Akaunti');
+export function TierCard({ standing }: { standing: CarrierStanding }) {
   const next =
     standing.nextLabel && standing.nextMin != null ? `${standing.nextLabel} · ${standing.nextMin}` : 'Uko juu';
-  const summary = `${standing.tier.label}. Mfululizo ${standing.streak}. Inayofuata ${next}. Kamisheni ${standing.feePercent}%. Cancel ${standing.cancelPercent}%. ${warning}`.trim();
+  const summary = `${standing.tier.label}. Mfululizo ${standing.streak}. Inayofuata ${next}. Kamisheni ${standing.feePercent}%. Cancel ${standing.cancelPercent}%.`;
 
   return (
     <View style={styles.card} accessibilityRole="summary" accessibilityLabel={summary}>
@@ -40,7 +38,6 @@ export function TierCard({ standing, offersPaused = false }: { standing: Carrier
       <Fact label="Inayofuata" value={next} />
       <Fact label="Kamisheni" value={`${standing.feePercent}%`} />
       <Fact label="Cancel" value={`${standing.cancelPercent}%`} />
-      {warning ? <Text style={[styles.warning, closure && styles.warningHard]}>{warning}</Text> : null}
     </View>
   );
 }
@@ -101,16 +98,5 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: theme.ink,
     textAlign: 'right',
-  },
-  warning: {
-    marginTop: 4,
-    marginBottom: 8,
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    lineHeight: 18,
-    color: theme.ink,
-  },
-  warningHard: {
-    color: theme.danger,
   },
 });

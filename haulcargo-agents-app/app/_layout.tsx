@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet, View } from 'react-native';
 
+import { DeskNotices } from '@/components/desk-notices';
 import { IncomingOrderAlert } from '@/components/incoming-order-alert';
 import { OfferNotificationRouter } from '@/components/offer-notification-router';
 import { CarrierSessionProvider } from '@/providers/carrier-session';
@@ -66,6 +67,7 @@ export default function RootLayout() {
             <Stack.Screen name="edit-documents" />
           </Stack>
           <IncomingOrderAlert />
+          <DeskNotices />
         </View>
       </CarrierSessionProvider>
     </GestureHandlerRootView>

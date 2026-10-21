@@ -18,10 +18,9 @@ const TRACK_FILL: Record<CarrierTierId, string> = {
  * Nyumbani standing, one column under the company name.
  * Medal, tier, progress track, and cancel each keep their own line.
  */
-export function HomeStanding({ standing, warning }: { standing: CarrierStanding; warning: string }) {
+export function HomeStanding({ standing }: { standing: CarrierStanding }) {
   const progress = tierProgressShort(standing);
   const nextName = standing.nextLabel;
-  const closure = warning.startsWith('Akaunti');
   const pct = standing.nextMin == null ? 100 : Math.max(0, Math.min(100, standing.ratio * 100));
   const summary = [standing.tier.label, 'Mfululizo', progress, nextName, `Cancel ${standing.cancelPercent}%`]
     .filter(Boolean)
@@ -66,12 +65,6 @@ export function HomeStanding({ standing, warning }: { standing: CarrierStanding;
           </Text>
         </View>
       </View>
-
-      {warning ? (
-        <View style={styles.notice} accessibilityRole="text" accessibilityLabel={warning}>
-          <Text style={[styles.noticeText, closure && styles.noticeHard]}>{warning}</Text>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -162,25 +155,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: theme.ink,
-  },
-  notice: {
-    marginTop: 12,
-    alignSelf: 'stretch',
-    width: '100%',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
-    backgroundColor: theme.white,
-  },
-  noticeText: {
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    lineHeight: 18,
-    color: theme.ink,
-  },
-  noticeHard: {
-    color: theme.danger,
   },
 });

@@ -4,7 +4,6 @@ import { StyleSheet, Text, View } from 'react-native';
 import { HomeStanding } from '@/components/home-standing';
 import { OrderInboxCard } from '@/components/order-inbox-card';
 import { EmptyState, Screen } from '@/components/ui';
-import { tierWarning } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { deskStanding } from '@/lib/desk-standing';
@@ -43,7 +42,6 @@ export default function HomeScreen() {
   }, [shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels]);
 
   const empty = offers.length === 0 && active.length === 0;
-  const warning = tierWarning(standing);
 
   return (
     <Screen scroll edges="top" backgroundColor="#F4F5F7">
@@ -51,7 +49,7 @@ export default function HomeScreen() {
         <Text style={styles.company} numberOfLines={1} accessibilityRole="header">
           {company}
         </Text>
-        <HomeStanding standing={standing} warning={warning} />
+        <HomeStanding standing={standing} />
       </View>
 
       {offers.length > 0 ? (

@@ -19,15 +19,15 @@
  * The rate is stored as haulFee only when a new offer is created.
  * Older shipments keep the haulFee they already have.
  *
- * Unpaid commission is collected in one USSD push only at or above
- * COMMISSION_PAY_THRESHOLD_TZS. Keep this number identical to
- * backend/carrier-commission.js.
+ * New offers stop when unpaid haulFee reaches that streak tier's ceiling.
+ * The 20% cancel punishment group uses the Bronze ceiling.
+ * Keep payCeilingTzs identical to TIER_RULES in backend/carrier-matching.js.
  */
 export const CARRIER_TIER_RULES = [
-  { id: 'bronze', label: 'Bronze', minStreak: 0, feePercent: 20, priority: 'Ofa ya kawaida', priorityBonus: 0 },
-  { id: 'silver', label: 'Silver', minStreak: 100, feePercent: 18, priority: 'Kipaumbele kidogo', priorityBonus: 6 },
-  { id: 'gold', label: 'Gold', minStreak: 250, feePercent: 17, priority: 'Kipaumbele zaidi', priorityBonus: 16 },
-  { id: 'platinum', label: 'Platinum', minStreak: 500, feePercent: 15, priority: 'Kipaumbele cha juu', priorityBonus: 40 },
+  { id: 'bronze', label: 'Bronze', minStreak: 0, feePercent: 20, priority: 'Ofa ya kawaida', priorityBonus: 0, payCeilingTzs: 30_000 },
+  { id: 'silver', label: 'Silver', minStreak: 100, feePercent: 18, priority: 'Kipaumbele kidogo', priorityBonus: 6, payCeilingTzs: 60_000 },
+  { id: 'gold', label: 'Gold', minStreak: 250, feePercent: 17, priority: 'Kipaumbele zaidi', priorityBonus: 16, payCeilingTzs: 100_000 },
+  { id: 'platinum', label: 'Platinum', minStreak: 500, feePercent: 15, priority: 'Kipaumbele cha juu', priorityBonus: 40, payCeilingTzs: 150_000 },
 ] as const;
 
 export type CarrierTierId = (typeof CARRIER_TIER_RULES)[number]['id'];
@@ -39,10 +39,14 @@ export type CarrierTier = {
   feePercent: number;
   priority: string;
   priorityBonus: number;
+  payCeilingTzs: number;
 };
 
-/** Unpaid HAUL commission is collected only once the balance reaches this amount. */
-export const COMMISSION_PAY_THRESHOLD_TZS = 30_000;
+/** Streak-tier ceiling. The 20% cancel punishment group uses Bronze. */
+export function commissionPayCeiling(standing: { highCommission?: boolean; tier: { payCeilingTzs: number } }) {
+  if (standing.highCommission) return CARRIER_TIER_RULES[0].payCeilingTzs;
+  return standing.tier.payCeilingTzs;
+}
 
 export const CANCEL_WARN_RATE = 0.15;
 export const HIGH_COMMISSION_RATE = 0.25;
@@ -145,19 +149,46 @@ export function tierProgressShort(standing: CarrierStanding) {
   return `${standing.streak} / ${standing.nextMin}`;
 }
 
+export type DeskNotice = {
+  id: 'onyo' | 'commission' | 'closure' | 'paywall';
+  message: string;
+  hard: boolean;
+};
+
 /**
  * Cancel notice, empty while the rate is healthy.
  * 15%+: onyo. Above 25% with enough decisions: 20% commission.
- * "Akaunti inaweza kufungwa" only in the 40% closure band.
- * A fraud hold or offer pause does not print that sentence on its own.
+ * "Akaunti inaweza kufungwa" in the 40% band, after 3 post-accept cancels,
+ * or while offers are paused for fraud. Shown as a timed popup.
  */
-export function tierWarning(standing: CarrierStanding, _offersPaused = false) {
-  if (standing.cancelRate < CANCEL_WARN_RATE) return '';
-  if (standing.cancelRate >= CLOSURE_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS) {
-    return 'Akaunti inaweza kufungwa';
-  }
+export function tierWarning(standing: CarrierStanding, offersPaused = false) {
+  const held =
+    Boolean(offersPaused) ||
+    standing.postAcceptCancels >= CLOSURE_POST_ACCEPT_CANCELS ||
+    (standing.cancelRate >= CLOSURE_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS);
+  if (held) return 'Akaunti inaweza kufungwa';
   if (standing.cancelRate > HIGH_COMMISSION_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS) {
     return `Cancel ${standing.cancelPercent}%. Kamisheni sasa 20%.`;
   }
-  return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
+  if (standing.cancelRate >= CANCEL_WARN_RATE) {
+    return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
+  }
+  return '';
+}
+
+export function cancelDeskNotice(standing: CarrierStanding, offersPaused = false): DeskNotice | null {
+  const message = tierWarning(standing, offersPaused);
+  if (!message) return null;
+  if (message.startsWith('Akaunti')) return { id: 'closure', message, hard: true };
+  if (message.includes('20%')) return { id: 'commission', message, hard: false };
+  return { id: 'onyo', message, hard: false };
+}
+
+export function paywallDeskNotice(unpaidTzs: number, ceilingTzs: number): DeskNotice | null {
+  if ((Number(unpaidTzs) || 0) < ceilingTzs) return null;
+  return {
+    id: 'paywall',
+    message: 'Ofa mpya zimesimama mpaka kamisheni ilipwe.',
+    hard: true,
+  };
 }
