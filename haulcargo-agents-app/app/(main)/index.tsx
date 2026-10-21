@@ -4,9 +4,9 @@ import { StyleSheet, Text, View } from 'react-native';
 import { OrderInboxCard } from '@/components/order-inbox-card';
 import { TierBadge } from '@/components/tier-badge';
 import { EmptyState, Screen } from '@/components/ui';
-import { carrierTierForCompleted } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { deskStanding } from '@/lib/desk-standing';
 import {
   carrierDisplayName,
   fireTimeMs,
@@ -24,19 +24,22 @@ function byRecent(a: CarrierShipment, b: CarrierShipment) {
 }
 
 export default function HomeScreen() {
-  const { carrier, shipments } = useCarrierSession();
+  const { carrier, shipments, decisions } = useCarrierSession();
   const carrierId = carrier?.id || '';
   const company = carrierDisplayName(carrier);
 
-  const { offers, active, tier } = useMemo(() => {
+  const { offers, active, standing } = useMemo(() => {
     const owned = shipments.filter((item) => item.carrierId === carrierId);
-    const completed = owned.filter((item) => isCompletedShipment(item)).length;
     const live = shipments
       .filter((item) => isIncomingOffer(item, carrierId) && offerStillValid(item))
       .sort(byRecent);
     const jobs = owned.filter((item) => !isCompletedShipment(item) && !isIncomingOffer(item, carrierId)).sort(byRecent);
-    return { offers: live, active: jobs, tier: carrierTierForCompleted(completed) };
-  }, [shipments, carrierId]);
+    return {
+      offers: live,
+      active: jobs,
+      standing: deskStanding(shipments, carrierId, decisions, carrier?.rejected),
+    };
+  }, [shipments, carrierId, decisions, carrier?.rejected]);
 
   const empty = offers.length === 0 && active.length === 0;
 
@@ -52,7 +55,7 @@ export default function HomeScreen() {
             {company}
           </Text>
         </View>
-        <TierBadge tier={tier} />
+        <TierBadge standing={standing} />
       </View>
 
       {offers.length > 0 ? (
@@ -81,7 +84,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
     marginBottom: 22,

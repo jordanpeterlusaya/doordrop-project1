@@ -1,48 +1,74 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import type { CarrierTier } from '@/constants/carrier-desk';
+import { TierMedal } from '@/components/tier-medal';
+import { tierProgressLabel, type CarrierStanding } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 
-export function TierBadge({ tier }: { tier: CarrierTier }) {
-  const platinum = tier.id === 'platinum';
-  const gold = tier.id === 'gold';
+/** Compact tier on Nyumbani. The full benefit card lives on Akaunti. */
+export function TierBadge({ standing }: { standing: CarrierStanding }) {
+  const progress = standing.held
+    ? 'Imeshikiliwa'
+    : standing.nextMin == null
+      ? 'Uko juu'
+      : `${standing.completed}/${standing.nextMin}`;
+  const label = `${standing.tier.label}. ${tierProgressLabel(standing)}. Pointi ${standing.points}. Cancel ${standing.cancelPercent}%.`;
   return (
-    <View
-      style={[styles.badge, gold && styles.gold, platinum && styles.platinum]}
-      accessibilityRole="text"
-      accessibilityLabel={tier.label}>
-      <Text style={[styles.label, platinum && styles.platinumLabel]}>{tier.label}</Text>
+    <View style={styles.chip} accessibilityRole="text" accessibilityLabel={label}>
+      <TierMedal id={standing.tier.id} width={30} />
+      <View style={styles.copy}>
+        <Text style={styles.name} numberOfLines={1}>
+          {standing.tier.label}
+        </Text>
+        <View style={styles.track}>
+          <View style={[styles.fill, { width: `${Math.round(standing.ratio * 100)}%` }]} />
+        </View>
+        <Text style={styles.meta} numberOfLines={1}>
+          {progress}
+        </Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: 148,
+    paddingLeft: 4,
+    paddingRight: 8,
+    paddingVertical: 4,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.line,
     backgroundColor: theme.white,
   },
-  gold: {
-    borderColor: theme.brandYellow,
-    borderWidth: 1,
-  },
-  platinum: {
-    backgroundColor: '#000000',
-    borderColor: '#000000',
-  },
-  label: {
+  copy: { width: 78 },
+  name: {
     fontFamily: typography.semibold,
-    fontSize: 11,
-    lineHeight: 14,
-    letterSpacing: 0.2,
+    fontSize: 12,
+    lineHeight: 15,
     color: theme.ink,
   },
-  platinumLabel: {
-    color: theme.white,
+  track: {
+    marginTop: 4,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: '#E6EAF0',
+    overflow: 'hidden',
+  },
+  fill: {
+    height: 3,
+    backgroundColor: '#000000',
+  },
+  meta: {
+    marginTop: 3,
+    fontFamily: typography.body,
+    fontSize: 10,
+    lineHeight: 13,
+    color: theme.muted,
   },
 });

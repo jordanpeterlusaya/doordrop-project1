@@ -3,8 +3,9 @@ const { FieldValue } = require('firebase-admin/firestore');
 const { ensureFirebaseAdmin, readJsonBodyLimited, requireAuthenticatedUser } = require('./media-upload');
 
 /**
- * Unpaid HAUL commission (stored haulFee, 20% at offer time) is pushed once
- * the balance reaches this amount. Keep identical to
+ * Unpaid HAUL commission (the haulFee stored when the offer was created)
+ * is pushed once the balance reaches this amount. Tier rates change that
+ * stored fee for new offers only. Keep identical to
  * COMMISSION_PAY_THRESHOLD_TZS in haulcargo-agents-app/constants/carrier-desk.ts.
  *
  * Bronze 0–19, Silver 20–49, Gold 50–99, Platinum 100+ completed shipments

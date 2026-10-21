@@ -100,9 +100,26 @@ assert(!coverageForOrder(darToMwanza, legacyRouteOnly).ok, 'no coverage is not a
 
 const scored = scoreCarrier(darToMwanza, darRegions, [staleRoute], [{ status: 'active' }]);
 assert(scored && scored.score >= 48, 'score ignores stale route destination');
+assert(scored.tierId === 'bronze' && scored.haulFeeRate === 0.2, 'unscored company stays bronze');
 assert(scored.departureTime === '', 'no dispatch time on match');
 assert(scored.routeLabel.includes('Mwanza'), 'label uses order destination');
 assert(!scoreCarrier(darToArusha, { ...darRegions, coverageRegions: ['Mwanza'] }, [staleRoute], []), 'route to arusha does not fake-match');
+
+const { carrierStanding, cashSplit } = require('../carrier-matching');
+assert(carrierStanding(4, 0).tier.id === 'bronze' && carrierStanding(4, 0).points === 4, 'bronze points');
+assert(carrierStanding(20, 0).tier.feeRate === 0.18, 'silver rate');
+assert(carrierStanding(50, 0).tier.feeRate === 0.15, 'gold rate');
+assert(carrierStanding(100, 0).tier.feeRate === 0.12, 'platinum rate');
+assert(carrierStanding(70, 30).held === false && carrierStanding(70, 30).tier.id === 'gold', '30% does not hold');
+assert(carrierStanding(69, 31).held === true && carrierStanding(69, 31).tier.id === 'silver', 'above 30% drops one level');
+assert(carrierStanding(10, 10).tier.id === 'bronze' && carrierStanding(10, 10).held === false, 'bronze cannot drop');
+assert(carrierStanding(2, 2).held === false, 'need 5 decisions');
+assert(cashSplit(10000).haulFee === 2000 && cashSplit(10000, 0.12).haulFee === 1200, 'split uses the offer rate');
+const goldScore = scoreCarrier(darToMwanza, { ...darRegions, id: 'g', completedShipments: 50, rejected: 0 }, [staleRoute], [{ status: 'active' }]);
+const platScore = scoreCarrier(darToMwanza, { ...darRegions, id: 'p', completedShipments: 100, rejected: 0 }, [staleRoute], [{ status: 'active' }]);
+const heldScore = scoreCarrier(darToMwanza, { ...darRegions, id: 'h', completedShipments: 50, rejected: 30 }, [staleRoute], [{ status: 'active' }]);
+assert(platScore.score > goldScore.score && goldScore.score > scored.score, 'higher tier is offered first');
+assert(heldScore.tierId === 'silver' && heldScore.haulFeeRate === 0.18 && heldScore.score < goldScore.score, 'cancel rate holds the offer priority');
 
 assert(smsEventFromTransition('assigned', 'accepted') === 'accepted', 'sms accept');
 assert(smsEventFromTransition('in_transit', 'arrived') === 'arrived', 'sms arrived');

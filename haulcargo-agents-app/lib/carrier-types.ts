@@ -31,6 +31,8 @@ export type Carrier = {
   phoneVerified?: boolean;
   /** Last number confirmed for a commission USSD push. */
   commissionPayerPhone?: string;
+  /** Offers this company rejected. Incremented with each decision doc. */
+  rejected?: number;
 };
 
 export type CarrierRoute = {

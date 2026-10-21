@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 156">
+  <defs>
+    <linearGradient id="gold-rib" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3A2A0C"/>
+      <stop offset="1" stop-color="#161006"/>
+    </linearGradient>
+    <linearGradient id="gold-rim" x1="0.08" y1="0" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#FFF8DC"/>
+      <stop offset="0.28" stop-color="#F0C84A"/>
+      <stop offset="0.62" stop-color="#A07812"/>
+      <stop offset="1" stop-color="#FFEBB0"/>
+    </linearGradient>
+    <radialGradient id="gold-face" cx="0.35" cy="0.28" r="0.78">
+      <stop offset="0" stop-color="#FFE9A6"/>
+      <stop offset="0.5" stop-color="#E8C04A"/>
+      <stop offset="1" stop-color="#A67C14"/>
+    </radialGradient>
+    <linearGradient id="gold-gem" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#FFFDF6"/>
+      <stop offset="1" stop-color="#F8E090"/>
+    </linearGradient>
+  </defs>
+  <path d="M34 2h22l6 34-12 40H28L18 36Z" fill="url(#gold-rib)"/>
+  <path d="M72 2h22l16 34-10 40H78L66 36Z" fill="url(#gold-rib)"/>
+  <path d="M42 4h8l2 30-4 36h-8L38 34Z" fill="#FFE08A"/>
+  <path d="M80 4h8l4 32-4 34h-8l-2-36Z" fill="#FFE08A"/>
+  <circle cx="64" cy="100" r="46" fill="#0F172A" opacity="0.12"/>
+  <circle cx="64" cy="96" r="46" fill="url(#gold-rim)"/>
+  <circle cx="64" cy="96" r="38.5" fill="#6A4E10"/>
+  <circle cx="64" cy="96" r="36" fill="url(#gold-face)"/>
+  <circle cx="64" cy="96" r="37.2" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.4"/>
+  <circle cx="64" cy="96" r="30" fill="none" stroke="#FFF6D6" stroke-width="1.15" stroke-opacity="0.85"/>
+  <path d="M30 78 A36 36 0 0 1 86 66" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+  <g transform="translate(0.8,1.5)"><path d="M 64.00 80.00 L 67.88 90.66 L 79.22 91.06 L 70.28 98.04 L 73.40 108.94 L 64.00 102.60 L 54.60 108.94 L 57.72 98.04 L 48.78 91.06 L 60.12 90.66 Z" fill="#7A5810" opacity="0.28"/></g>
+  <path d="M 64.00 80.00 L 67.88 90.66 L 79.22 91.06 L 70.28 98.04 L 73.40 108.94 L 64.00 102.60 L 54.60 108.94 L 57.72 98.04 L 48.78 91.06 L 60.12 90.66 Z" fill="url(#gold-gem)"/>
+</svg>
+

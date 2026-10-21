@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { EarnedIcon, OwedIcon } from '@/components/money-icons';
+import { TierMedal } from '@/components/tier-medal';
 import { Screen } from '@/components/ui';
-import { COMMISSION_PAY_THRESHOLD_TZS } from '@/constants/carrier-desk';
+import { COMMISSION_PAY_THRESHOLD_TZS, tierBenefitLabel } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
+import { deskStanding } from '@/lib/desk-standing';
 import { requestCommissionUssd, verifyCommissionUssd } from '@/lib/carrier-commission-api';
 import { agentStatusError, fireTimeMs, isCompletedShipment, money, shipmentCode } from '@/lib/carrier-helpers';
 import type { CarrierShipment } from '@/lib/carrier-types';
@@ -24,7 +27,7 @@ function isUssdHold(item: CarrierShipment) {
 }
 
 export default function FedhaScreen() {
-  const { carrier, shipments, refreshCarrier } = useCarrierSession();
+  const { carrier, shipments, refreshCarrier, decisions } = useCarrierSession();
   const carrierId = carrier?.id || '';
   const [phone, setPhone] = useState(carrier?.commissionPayerPhone || carrier?.phone || '');
   const [network, setNetwork] = useState<(typeof NETWORKS)[number]['key']>('mpesa');
@@ -57,7 +60,17 @@ export default function FedhaScreen() {
     return { mapato, unpaid, holding };
   }, [delivered]);
 
+  const standing = useMemo(
+    () => deskStanding(shipments, carrierId, decisions, carrier?.rejected),
+    [shipments, carrierId, decisions, carrier?.rejected],
+  );
   const due = totals.unpaid >= COMMISSION_PAY_THRESHOLD_TZS && !totals.holding;
+  const debtNote =
+    totals.unpaid <= 0
+      ? 'Hakuna deni'
+      : totals.unpaid < COMMISSION_PAY_THRESHOLD_TZS
+        ? `Lipa ukifika ${money(COMMISSION_PAY_THRESHOLD_TZS)}`
+        : '';
 
   useEffect(() => {
     if (totals.holding) {
@@ -125,22 +138,40 @@ export default function FedhaScreen() {
   return (
     <Screen scroll edges="top" backgroundColor="#F4F5F7">
       <Text style={styles.title}>Fedha</Text>
-      <Text style={styles.mapato}>{money(totals.mapato)}</Text>
-      <Text style={styles.mapatoLabel}>Mapato</Text>
-
-      <View style={styles.panel}>
-        <Text style={styles.progress}>
-          Kamisheni: {money(totals.unpaid)} / {money(COMMISSION_PAY_THRESHOLD_TZS)}
-        </Text>
-        <View style={styles.track}>
-          <View
-            style={[
-              styles.fill,
-              { width: `${Math.max(0, Math.min(100, (totals.unpaid / COMMISSION_PAY_THRESHOLD_TZS) * 100))}%` },
-            ]}
-          />
+      <View style={styles.tierLine}>
+        <TierMedal id={standing.tier.id} width={32} />
+        <View style={styles.tierCopy}>
+          <Text style={styles.tierName}>{standing.tier.label}</Text>
+          <Text style={styles.tierBenefit}>{tierBenefitLabel(standing.tier)}</Text>
         </View>
+      </View>
 
+      <View style={styles.figures}>
+        <View style={styles.figure}>
+          <View style={styles.iconWell}>
+            <EarnedIcon />
+          </View>
+          <Text style={styles.figureLabel}>Umepata</Text>
+          <Text style={styles.figureValue} numberOfLines={1} adjustsFontSizeToFit>
+            {money(totals.mapato)}
+          </Text>
+          <Text style={styles.figureHint}>Pesa yako</Text>
+        </View>
+        <View style={styles.figure}>
+          <View style={styles.iconWell}>
+            <OwedIcon />
+          </View>
+          <Text style={styles.figureLabel}>Unadaiwa</Text>
+          <Text style={styles.figureValue} numberOfLines={1} adjustsFontSizeToFit>
+            {money(totals.unpaid)}
+          </Text>
+          <Text style={styles.figureHint}>Kamisheni</Text>
+        </View>
+      </View>
+      {debtNote ? <Text style={styles.debtNote}>{debtNote}</Text> : null}
+
+      {due || totals.holding || (confirmed && !totals.holding) || error ? (
+      <View style={styles.panel}>
         {confirmed && !totals.holding ? <Text style={styles.ok}>Imethibitishwa</Text> : null}
         {totals.holding ? <Text style={styles.wait}>Inasubiri USSD</Text> : null}
 
@@ -181,17 +212,26 @@ export default function FedhaScreen() {
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
+      ) : null}
 
       {delivered.length === 0 ? (
         <Text style={styles.empty}>Hakuna mzigo uliofika.</Text>
       ) : (
         <View style={styles.list}>
-          {delivered.map((item) => (
-            <View key={item.id} style={styles.row}>
-              <Text style={styles.code}>{shipmentCode(item)}</Text>
-              <Text style={styles.amt}>{money(item.carrierNet)}</Text>
-            </View>
-          ))}
+          <Text style={styles.listLabel}>Mizigo iliyofika</Text>
+          {delivered.map((item) => {
+            const fee = Number(item.haulFee) || 0;
+            const reconciled = String(item.cashStatus || '').toLowerCase() === 'reconciled';
+            return (
+              <View key={item.id} style={styles.row}>
+                <Text style={styles.code}>{shipmentCode(item)}</Text>
+                <View style={styles.rowMoney}>
+                  <Text style={styles.amt}>{money(item.carrierNet)}</Text>
+                  {fee > 0 && !reconciled ? <Text style={styles.fee}>Deni {money(fee)}</Text> : null}
+                </View>
+              </View>
+            );
+          })}
         </View>
       )}
     </Screen>
@@ -206,43 +246,85 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     color: theme.ink,
   },
-  mapato: {
-    marginTop: 16,
+  tierLine: {
+    marginTop: 14,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  tierCopy: { flex: 1, minWidth: 0 },
+  tierName: {
     fontFamily: typography.bold,
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 16,
+    lineHeight: 20,
     color: theme.ink,
   },
-  mapatoLabel: {
+  tierBenefit: {
     marginTop: 2,
-    marginBottom: 16,
+    fontFamily: typography.body,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.ink,
+  },
+  figures: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  figure: {
+    flex: 1,
+    minWidth: 0,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
+    backgroundColor: theme.white,
+  },
+  iconWell: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  figureLabel: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.ink,
+  },
+  figureValue: {
+    marginTop: 4,
+    fontFamily: typography.bold,
+    fontSize: 16,
+    lineHeight: 22,
+    color: theme.ink,
+  },
+  figureHint: {
+    marginTop: 2,
     fontFamily: typography.body,
     fontSize: 12,
+    lineHeight: 16,
+    color: theme.muted,
+  },
+  debtNote: {
+    marginTop: 8,
+    marginBottom: 4,
+    fontFamily: typography.body,
+    fontSize: 12,
+    lineHeight: 16,
     color: theme.muted,
   },
   panel: {
+    marginTop: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.line,
     borderRadius: 12,
     backgroundColor: theme.white,
     padding: 14,
-  },
-  progress: {
-    fontFamily: typography.semibold,
-    fontSize: 14,
-    lineHeight: 20,
-    color: theme.ink,
-  },
-  track: {
-    marginTop: 10,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: '#EEF1F4',
-    overflow: 'hidden',
-  },
-  fill: {
-    height: 3,
-    backgroundColor: '#000000',
   },
   ok: {
     marginTop: 10,
@@ -256,7 +338,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.muted,
   },
-  payBlock: { marginTop: 14, gap: 8 },
+  payBlock: { gap: 8 },
   input: {
     minHeight: 44,
     borderWidth: StyleSheet.hairlineWidth,
@@ -315,7 +397,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: theme.muted,
   },
-  list: { marginTop: 8 },
+  list: { marginTop: 18 },
+  listLabel: {
+    fontFamily: typography.semibold,
+    fontSize: 11,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: theme.muted,
+    marginBottom: 4,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -324,6 +414,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.line,
+  },
+  rowMoney: { alignItems: 'flex-end' },
+  fee: {
+    marginTop: 2,
+    fontFamily: typography.body,
+    fontSize: 12,
+    color: theme.muted,
   },
   code: {
     fontFamily: typography.semibold,
