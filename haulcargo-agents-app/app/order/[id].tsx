@@ -10,11 +10,12 @@ import { OfferCountdown } from '@/components/offer-countdown';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { acceptOffer, advanceDeskStep, rejectOffer } from '@/lib/carrier-actions';
+import { acceptOffer, advanceDeskStep, cancelAcceptedJob, rejectOffer } from '@/lib/carrier-actions';
 import {
   agentStatusError,
   deskIndex,
   deskStatusLabel,
+  isCompletedShipment,
   isIncomingOffer,
   money,
   nextDeskStep,
@@ -106,6 +107,17 @@ export default function OrderDetailScreen() {
         text: 'Kataa',
         style: 'destructive',
         onPress: () => void run(() => rejectOffer(item.id, carrierId, email)),
+      },
+    ]);
+  };
+
+  const confirmCancel = () => {
+    Alert.alert('Futa oda', 'Kufuta baada ya kukubali kunaondoa mfululizo. Akaunti inaweza kufungwa.', [
+      { text: 'Rudi', style: 'cancel' },
+      {
+        text: 'Futa',
+        style: 'destructive',
+        onPress: () => void run(() => cancelAcceptedJob(item.id, carrierId, email)),
       },
     ]);
   };
@@ -203,9 +215,14 @@ export default function OrderDetailScreen() {
         ) : null}
       </ScrollView>
 
-      {primaryLabel ? (
+      {primaryLabel || (owned && !isCompletedShipment(item)) ? (
         <View style={[styles.dock, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          <PrimaryButton label={primaryLabel} loading={busy} onPress={primaryPress} />
+          {owned && !isCompletedShipment(item) && !liveOffer ? (
+            <Pressable onPress={confirmCancel} disabled={busy} accessibilityRole="button" style={styles.cancelLink}>
+              <Text style={styles.cancelText}>Futa oda</Text>
+            </Pressable>
+          ) : null}
+          {primaryLabel ? <PrimaryButton label={primaryLabel} loading={busy} onPress={primaryPress} /> : null}
           {liveOffer ? <PrimaryButton label="Kataa" variant="outline" disabled={busy} onPress={confirmReject} /> : null}
         </View>
       ) : null}
@@ -375,5 +392,15 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     gap: 8,
     backgroundColor: theme.white,
+  },
+  cancelLink: {
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  cancelText: {
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.danger,
   },
 });

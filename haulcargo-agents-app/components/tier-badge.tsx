@@ -2,18 +2,15 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { TierMedal } from '@/components/tier-medal';
-import { tierProgressLabel, type CarrierStanding } from '@/constants/carrier-desk';
+import { tierProgressLabel, tierWarning, type CarrierStanding } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 
 /** Compact tier on Nyumbani. The full benefit card lives on Akaunti. */
 export function TierBadge({ standing }: { standing: CarrierStanding }) {
-  const progress = standing.held
-    ? 'Imeshikiliwa'
-    : standing.nextMin == null
-      ? 'Uko juu'
-      : `${standing.completed}/${standing.nextMin}`;
-  const label = `${standing.tier.label}. ${tierProgressLabel(standing)}. Pointi ${standing.points}. Cancel ${standing.cancelPercent}%.`;
+  const progress = standing.nextMin == null ? 'Uko juu' : `${standing.streak}/${standing.nextMin}`;
+  const warning = tierWarning(standing);
+  const label = `${standing.tier.label}. ${tierProgressLabel(standing)}. Cancel ${standing.cancelPercent}%. ${warning}`.trim();
   return (
     <View style={styles.chip} accessibilityRole="text" accessibilityLabel={label}>
       <TierMedal id={standing.tier.id} width={30} />

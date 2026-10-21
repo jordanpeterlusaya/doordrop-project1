@@ -33,6 +33,15 @@ export type Carrier = {
   commissionPayerPhone?: string;
   /** Offers this company rejected. Incremented with each decision doc. */
   rejected?: number;
+  /** Cancels after the company had already accepted. Each one is a strike. */
+  postAcceptCancels?: number;
+  /** Server stops new offers while this is set. An admin clears it. */
+  offersPaused?: boolean;
+  fraudHold?: {
+    reason?: string;
+    cancelPercent?: number;
+    postAcceptCancels?: number;
+  } | null;
 };
 
 export type CarrierRoute = {

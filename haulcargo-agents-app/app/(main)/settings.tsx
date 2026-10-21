@@ -14,8 +14,8 @@ import { useCarrierSession } from '@/providers/carrier-session';
 export default function SettingsScreen() {
   const { carrier, user, signOut, shipments, decisions } = useCarrierSession();
   const standing = useMemo(
-    () => deskStanding(shipments, carrier?.id || '', decisions, carrier?.rejected),
-    [shipments, carrier?.id, carrier?.rejected, decisions],
+    () => deskStanding(shipments, carrier?.id || '', decisions, carrier?.rejected, carrier?.postAcceptCancels),
+    [shipments, carrier?.id, carrier?.rejected, carrier?.postAcceptCancels, decisions],
   );
 
   if (!carrier) {
@@ -74,7 +74,7 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <TierCard standing={standing} />
+      <TierCard standing={standing} offersPaused={Boolean(carrier.offersPaused || carrier.fraudHold)} />
 
       <View style={styles.statusCard}>
         <View style={styles.statusRow}>

@@ -1,31 +1,33 @@
 /**
- * HAUL Cargo Agents desk rules.
+ * HAUL Cargo Agents desk rules. Keep these identical to TIER_RULES in
+ * backend/carrier-matching.js.
  *
- * Tiers use real completed shipments: Imefika (`arrived`) and older
- * delivered rows. Counts are inclusive. Keep these thresholds identical
- * to TIER_RULES in backend/carrier-matching.js.
+ * Promotion is an unbroken streak of finished shipments (Imefika / delivered).
+ * One company reject or post-accept cancel resets the streak to 0.
  *
- * - Bronze:   0–19   kamisheni 20%, ofa ya kawaida
- * - Silver:   20–49  kamisheni 18%, kipaumbele kidogo
- * - Gold:     50–99  kamisheni 15%, kipaumbele zaidi
- * - Platinum: 100+   kamisheni 12%, kipaumbele cha juu
+ * - Bronze:   streak 0–99     kamisheni 20%, ofa ya kawaida
+ * - Silver:   streak 100–249  kamisheni 18%, kipaumbele kidogo
+ * - Gold:     streak 250–499  kamisheni 17%, kipaumbele zaidi
+ * - Platinum: streak 500+     kamisheni 15%, kipaumbele cha juu
+ *
+ * Cancel rate is rejects / (completed + rejects). Above 25%, with at least
+ * 8 decisions, the company pays 20% even if the streak tier is higher.
+ * At 40% (and at least 8 decisions), or 3 post-accept cancels, new offers
+ * stop until an admin clears offersPaused and fraudHold. The account is
+ * not deleted.
  *
  * The rate is stored as haulFee only when a new offer is created.
  * Older shipments keep the haulFee they already have.
  *
- * Points = completed − company rejects. Cancel rate is
- * rejects / (completed + rejects). Above 30%, with at least 5
- * decisions, the tier drops one level. Bronze cannot drop further.
- *
- * Unpaid commission (the stored haulFee) is collected in one USSD push
- * only at or above COMMISSION_PAY_THRESHOLD_TZS. Keep this number
- * identical to backend/carrier-commission.js.
+ * Unpaid commission is collected in one USSD push only at or above
+ * COMMISSION_PAY_THRESHOLD_TZS. Keep this number identical to
+ * backend/carrier-commission.js.
  */
 export const CARRIER_TIER_RULES = [
-  { id: 'bronze', label: 'Bronze', minCompleted: 0, feePercent: 20, priority: 'Ofa ya kawaida', priorityBonus: 0 },
-  { id: 'silver', label: 'Silver', minCompleted: 20, feePercent: 18, priority: 'Kipaumbele kidogo', priorityBonus: 6 },
-  { id: 'gold', label: 'Gold', minCompleted: 50, feePercent: 15, priority: 'Kipaumbele zaidi', priorityBonus: 16 },
-  { id: 'platinum', label: 'Platinum', minCompleted: 100, feePercent: 12, priority: 'Kipaumbele cha juu', priorityBonus: 40 },
+  { id: 'bronze', label: 'Bronze', minStreak: 0, feePercent: 20, priority: 'Ofa ya kawaida', priorityBonus: 0 },
+  { id: 'silver', label: 'Silver', minStreak: 100, feePercent: 18, priority: 'Kipaumbele kidogo', priorityBonus: 6 },
+  { id: 'gold', label: 'Gold', minStreak: 250, feePercent: 17, priority: 'Kipaumbele zaidi', priorityBonus: 16 },
+  { id: 'platinum', label: 'Platinum', minStreak: 500, feePercent: 15, priority: 'Kipaumbele cha juu', priorityBonus: 40 },
 ] as const;
 
 export type CarrierTierId = (typeof CARRIER_TIER_RULES)[number]['id'];
@@ -33,80 +35,113 @@ export type CarrierTierId = (typeof CARRIER_TIER_RULES)[number]['id'];
 export type CarrierTier = {
   id: CarrierTierId;
   label: string;
-  minCompleted: number;
+  minStreak: number;
   feePercent: number;
   priority: string;
-  completedOrders: number;
+  priorityBonus: number;
 };
 
 /** Unpaid HAUL commission is collected only once the balance reaches this amount. */
-export const COMMISSION_PAY_THRESHOLD_TZS = 50_000;
+export const COMMISSION_PAY_THRESHOLD_TZS = 30_000;
 
-export function carrierTierForCompleted(completedOrders: number): CarrierTier {
-  const count = Math.max(0, Math.floor(Number(completedOrders) || 0));
-  let tier: (typeof CARRIER_TIER_RULES)[number] = CARRIER_TIER_RULES[0];
-  for (const rule of CARRIER_TIER_RULES) {
-    if (count >= rule.minCompleted) tier = rule;
-  }
-  return { ...tier, completedOrders: count };
-}
+export const CANCEL_WARN_RATE = 0.15;
+export const HIGH_COMMISSION_RATE = 0.25;
+export const HIGH_COMMISSION_MIN_DECISIONS = 8;
+export const CLOSURE_RATE = 0.4;
+export const CLOSURE_POST_ACCEPT_CANCELS = 3;
 
-export type CarrierStanding = {
+export type CarrierStandingInput = {
+  streak: number;
   completed: number;
   rejects: number;
-  /** completed − rejects. Can be negative. */
-  points: number;
-  /** completed + rejects. */
+  postAcceptCancels?: number;
+};
+
+export type CarrierStanding = {
+  streak: number;
+  completed: number;
+  rejects: number;
+  postAcceptCancels: number;
   decisions: number;
-  /** rejects / decisions, or 0 when there are no decisions. */
   cancelRate: number;
   cancelPercent: number;
-  /** True only when the tier actually dropped one level. */
-  held: boolean;
+  /** Above 25% with at least 8 decisions, or already in the closure band. */
+  highCommission: boolean;
+  /** 40% with at least 8 decisions, or 3 post-accept cancels. */
+  closure: boolean;
+  /** Rate actually charged on the next offer. 20 when punished. */
+  feePercent: number;
+  priorityBonus: number;
   tier: CarrierTier;
-  raw: CarrierTier;
   nextLabel: string | null;
   nextMin: number | null;
-  /** Share of the next tier's threshold already completed. 1 at the top. */
   ratio: number;
 };
 
-export function carrierStanding(completedOrders: number, rejects: number): CarrierStanding {
-  const completed = Math.max(0, Math.floor(Number(completedOrders) || 0));
-  const rejected = Math.max(0, Math.floor(Number(rejects) || 0));
-  const points = completed - rejected;
-  const decisions = completed + rejected;
-  const cancelRate = decisions > 0 ? rejected / decisions : 0;
-  const raw = carrierTierForCompleted(completed);
-  const rawIndex = CARRIER_TIER_RULES.findIndex((rule) => rule.id === raw.id);
-  const held = cancelRate > 0.3 && decisions >= 5 && rawIndex > 0;
-  const tierRule = CARRIER_TIER_RULES[held ? rawIndex - 1 : Math.max(0, rawIndex)];
-  const tier: CarrierTier = { ...tierRule, completedOrders: completed };
-  const nextIndex = CARRIER_TIER_RULES.findIndex((rule) => rule.id === tier.id) + 1;
-  const next = CARRIER_TIER_RULES[nextIndex] ?? null;
-  const ratio = !next || next.minCompleted <= 0 ? 1 : Math.min(1, completed / next.minCompleted);
+export function carrierTierForStreak(streak: number): CarrierTier {
+  const count = Math.max(0, Math.floor(Number(streak) || 0));
+  let tier: CarrierTier = CARRIER_TIER_RULES[0];
+  for (const rule of CARRIER_TIER_RULES) {
+    if (count >= rule.minStreak) tier = rule;
+  }
+  return tier;
+}
+
+export function carrierStanding(input: CarrierStandingInput): CarrierStanding {
+  const streak = Math.max(0, Math.floor(Number(input.streak) || 0));
+  const completed = Math.max(0, Math.floor(Number(input.completed) || 0));
+  const rejects = Math.max(0, Math.floor(Number(input.rejects) || 0));
+  const postAcceptCancels = Math.max(0, Math.floor(Number(input.postAcceptCancels) || 0));
+  const decisions = completed + rejects;
+  const cancelRate = decisions > 0 ? rejects / decisions : 0;
+  const tier = carrierTierForStreak(streak);
+  const highCancel = cancelRate > HIGH_COMMISSION_RATE && decisions >= HIGH_COMMISSION_MIN_DECISIONS;
+  const closure =
+    postAcceptCancels >= CLOSURE_POST_ACCEPT_CANCELS ||
+    (cancelRate >= CLOSURE_RATE && decisions >= HIGH_COMMISSION_MIN_DECISIONS);
+  const punished = highCancel || closure;
+  const next = CARRIER_TIER_RULES[CARRIER_TIER_RULES.findIndex((rule) => rule.id === tier.id) + 1] ?? null;
+  const ratio = !next || next.minStreak <= 0 ? 1 : Math.min(1, streak / next.minStreak);
   return {
+    streak,
     completed,
-    rejects: rejected,
-    points,
+    rejects,
+    postAcceptCancels,
     decisions,
     cancelRate,
     cancelPercent: Math.round(cancelRate * 100),
-    held,
+    highCommission: punished,
+    closure,
+    feePercent: punished ? 20 : tier.feePercent,
+    priorityBonus: punished ? 0 : tier.priorityBonus,
     tier,
-    raw,
     nextLabel: next?.label ?? null,
-    nextMin: next?.minCompleted ?? null,
+    nextMin: next?.minStreak ?? null,
     ratio,
   };
 }
 
-export function tierBenefitLabel(tier: { feePercent: number; priority: string }) {
-  return `Kamisheni ${tier.feePercent}% · ${tier.priority}`;
+/** Finished jobs after the latest company reject/cancel. An undated break resets the streak. */
+export function completionStreak(completionTimes: number[], breakTimes: number[], undatedBreak: boolean) {
+  if (undatedBreak) return 0;
+  const latestBreak = (breakTimes || []).reduce((max, ms) => Math.max(max, Math.floor(Number(ms) || 0)), 0);
+  if (latestBreak <= 0) return (completionTimes || []).length;
+  return (completionTimes || []).filter((ms) => Math.floor(Number(ms) || 0) > latestBreak).length;
+}
+
+export function tierBenefitLabel(standing: { feePercent: number; highCommission?: boolean; tier: { priority: string } }) {
+  if (standing.highCommission) return 'Kamisheni 20% · Kundi la juu';
+  return `Kamisheni ${standing.feePercent}% · ${standing.tier.priority}`;
 }
 
 export function tierProgressLabel(standing: CarrierStanding) {
-  if (standing.held) return 'Imeshikiliwa';
   if (!standing.nextLabel || standing.nextMin == null) return 'Uko juu';
-  return `${standing.completed} / ${standing.nextMin} kufikia ${standing.nextLabel}`;
+  return `mfululizo ${standing.streak} / ${standing.nextMin} kufikia ${standing.nextLabel}`;
+}
+
+export function tierWarning(standing: CarrierStanding, offersPaused = false) {
+  if (offersPaused || standing.closure) return 'Akaunti inaweza kufungwa';
+  if (standing.highCommission) return `Cancel ${standing.cancelPercent}%. Kamisheni sasa 20%.`;
+  if (standing.cancelRate >= CANCEL_WARN_RATE) return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
+  return '';
 }

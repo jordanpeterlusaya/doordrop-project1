@@ -8,10 +8,10 @@ const { ensureFirebaseAdmin, readJsonBodyLimited, requireAuthenticatedUser } = r
  * stored fee for new offers only. Keep identical to
  * COMMISSION_PAY_THRESHOLD_TZS in haulcargo-agents-app/constants/carrier-desk.ts.
  *
- * Bronze 0–19, Silver 20–49, Gold 50–99, Platinum 100+ completed shipments
- * are classified on the device from the same Imefika/delivered rows.
+ * Bronze 0–99, Silver 100–249, Gold 250–499, Platinum 500+ are an unbroken
+ * streak of Imefika/delivered shipments. A company reject resets that streak.
  */
-const COMMISSION_PAY_THRESHOLD_TZS = 50_000;
+const COMMISSION_PAY_THRESHOLD_TZS = 30_000;
 const PAYMENT_COLLECTION = 'carrierCommissionPayments';
 const USSD_HOLD_MS = 3 * 60 * 1000;
 const DEFAULT_MONGIKE_API_BASE_URL = 'https://mongike.com/api/v1';

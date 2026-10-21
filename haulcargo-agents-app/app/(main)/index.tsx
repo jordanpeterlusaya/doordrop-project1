@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { OrderInboxCard } from '@/components/order-inbox-card';
 import { TierBadge } from '@/components/tier-badge';
 import { EmptyState, Screen } from '@/components/ui';
+import { tierWarning } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { deskStanding } from '@/lib/desk-standing';
@@ -37,11 +38,12 @@ export default function HomeScreen() {
     return {
       offers: live,
       active: jobs,
-      standing: deskStanding(shipments, carrierId, decisions, carrier?.rejected),
+      standing: deskStanding(shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels),
     };
-  }, [shipments, carrierId, decisions, carrier?.rejected]);
+  }, [shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels]);
 
   const empty = offers.length === 0 && active.length === 0;
+  const warning = tierWarning(standing, Boolean(carrier?.offersPaused || carrier?.fraudHold));
 
   return (
     <Screen scroll edges="top" backgroundColor="#F4F5F7">
@@ -54,6 +56,11 @@ export default function HomeScreen() {
           <Text style={styles.company} numberOfLines={2} accessibilityRole="header">
             {company}
           </Text>
+          {warning ? (
+            <Text style={[styles.warning, (carrier?.offersPaused || carrier?.fraudHold || standing.closure) && styles.warningHard]}>
+              {warning}
+            </Text>
+          ) : null}
         </View>
         <TierBadge standing={standing} />
       </View>
@@ -114,6 +121,16 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     letterSpacing: -0.4,
     color: theme.ink,
+  },
+  warning: {
+    marginTop: 6,
+    fontFamily: typography.semibold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: theme.ink,
+  },
+  warningHard: {
+    color: theme.danger,
   },
   section: { marginBottom: 8 },
   sectionLabel: {

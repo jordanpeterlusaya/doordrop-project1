@@ -76,6 +76,45 @@ export async function rejectOffer(shipmentId: string, carrierId: string, actorEm
   await batch.commit();
 }
 
+/** Releasing a job after accept resets the streak and counts as a strike. */
+export async function cancelAcceptedJob(shipmentId: string, carrierId: string, actorEmail: string) {
+  const ref = doc(db, 'carrierShipments', shipmentId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Mzigo haupatikani.');
+  const current = snap.data();
+  if (current.carrierId !== carrierId) throw new Error('Hii si oda yako.');
+  const status = String(current.shipmentStatus || '').toLowerCase();
+  const step = String(current.trackStep || '').toLowerCase();
+  if (status === 'arrived' || status === 'delivered' || step === 'arrived' || step === 'handed') {
+    throw new Error('Mzigo umefika. Huwezi kufuta.');
+  }
+  const batch = writeBatch(db);
+  batch.update(ref, {
+    shipmentStatus: 'matching',
+    carrierId: null,
+    offeredCarrierId: null,
+    pickupMode: deleteField(),
+    trackStep: deleteField(),
+    declinedCarrierIds: arrayUnion(carrierId),
+    statusHistory: arrayUnion({ status: 'matching', label: 'Imefutwa baada ya kukubali', at: stamp(), actor: actorEmail }),
+  });
+  batch.set(doc(db, 'carriers', carrierId, 'decisions', shipmentId), {
+    shipmentId,
+    decision: 'cancelled_after_accept',
+    parcelCode: String(current.parcelCode || current.orderNumber || ''),
+    destination: String(current.destination || ''),
+    weightKg: Number(current.weightKg) || 0,
+    actor: actorEmail,
+    atIso: stamp(),
+    at: serverTimestamp(),
+  });
+  batch.update(doc(db, 'carriers', carrierId), {
+    rejected: increment(1),
+    postAcceptCancels: increment(1),
+  });
+  await batch.commit();
+}
+
 const FORWARD: Record<string, string> = {
   received: 'packed',
   packed: 'transit',

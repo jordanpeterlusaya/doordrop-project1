@@ -61,8 +61,8 @@ export default function FedhaScreen() {
   }, [delivered]);
 
   const standing = useMemo(
-    () => deskStanding(shipments, carrierId, decisions, carrier?.rejected),
-    [shipments, carrierId, decisions, carrier?.rejected],
+    () => deskStanding(shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels),
+    [shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels],
   );
   const due = totals.unpaid >= COMMISSION_PAY_THRESHOLD_TZS && !totals.holding;
   const debtNote =
@@ -142,7 +142,7 @@ export default function FedhaScreen() {
         <TierMedal id={standing.tier.id} width={32} />
         <View style={styles.tierCopy}>
           <Text style={styles.tierName}>{standing.tier.label}</Text>
-          <Text style={styles.tierBenefit}>{tierBenefitLabel(standing.tier)}</Text>
+          <Text style={styles.tierBenefit}>{tierBenefitLabel(standing)}</Text>
         </View>
       </View>
 

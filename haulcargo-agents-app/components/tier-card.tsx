@@ -2,14 +2,15 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { TierMedal } from '@/components/tier-medal';
-import { tierBenefitLabel, tierProgressLabel, type CarrierStanding } from '@/constants/carrier-desk';
+import { tierBenefitLabel, tierProgressLabel, tierWarning, type CarrierStanding } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 
-export function TierCard({ standing }: { standing: CarrierStanding }) {
-  const benefit = tierBenefitLabel(standing.tier);
+export function TierCard({ standing, offersPaused = false }: { standing: CarrierStanding; offersPaused?: boolean }) {
+  const benefit = tierBenefitLabel(standing);
   const progress = tierProgressLabel(standing);
-  const summary = `${standing.tier.label}. ${progress}. ${benefit}. Pointi ${standing.points}. Cancel ${standing.cancelPercent}%.`;
+  const warning = tierWarning(standing, offersPaused);
+  const summary = `${standing.tier.label}. ${progress}. ${benefit}. Cancel ${standing.cancelPercent}%. ${warning}`.trim();
   return (
     <View style={styles.card} accessibilityRole="summary" accessibilityLabel={summary}>
       <TierMedal id={standing.tier.id} width={64} />
@@ -20,12 +21,11 @@ export function TierCard({ standing }: { standing: CarrierStanding }) {
         <View style={styles.track}>
           <View style={[styles.fill, { width: `${Math.round(standing.ratio * 100)}%` }]} />
         </View>
-        <Text style={styles.stats}>
-          Pointi {standing.points} · Cancel {standing.cancelPercent}%
-        </Text>
+        <Text style={styles.stats}>Cancel {standing.cancelPercent}%</Text>
         <Text style={styles.benefit}>{benefit}</Text>
-        {standing.nextLabel && !standing.held ? (
-          <Text style={styles.next}>Inayofuata · {standing.nextLabel}</Text>
+        {standing.nextLabel ? <Text style={styles.next}>Inayofuata · {standing.nextLabel}</Text> : null}
+        {warning ? (
+          <Text style={[styles.warning, (offersPaused || standing.closure) && styles.warningHard]}>{warning}</Text>
         ) : null}
       </View>
     </View>
@@ -99,5 +99,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     color: theme.muted,
+  },
+  warning: {
+    marginTop: 8,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.ink,
+  },
+  warningHard: {
+    color: theme.danger,
   },
 });

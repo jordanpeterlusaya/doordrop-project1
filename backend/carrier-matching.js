@@ -1,13 +1,13 @@
 const { FieldValue } = require('firebase-admin/firestore');
 
 const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
-/** Bronze rate. Higher tiers use TIER_RULES. Keep identical to haulcargo-agents-app/constants/carrier-desk.ts. */
+/** Bronze rate. Higher streak tiers use TIER_RULES. 20% is also the high-cancel rate. */
 const HAUL_FEE_RATE = 0.2;
 const TIER_RULES = [
-  { id: 'bronze', minCompleted: 0, feeRate: 0.2, priorityBonus: 0 },
-  { id: 'silver', minCompleted: 20, feeRate: 0.18, priorityBonus: 6 },
-  { id: 'gold', minCompleted: 50, feeRate: 0.15, priorityBonus: 16 },
-  { id: 'platinum', minCompleted: 100, feeRate: 0.12, priorityBonus: 40 },
+  { id: 'bronze', minStreak: 0, feePercent: 20, feeRate: 0.2, priorityBonus: 0 },
+  { id: 'silver', minStreak: 100, feePercent: 18, feeRate: 0.18, priorityBonus: 6 },
+  { id: 'gold', minStreak: 250, feePercent: 17, feeRate: 0.17, priorityBonus: 16 },
+  { id: 'platinum', minStreak: 500, feePercent: 15, feeRate: 0.15, priorityBonus: 40 },
 ];
 const MAX_OFFERS = 3;
 const DAR_TIME_ZONE = 'Africa/Dar_es_Salaam';
@@ -301,31 +301,44 @@ function routeCanTake(route, weight, usedByRoute) {
 }
 
 /**
- * Same ladder as the agents app. `completed` is Imefika/delivered shipments.
- * Points = completed − rejects. Cancel rate above 30% with at least 5
- * decisions drops the tier one level. Bronze cannot drop further.
+ * Streak tier, then a 20% commission if cancels are too high.
+ * Keep thresholds identical to haulcargo-agents-app/constants/carrier-desk.ts.
  */
-function carrierStanding(completedOrders, rejects) {
-  const completed = Math.max(0, Math.floor(Number(completedOrders) || 0));
-  const rejected = Math.max(0, Math.floor(Number(rejects) || 0));
-  const points = completed - rejected;
-  const decisions = completed + rejected;
-  const cancelRate = decisions > 0 ? rejected / decisions : 0;
-  let rawIndex = 0;
-  for (let i = 0; i < TIER_RULES.length; i += 1) {
-    if (completed >= TIER_RULES[i].minCompleted) rawIndex = i;
+function completionStreak(completionTimes, breakTimes, undatedBreak) {
+  if (undatedBreak) return 0;
+  const latestBreak = (breakTimes || []).reduce((max, ms) => Math.max(max, Math.floor(Number(ms) || 0)), 0);
+  if (latestBreak <= 0) return (completionTimes || []).length;
+  return (completionTimes || []).filter((ms) => Math.floor(Number(ms) || 0) > latestBreak).length;
+}
+
+function carrierStanding(input) {
+  const source = input && typeof input === 'object' ? input : { streak: input };
+  const streak = Math.max(0, Math.floor(Number(source.streak) || 0));
+  const completed = Math.max(0, Math.floor(Number(source.completed) || 0));
+  const rejects = Math.max(0, Math.floor(Number(source.rejects) || 0));
+  const postAcceptCancels = Math.max(0, Math.floor(Number(source.postAcceptCancels) || 0));
+  const decisions = completed + rejects;
+  const cancelRate = decisions > 0 ? rejects / decisions : 0;
+  let tier = TIER_RULES[0];
+  for (const rule of TIER_RULES) {
+    if (streak >= rule.minStreak) tier = rule;
   }
-  const held = cancelRate > 0.3 && decisions >= 5 && rawIndex > 0;
-  const tier = TIER_RULES[held ? rawIndex - 1 : rawIndex];
+  const highCancel = cancelRate > 0.25 && decisions >= 8;
+  const closure = postAcceptCancels >= 3 || (cancelRate >= 0.4 && decisions >= 8);
+  const punished = highCancel || closure;
   return {
+    streak,
     completed,
-    rejected,
-    points,
+    rejects,
+    postAcceptCancels,
     decisions,
     cancelRate,
-    held,
+    cancelPercent: Math.round(cancelRate * 100),
+    highCommission: punished,
+    closure,
+    feeRate: punished ? HAUL_FEE_RATE : tier.feeRate,
+    priorityBonus: punished ? 0 : tier.priorityBonus,
     tier,
-    raw: TIER_RULES[rawIndex],
   };
 }
 
@@ -333,6 +346,7 @@ function scoreCarrier(order, carrier, routes, vehicles) {
   void routes;
   const coverage = coverageForOrder(order, carrier);
   if (!coverage.ok) return null;
+  if (carrier.offersPaused || carrier.fraudHold) return null;
 
   const origin = orderOrigin(order);
   const destination = orderDestination(order);
@@ -347,15 +361,23 @@ function scoreCarrier(order, carrier, routes, vehicles) {
     const reliability = delivered / received - rejected / (received * 4);
     score += Math.round(Math.max(-8, Math.min(8, reliability * 12)));
   }
-  const standing = carrierStanding(carrier.completedShipments, rejected);
-  score += standing.tier.priorityBonus;
+  const standing =
+    carrier.deskStanding ||
+    carrierStanding({
+      streak: carrier.streak,
+      completed: carrier.completedShipments,
+      rejects: rejected,
+      postAcceptCancels: carrier.postAcceptCancels,
+    });
+  if (standing.closure) return null;
+  score += standing.priorityBonus;
   score = Math.max(1, Math.min(199, score));
   return {
     carrierId: carrier.id,
     companyName: carrier.companyName || '',
     score,
     tierId: standing.tier.id,
-    haulFeeRate: standing.tier.feeRate,
+    haulFeeRate: standing.feeRate,
     routeId: '',
     routeLabel: `${origin} → ${destination}`,
     remainingKg: 0,
@@ -367,12 +389,18 @@ function scoreCarrier(order, carrier, routes, vehicles) {
 
 function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, options = {}) {
   const completedByCarrier = options.completedByCarrier instanceof Map ? options.completedByCarrier : new Map();
+  const standingByCarrier = options.standingByCarrier instanceof Map ? options.standingByCarrier : new Map();
   return (carriers || [])
     .filter((carrier) => normalize(carrier.status) === 'verified')
+    .filter((carrier) => !carrier.offersPaused && !carrier.fraudHold)
     .map((carrier) =>
       scoreCarrier(
         order,
-        { ...carrier, completedShipments: completedByCarrier.get(carrier.id) || 0 },
+        {
+          ...carrier,
+          completedShipments: completedByCarrier.get(carrier.id) || carrier.completedShipments || 0,
+          deskStanding: standingByCarrier.get(carrier.id) || carrier.deskStanding,
+        },
         routesByCarrier.get(carrier.id) || [],
         vehiclesByCarrier.get(carrier.id) || []
       )
@@ -385,12 +413,13 @@ function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, optio
 function cashSplit(amount, feeRate) {
   const rate = Number.isFinite(Number(feeRate)) ? Number(feeRate) : HAUL_FEE_RATE;
   const safeAmount = Math.round(Number(amount) || 0);
-  const haulFee = Math.round(safeAmount * rate);
+  const percent = Math.round(rate * 100);
+  const haulFee = Math.round((safeAmount * percent) / 100);
   return {
     amount: safeAmount,
     haulFee,
     carrierNet: safeAmount - haulFee,
-    haulFeeRate: rate,
+    haulFeeRate: percent / 100,
   };
 }
 
@@ -710,54 +739,145 @@ async function mirrorBusOnOrder(db, orderId, shipment) {
   await orderSnap.ref.set(patch, { merge: true });
 }
 
-let completedCountCache = { at: 0, counts: null };
+let deskCache = { at: 0, stats: null };
 
-/** Imefika / delivered rows, counted once per shipment. */
-async function loadCompletedCounts(db) {
+function shipmentEventMs(data) {
+  return expiryMs(data?.arrivedAt) || expiryMs(data?.deliveredAt) || 0;
+}
+
+/** Finished shipments and company reject/cancel decisions used for streak and fraud. */
+async function loadDeskStats(db, carrierIds) {
   const now = Date.now();
-  if (completedCountCache.counts && now - completedCountCache.at < 20000) {
-    return completedCountCache.counts;
-  }
+  if (deskCache.stats && now - deskCache.at < 5000) return deskCache.stats;
   const [byStatus, byStep] = await Promise.all([
     db.collection('carrierShipments').where('shipmentStatus', 'in', ['arrived', 'delivered']).get(),
     db.collection('carrierShipments').where('trackStep', 'in', ['arrived', 'handed']).get(),
   ]);
-  const counts = new Map();
+  const times = new Map();
   const seen = new Set();
   const add = (doc) => {
     if (seen.has(doc.id)) return;
     seen.add(doc.id);
-    const carrierId = String((doc.data() || {}).carrierId || '');
+    const data = doc.data() || {};
+    const carrierId = String(data.carrierId || '');
     if (!carrierId) return;
-    counts.set(carrierId, (counts.get(carrierId) || 0) + 1);
+    const list = times.get(carrierId) || [];
+    list.push(shipmentEventMs(data));
+    times.set(carrierId, list);
   };
   byStatus.docs.forEach(add);
   byStep.docs.forEach(add);
-  completedCountCache = { at: now, counts };
-  return counts;
+
+  const breaks = new Map();
+  await Promise.all(
+    (carrierIds || []).map(async (id) => {
+      const snap = await db
+        .collection('carriers')
+        .doc(id)
+        .collection('decisions')
+        .where('decision', 'in', ['rejected', 'cancelled_after_accept'])
+        .get();
+      const breakTimes = [];
+      let postAccept = 0;
+      let undated = false;
+      snap.docs.forEach((doc) => {
+        const data = doc.data() || {};
+        if (String(data.decision || '') === 'cancelled_after_accept') postAccept += 1;
+        const ms = expiryMs(data.at) || Date.parse(String(data.atIso || '')) || 0;
+        if (ms > 0) breakTimes.push(ms);
+        else undated = true;
+      });
+      breaks.set(id, { breakTimes, postAccept, undated, docs: snap.size });
+    })
+  );
+  const stats = { times, breaks };
+  deskCache = { at: now, stats };
+  return stats;
 }
 
-async function rejectCount(db, carrier) {
-  const counter = Math.max(0, Math.floor(Number(carrier?.rejected) || 0));
-  const id = String(carrier?.id || '');
-  if (!id) return counter;
-  const snap = await db.collection('carriers').doc(id).collection('decisions').where('decision', '==', 'rejected').get();
-  return Math.max(counter, snap.size);
+function standingForCarrier(carrier, stats) {
+  const completionTimes = stats.times.get(carrier.id) || [];
+  const info = stats.breaks.get(carrier.id) || { breakTimes: [], postAccept: 0, undated: false, docs: 0 };
+  const rejects = Math.max(info.docs, Math.floor(Number(carrier.rejected) || 0));
+  return carrierStanding({
+    streak: completionStreak(completionTimes, info.breakTimes, info.undated || rejects > info.docs),
+    completed: completionTimes.length,
+    rejects,
+    postAcceptCancels: Math.max(info.postAccept, Math.floor(Number(carrier.postAcceptCancels) || 0)),
+  });
+}
+
+async function persistFraudHold(db, carrier, standing) {
+  const reason =
+    standing.postAcceptCancels >= 3
+      ? `${standing.postAcceptCancels} kufuta baada ya kukubali`
+      : `Cancel ${standing.cancelPercent}%`;
+  await db.collection('carriers').doc(carrier.id).set(
+    {
+      offersPaused: true,
+      fraudHold: {
+        reason,
+        cancelPercent: standing.cancelPercent,
+        postAcceptCancels: standing.postAcceptCancels,
+        at: FieldValue.serverTimestamp(),
+      },
+    },
+    { merge: true }
+  );
+  try {
+    const { config } = require('./config');
+    const company = carrier.tradingName || carrier.companyName || carrier.name || carrier.id;
+    await db.collection('adminNotifications').doc(`fraud_hold_${carrier.id}`).set(
+      {
+        type: 'carrier_fraud_hold',
+        email: config.adminEmail,
+        title: 'Akaunti ya kampuni isimame',
+        message: `${company}: ofa zimesimamishwa. ${reason}. Akaunti haijafutwa. Ondoa fraudHold na offersPaused kuendelea.`,
+        carrierId: carrier.id,
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error('fraud hold notice failed', carrier.id, error?.message || error);
+  }
+}
+
+async function evaluateCarrierFraudHold(db, carrierId) {
+  const id = String(carrierId || '').trim();
+  if (!id) return { skipped: true };
+  deskCache.at = 0;
+  const snap = await db.collection('carriers').doc(id).get();
+  if (!snap.exists) return { skipped: true };
+  const carrier = { id, ...snap.data() };
+  if (carrier.offersPaused || carrier.fraudHold) return { already: true };
+  const stats = await loadDeskStats(db, [id]);
+  const standing = standingForCarrier(carrier, stats);
+  if (!standing.closure) return { held: false };
+  await persistFraudHold(db, carrier, standing);
+  return { held: true };
 }
 
 async function offerNext(db, orderId, order, shipmentHint) {
   const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db);
-  const completedByCarrier = await loadCompletedCounts(db);
-  const ranked = rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, { completedByCarrier });
-  const feeRateByCarrier = new Map();
-  await Promise.all(
-    ranked.map(async (entry) => {
-      const carrier = carriers.find((item) => item.id === entry.carrierId) || { id: entry.carrierId, rejected: 0 };
-      const completed = completedByCarrier.get(entry.carrierId) || 0;
-      const rejects = await rejectCount(db, carrier);
-      feeRateByCarrier.set(entry.carrierId, carrierStanding(completed, rejects).tier.feeRate);
-    })
+  const openCarriers = carriers.filter(
+    (carrier) => normalize(carrier.status) === 'verified' && !carrier.offersPaused && !carrier.fraudHold
   );
+  const stats = await loadDeskStats(db, openCarriers.map((carrier) => carrier.id));
+  const standingByCarrier = new Map();
+  const eligible = [];
+  for (const carrier of openCarriers) {
+    const standing = standingForCarrier(carrier, stats);
+    if (standing.closure) {
+      await persistFraudHold(db, carrier, standing).catch((error) => {
+        console.error('fraud hold failed', carrier.id, error?.message || error);
+      });
+      continue;
+    }
+    standingByCarrier.set(carrier.id, standing);
+    eligible.push(carrier);
+  }
+  const ranked = rankCarriers(order, eligible, routesByCarrier, vehiclesByCarrier, { standingByCarrier });
   const ref = db.collection('carrierShipments').doc(orderId);
 
   const result = await db.runTransaction(async (tx) => {
@@ -770,7 +890,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
     const chosen = ranked.find((entry) => !declined.has(entry.carrierId)) || null;
 
     const base = shipmentPayload(order, orderId, shipment);
-    const split = chosen ? cashSplit(base.cashExpected, feeRateByCarrier.get(chosen.carrierId)) : null;
+    const split = chosen ? cashSplit(base.cashExpected, chosen.haulFeeRate) : null;
     if (!chosen) {
       tx.set(
         ref,
@@ -972,7 +1092,21 @@ async function syncCarrierShipment(db, orderId, before, after) {
     }
   }
 
-  const rejectedOrReleased = beforeStatus === 'assigned' && afterStatus === 'matching' && !after.carrierId;
+  const previousCarrierId = String(before?.carrierId || before?.offeredCarrierId || '').trim();
+  const droppedAccepted =
+    String(before?.carrierId || '').trim() &&
+    !after.carrierId &&
+    afterStatus === 'matching' &&
+    String(after.cancelledBy || '') !== 'customer';
+  const rejectedOrReleased =
+    (beforeStatus === 'assigned' && afterStatus === 'matching' && !after.carrierId) || droppedAccepted;
+  if (rejectedOrReleased && previousCarrierId) {
+    try {
+      await evaluateCarrierFraudHold(db, previousCarrierId);
+    } catch (error) {
+      console.error('carrier fraud check failed', previousCarrierId, error?.message || error);
+    }
+  }
   if (!rejectedOrReleased) return { skipped: true };
   return matchOrderById(db, orderId);
 }
@@ -1061,6 +1195,7 @@ module.exports = {
   advanceCarrierOffers,
   cashSplit,
   carrierStanding,
+  completionStreak,
   coverageForOrder,
   detectTzRegion,
   heldWeightByRoute,
