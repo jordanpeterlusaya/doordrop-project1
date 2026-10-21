@@ -487,8 +487,52 @@ async function loadHeldWeight(db, excludeOrderId) {
 }
 
 function declaredValueTzs(order) {
-  const parsed = Number(String(order?.declaredValueTzs ?? order?.declaredValue ?? '').replace(/[^\d.]/g, ''));
-  return Number.isFinite(parsed) ? Math.round(parsed) : 0;
+  const raw = order?.declaredValueTzs ?? order?.declaredValue;
+  if (raw == null || String(raw).trim() === '') return 0;
+  const parsed = Number(String(raw).replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.round(parsed);
+}
+
+const OPEN_VALUE_STATUSES = [
+  'matching',
+  'assigned',
+  'accepted',
+  'contacted',
+  'pickup_scheduled',
+  'picked_up',
+  'at_bus',
+  'in_transit',
+];
+
+/** Copy a real declared value onto a shipment. Never writes 0. */
+async function copyDeclaredValue(db, orderId, order, shipment) {
+  if (declaredValueTzs(shipment) > 0) return false;
+  const value = declaredValueTzs(order);
+  if (!value) return false;
+  await db.collection('carrierShipments').doc(orderId).set(
+    {
+      declaredValueTzs: value,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  if (shipment && typeof shipment === 'object') shipment.declaredValueTzs = value;
+  return true;
+}
+
+async function backfillOpenDeclaredValues(db) {
+  const snap = await db.collection('carrierShipments').where('shipmentStatus', 'in', OPEN_VALUE_STATUSES).get();
+  let filled = 0;
+  for (const doc of snap.docs) {
+    const shipment = doc.data() || {};
+    if (declaredValueTzs(shipment) > 0) continue;
+    const orderSnap = await db.collection('orders').doc(doc.id).get();
+    if (!orderSnap.exists) continue;
+    const wrote = await copyDeclaredValue(db, doc.id, orderSnap.data(), shipment);
+    if (wrote) filled += 1;
+  }
+  return filled;
 }
 
 /** Only URLs the customer order actually stored. Never invent a photo list. */
@@ -603,6 +647,7 @@ function shipmentPayload(order, orderId, shipment) {
   const recipientName = directRecipientName(order);
   const recipientPhone = directRecipientPhone(order);
   const recipientAddress = directRecipientAddress(order);
+  const cargoValue = declaredValueTzs(order);
   return {
     orderId,
     orderNumber: order.orderNumber || order.parcelCode || orderId.slice(0, 6).toUpperCase(),
@@ -616,7 +661,7 @@ function shipmentPayload(order, orderId, shipment) {
     recipientPhone,
     recipientAddress,
     dropoffLabel: String(order.dropoffLabel || recipientAddress || '').trim(),
-    declaredValueTzs: declaredValueTzs(order),
+    ...(cargoValue > 0 ? { declaredValueTzs: cargoValue } : {}),
     pickupLabel: order.pickupLabel || '',
     pickupLatitude: order.pickupLatitude || null,
     pickupLongitude: order.pickupLongitude || null,
@@ -1009,6 +1054,7 @@ async function matchOrderById(db, orderId) {
 
   // Backfill party fields on any open / owned shipment that is missing them.
   if (shipment) {
+    await copyDeclaredValue(db, orderId, order, shipment);
     const missingParty =
       !String(shipment.senderPhone || shipment.customerPhone || '').trim() ||
       !String(shipment.recipientName || '').trim() ||
@@ -1184,6 +1230,8 @@ async function advanceCarrierOffers(db) {
     advanced += 1;
   }
 
+  advanced += await backfillOpenDeclaredValues(db);
+
   return { advanced };
 }
 
@@ -1204,6 +1252,7 @@ module.exports = {
   matchOrderById,
   rankCarriers,
   declaredValueTzs,
+  backfillOpenDeclaredValues,
   scoreCarrier,
   persistSenderPhone,
   resolveSenderPhone,

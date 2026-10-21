@@ -8,6 +8,7 @@ import { typography } from '@/constants/typography';
 import { acceptOffer, advanceDeskStep, rejectOffer } from '@/lib/carrier-actions';
 import {
   agentStatusError,
+  cargoValueLabel,
   deskStatusLabel,
   isIncomingOffer,
   money,
@@ -38,6 +39,7 @@ export function OrderInboxCard({ item, carrierId }: Props) {
   const next = !offer && item.carrierId === carrierId ? nextDeskStep(item) : null;
   const weight = Number(item.weightKg) || 0;
   const payout = Number(item.carrierNet) || Number(item.cashExpected) || 0;
+  const valueLabel = cargoValueLabel(item);
   const email = user?.email || '';
 
   const run = (work: Promise<unknown>) => {
@@ -90,6 +92,12 @@ export function OrderInboxCard({ item, carrierId }: Props) {
       <Text style={styles.route} numberOfLines={2}>
         {routeLine(item)}
       </Text>
+
+      {valueLabel ? (
+        <Text style={styles.value} numberOfLines={1}>
+          {valueLabel}
+        </Text>
+      ) : null}
 
       <View style={styles.meta}>
         <Text style={styles.weight}>{weight ? `${weight} kg` : '—'}</Text>
@@ -173,6 +181,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 21,
     letterSpacing: -0.3,
+    color: theme.ink,
+  },
+  value: {
+    marginTop: 4,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    lineHeight: 18,
     color: theme.ink,
   },
   meta: {

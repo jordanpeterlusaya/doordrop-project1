@@ -1,3 +1,5 @@
+import { Linking, Platform } from 'react-native';
+
 import { HAUL_FEE_RATE } from '@/constants/theme';
 import {
   DESK_RAIL,
@@ -65,6 +67,59 @@ export function formatCountdown(msLeft: number) {
 
 export function money(amount: number | undefined) {
   return `TZS ${Math.round(Number(amount) || 0).toLocaleString('en-US')}`;
+}
+
+/** Stored declared cargo value only. Zero and blank stay hidden — never invent an amount. */
+export function cargoValueAmount(item?: { declaredValueTzs?: number | string | null; declaredValue?: number | string | null } | null) {
+  if (!item) return 0;
+  const raw = item.declaredValueTzs ?? item.declaredValue;
+  if (raw == null || String(raw).trim() === '') return 0;
+  const parsed = Number(String(raw).replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.round(parsed);
+}
+
+export function cargoValueLabel(item?: { declaredValueTzs?: number | string | null; declaredValue?: number | string | null } | null) {
+  const amount = cargoValueAmount(item);
+  return amount > 0 ? `Thamani ${money(amount)}` : '';
+}
+
+function pickupPin(item: { pickupLatitude?: number | null; pickupLongitude?: number | null }) {
+  const lat = Number(item.pickupLatitude);
+  const lng = Number(item.pickupLongitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+
+/** Navigation to the pickup pin, or a maps search of the pickup address when the pin is missing. */
+export function pickupNavigateUrl(
+  item: Pick<CarrierShipment, 'pickupLatitude' | 'pickupLongitude' | 'pickupLabel' | 'origin'>
+) {
+  const pin = pickupPin(item);
+  if (pin) {
+    if (Platform.OS === 'ios') return `maps://?daddr=${pin.lat},${pin.lng}`;
+    if (Platform.OS === 'android') return `google.navigation:q=${pin.lat},${pin.lng}`;
+    return `https://www.google.com/maps/dir/?api=1&destination=${pin.lat},${pin.lng}`;
+  }
+  const query = String(item.pickupLabel || item.origin || '').trim();
+  if (!query) return '';
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+export async function openPickupMaps(
+  item: Pick<CarrierShipment, 'pickupLatitude' | 'pickupLongitude' | 'pickupLabel' | 'origin'>
+) {
+  const url = pickupNavigateUrl(item);
+  if (!url) return;
+  const pin = pickupPin(item);
+  try {
+    await Linking.openURL(url);
+  } catch {
+    if (!pin) return;
+    await Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${pin.lat},${pin.lng}`);
+  }
 }
 
 export function feeSplit(amount: number) {
@@ -275,6 +330,8 @@ export function orderShareMessage(item: CarrierShipment) {
   const kg = Number(item.weightKg) || 0;
   const cargo = [type, kg ? `${kg} kg` : ''].filter(Boolean).join(', ');
   if (cargo) lines.push(`Mzigo: ${cargo}`);
+  const valueLabel = cargoValueLabel(item);
+  if (valueLabel) lines.push(valueLabel);
   const pickup = String(item.pickupLabel || item.origin || '').trim();
   if (pickup) lines.push(`Kuchukua: ${pickup}`);
   const destination = String(item.destination || '').trim();

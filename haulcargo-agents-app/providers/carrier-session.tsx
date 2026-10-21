@@ -34,7 +34,7 @@ import {
 import { loginAuthErrorMessage } from '@/lib/auth-errors';
 import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/carrier-registration';
 import type { Carrier, CarrierDecision, CarrierRoute, CarrierShipment, CarrierTrip } from '@/lib/carrier-types';
-import { fireTimeMs, isIncomingOffer, money, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
+import { cargoValueLabel, fireTimeMs, isIncomingOffer, money, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
 import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
 import { alertForNewOffer, registerCarrierPushToken } from '@/lib/push-notifications';
@@ -48,6 +48,7 @@ export type OfferBanner = {
   weightKg: number;
   parcelDescription: string;
   payoutLabel: string;
+  valueLabel: string;
   shipment: CarrierShipment;
 };
 
@@ -264,6 +265,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       const parcelDescription = String(item.parcelDescription || '').trim();
       const net = Number(item.carrierNet) || Number(item.cashExpected) || 0;
       const payoutLabel = net > 0 ? money(net) : String(item.fareLabel || '').trim();
+      const valueLabel = cargoValueLabel(item);
       return {
         shipmentId: item.id,
         code,
@@ -273,6 +275,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
         weightKg,
         parcelDescription,
         payoutLabel,
+        valueLabel,
         shipment: item,
       };
     };
@@ -295,6 +298,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
             banner.code,
             banner.routeLabel,
             banner.weightKg ? `${banner.weightKg} kg` : '',
+            banner.valueLabel,
             banner.payoutLabel,
           ].filter(Boolean);
           void alertForNewOffer({

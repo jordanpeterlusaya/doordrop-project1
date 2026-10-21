@@ -7,12 +7,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DeskRail } from '@/components/desk-rail';
 import { OfferCountdown } from '@/components/offer-countdown';
+import { PickupDirectionButton } from '@/components/pickup-direction-button';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, advanceDeskStep, cancelAcceptedJob, rejectOffer } from '@/lib/carrier-actions';
 import {
   agentStatusError,
+  cargoValueLabel,
   deskIndex,
   deskStatusLabel,
   isCompletedShipment,
@@ -21,6 +23,7 @@ import {
   nextDeskStep,
   offerStillValid,
   orderShareMessage,
+  pickupNavigateUrl,
   shipmentCode,
   telHref,
 } from '@/lib/carrier-helpers';
@@ -92,7 +95,9 @@ export default function OrderDetailScreen() {
   const cargoType = String(item.parcelDescription || '').trim();
   const weight = Number(item.weightKg) || 0;
   const cargoLine = [cargoType, weight ? `${weight} kg` : ''].filter(Boolean).join(' · ');
+  const valueLabel = cargoValueLabel(item);
   const priceLine = item.carrierNet != null ? money(item.carrierNet) : '';
+  const canNavigate = Boolean(pickupNavigateUrl(item));
 
   const copyCode = async () => {
     await Clipboard.setStringAsync(code);
@@ -170,18 +175,24 @@ export default function OrderDetailScreen() {
 
         {onRail ? <DeskRail item={item} /> : null}
 
-        {pickup || destination ? (
+        {pickup || destination || canNavigate ? (
           <View style={styles.block}>
-            <Text style={styles.kicker}>Njia</Text>
-            {pickup ? <Text style={styles.line}>{pickup}</Text> : null}
-            {destination ? <Text style={styles.line}>→ {destination}</Text> : null}
+            <View style={styles.routeRow}>
+              <View style={styles.routeCopy}>
+                <Text style={styles.kicker}>Njia</Text>
+                {pickup ? <Text style={styles.line}>{pickup}</Text> : null}
+                {destination ? <Text style={styles.line}>→ {destination}</Text> : null}
+              </View>
+              <PickupDirectionButton item={item} />
+            </View>
           </View>
         ) : null}
 
-        {cargoLine ? (
+        {valueLabel || cargoLine ? (
           <View style={styles.block}>
             <Text style={styles.kicker}>Mzigo</Text>
-            <Text style={styles.line}>{cargoLine}</Text>
+            {valueLabel ? <Text style={styles.valueLine}>{valueLabel}</Text> : null}
+            {cargoLine ? <Text style={styles.line}>{cargoLine}</Text> : null}
           </View>
         ) : null}
 
@@ -344,6 +355,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
     color: theme.ink,
+  },
+  valueLine: {
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    lineHeight: 21,
+    color: theme.ink,
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  routeCopy: {
+    flex: 1,
+    gap: 2,
   },
   person: {
     flexDirection: 'row',

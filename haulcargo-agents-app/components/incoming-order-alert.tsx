@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { PickupDirectionButton } from '@/components/pickup-direction-button';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, rejectOffer } from '@/lib/carrier-actions';
@@ -80,6 +81,7 @@ export function IncomingOrderAlert() {
           <Text style={styles.code} numberOfLines={1}>
             {offerBanner.code}
           </Text>
+          <PickupDirectionButton item={offerBanner.shipment} compact />
           <Pressable
             onPress={handleDismiss}
             hitSlop={10}
@@ -91,8 +93,14 @@ export function IncomingOrderAlert() {
         </View>
 
         {route ? (
-          <Text style={styles.route} numberOfLines={2}>
+          <Text style={styles.route} numberOfLines={1}>
             {route}
+          </Text>
+        ) : null}
+
+        {offerBanner.valueLabel ? (
+          <Text style={styles.value} numberOfLines={1}>
+            {offerBanner.valueLabel}
           </Text>
         ) : null}
 
@@ -167,6 +175,13 @@ const styles = StyleSheet.create({
     fontFamily: typography.semibold,
     fontSize: 15,
     lineHeight: 20,
+    color: theme.ink,
+  },
+  value: {
+    marginTop: 2,
+    fontFamily: typography.semibold,
+    fontSize: 13,
+    lineHeight: 18,
     color: theme.ink,
   },
   meta: {
