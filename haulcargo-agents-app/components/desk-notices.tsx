@@ -1,27 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AppState } from 'react-native';
 
+import { WarningSheet } from '@/components/warning-sheet';
 import {
   cancelDeskNotice,
   commissionPayCeiling,
   paywallDeskNotice,
   type DeskNotice,
 } from '@/constants/carrier-desk';
-import { theme } from '@/constants/theme';
-import { typography } from '@/constants/typography';
 import { deskStanding, unpaidHaulFee } from '@/lib/desk-standing';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-const DISMISS_MS = 4500;
+const DISMISS_MS = 5000;
 
 /**
- * Timed desk notices. They show when the app opens and when a new
- * threshold is crossed, then dismiss. They do not stay on Nyumbani.
+ * Cancel-rate and paywall warnings. One bottom sheet at a time.
+ * They show when the app opens and when a threshold is crossed, then close.
+ * They are not notifications and they do not stay pinned on Nyumbani.
  */
 export function DeskNotices() {
   const { carrier, shipments, decisions } = useCarrierSession();
-  const insets = useSafeAreaInsets();
   const carrierId = carrier?.id || '';
   const standing = useMemo(
     () => deskStanding(shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels),
@@ -47,6 +45,8 @@ export function DeskNotices() {
   const shownRef = useRef(new Set<DeskNotice['id']>());
   const showingRef = useRef(false);
   const appStateRef = useRef(AppState.currentState);
+  const displayRef = useRef<DeskNotice | null>(null);
+  if (current) displayRef.current = current;
 
   const pump = () => {
     if (showingRef.current) return;
@@ -56,18 +56,20 @@ export function DeskNotices() {
     setCurrent(next);
   };
 
+  const finishCurrent = () => {
+    showingRef.current = false;
+    const next = queueRef.current.shift() || null;
+    if (next) {
+      showingRef.current = true;
+      setCurrent(next);
+      return;
+    }
+    setCurrent(null);
+  };
+
   useEffect(() => {
     if (!current) return undefined;
-    const handle = setTimeout(() => {
-      showingRef.current = false;
-      const next = queueRef.current.shift() || null;
-      if (next) {
-        showingRef.current = true;
-        setCurrent(next);
-        return;
-      }
-      setCurrent(null);
-    }, DISMISS_MS);
+    const handle = setTimeout(() => finishCurrent(), DISMISS_MS);
     return () => clearTimeout(handle);
   }, [current]);
 
@@ -100,44 +102,15 @@ export function DeskNotices() {
     return undefined;
   }, [signature, foreground]);
 
-  if (!current) return null;
+  if (!carrierId) return null;
+  const display = current || displayRef.current;
 
   return (
-    <View pointerEvents="box-none" style={[styles.host, { top: insets.top + 10 }]}>
-      <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.toast}>
-        <Text style={[styles.text, current.hard && styles.hard]}>{current.message}</Text>
-      </View>
-    </View>
+    <WarningSheet
+      visible={Boolean(current)}
+      message={display?.message || ''}
+      dismissOnBackdrop
+      onDismiss={finishCurrent}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  host: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    zIndex: 30,
-    elevation: 8,
-  },
-  toast: {
-    borderRadius: 16,
-    backgroundColor: theme.white,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    shadowColor: '#0B1220',
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-  },
-  text: {
-    fontFamily: typography.semibold,
-    fontSize: 15,
-    lineHeight: 21,
-    color: theme.ink,
-  },
-  hard: {
-    color: theme.danger,
-  },
-});
