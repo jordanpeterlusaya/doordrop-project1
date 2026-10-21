@@ -1,16 +1,24 @@
 import { router } from 'expo-router';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { TierBadge } from '@/components/tier-badge';
 import { Screen, SectionTitle, SettingsRow } from '@/components/ui';
+import { carrierTierForCompleted } from '@/constants/carrier-desk';
 import { coverageSummary } from '@/constants/coverage';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { carrierDisplayName, carrierStatusLabel } from '@/lib/carrier-helpers';
+import { carrierDisplayName, carrierStatusLabel, isCompletedShipment } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 export default function SettingsScreen() {
-  const { carrier, user, signOut } = useCarrierSession();
+  const { carrier, user, signOut, shipments } = useCarrierSession();
+  const tier = useMemo(() => {
+    const completed = shipments.filter(
+      (item) => item.carrierId === carrier?.id && isCompletedShipment(item)
+    ).length;
+    return carrierTierForCompleted(completed);
+  }, [shipments, carrier?.id]);
 
   if (!carrier) {
     return (
@@ -62,6 +70,10 @@ export default function SettingsScreen() {
           <Text numberOfLines={1} style={styles.displayMeta}>
             {user?.email || phone || 'HAUL Cargo Agents'}
           </Text>
+          <View style={styles.tierRow}>
+            <TierBadge tier={tier} />
+            <Text style={styles.tierCount}>{tier.completedOrders} zilizofika</Text>
+          </View>
         </View>
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>{initials}</Text>
@@ -130,17 +142,28 @@ const styles = StyleSheet.create({
   },
   identityCopy: { flex: 1, minWidth: 0 },
   displayName: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 22,
+    lineHeight: 28,
     fontFamily: typography.ident,
     color: theme.ink,
-    letterSpacing: -0.7,
+    letterSpacing: -0.4,
   },
   displayMeta: {
     marginTop: 6,
     fontSize: 14,
     lineHeight: 20,
     fontFamily: typography.body,
+    color: theme.muted,
+  },
+  tierRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tierCount: {
+    fontFamily: typography.body,
+    fontSize: 13,
     color: theme.muted,
   },
   avatar: {

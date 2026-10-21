@@ -12,8 +12,8 @@ import {
   stopIncomingOrderAlarm,
 } from '@/lib/incoming-order-sound';
 
-export const OFFER_NOTIFICATION_CHANNEL_ID = 'carrier_offers';
-export const OFFER_CUSTOM_SOUND_FILE = 'incoming_order_alarm.wav';
+export const OFFER_NOTIFICATION_CHANNEL_ID = 'carrier_offer_chime';
+export const OFFER_CUSTOM_SOUND_FILE = 'incoming_order_chime.wav';
 
 /** Expo Go (SDK 53+) throws on Android if expo-notifications is imported. */
 function isExpoGo() {
@@ -66,10 +66,10 @@ export async function ensureAndroidOfferChannel() {
   }
 
   const channelConfig = {
-    name: 'Oda mpya ya mzigo — Kubali sasa',
-    description: 'Arifa na sauti maalum ya kuipokea oda mpya ya mzigo kwa kampuni',
+    name: 'Oda mpya',
+    description: 'Sauti ya oda mpya ya mzigo',
     importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 420, 140, 420, 140, 520, 160, 640],
+    vibrationPattern: [0, 180, 90, 180],
     lightColor: '#FFE500',
     sound: OFFER_CUSTOM_SOUND_FILE,
     audioAttributes: {
@@ -218,7 +218,7 @@ export function listenForOfferTaps(onOrder: (orderId: string) => void) {
 /** Stronger pattern so agents notice offers even with phone in pocket. */
 export function vibrateForNewOffer() {
   try {
-    Vibration.vibrate([0, 420, 140, 420, 140, 520, 160, 640]);
+    Vibration.vibrate([0, 180, 90, 180]);
   } catch {
     // ignore
   }
@@ -229,8 +229,7 @@ export function vibrateForNewOffer() {
 }
 
 /**
- * Plays the custom incoming-order alarm sound (`incoming_order_alarm.wav`),
- * vibrates strongly, and posts a high-priority OS notification when available.
+ * Plays the incoming-order chime, vibrates, and posts an OS notification when available.
  */
 export async function alertForNewOffer(opts: {
   title: string;
@@ -259,7 +258,7 @@ export async function alertForNewOffer(opts: {
     await ensureAndroidOfferChannel();
     const id = await Notifications.scheduleNotificationAsync({
       content: {
-        title: opts.title || 'Oda mpya ya mzigo — Kubali sasa',
+        title: opts.title || 'Oda mpya',
         subtitle: 'HAUL Cargo Dispatch',
         body: opts.body,
         sound: OFFER_CUSTOM_SOUND_FILE,
@@ -269,7 +268,7 @@ export async function alertForNewOffer(opts: {
         ...(Platform.OS === 'android'
           ? {
               channelId: OFFER_NOTIFICATION_CHANNEL_ID,
-              vibrate: [0, 420, 140, 420, 140, 520, 160, 640],
+              vibrate: [0, 180, 90, 180],
               color: '#FFE500',
             }
           : {}),

@@ -45,6 +45,11 @@ const {
   handleSendDeliveryOtp,
 } = require('./carrier-delivery-proof');
 const { handleMarkArrived } = require('./carrier-arrive');
+const {
+  handleCarrierCommissionWebhook,
+  initiateCarrierCommissionPayment,
+  verifyCarrierCommissionPayment,
+} = require('./carrier-commission');
 
 function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -566,7 +571,10 @@ async function handleDriverPaymentHistory(req, res) {
 
 async function handleDriverPaymentWebhook(req, res) {
   const body = await readJsonBody(req);
-  const payload = await handleMongikeWebhook(req, body);
+  const orderId = String(body?.order_id || body?.orderId || body?.reference || '').trim();
+  const payload = orderId.startsWith('HCC-')
+    ? await handleCarrierCommissionWebhook(req, body)
+    : await handleMongikeWebhook(req, body);
   sendJson(res, 200, { ok: true, ...payload }, getRequestOrigin(req));
 }
 
@@ -624,6 +632,8 @@ async function requestListener(req, res) {
             'POST /carrier/delivery-proof/upload',
             'POST /carrier/delivery-proof/complete',
             'POST /carrier/shipments/arrive',
+            'POST /carrier/commission/ussd',
+            'POST /carrier/commission/verify',
             'POST /driver-payments/webhook/mongike',
           ],
         },
@@ -793,6 +803,18 @@ async function requestListener(req, res) {
       const { ensureFirebaseAdmin } = require('./media-upload');
       ensureFirebaseAdmin();
       const payload = await handleMarkArrived(req, getFirestore());
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/commission/ussd') {
+      const payload = await initiateCarrierCommissionPayment(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/commission/verify') {
+      const payload = await verifyCarrierCommissionPayment(req);
       sendJson(res, 200, payload, originHeader);
       return;
     }

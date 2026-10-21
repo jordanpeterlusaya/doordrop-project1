@@ -88,8 +88,8 @@ module.exports = {
         'expo-notifications',
         {
           color: '#FFE500',
-          defaultChannel: 'carrier_offers',
-          sounds: ['./assets/sounds/incoming_order_alarm.wav'],
+          defaultChannel: 'carrier_offer_chime',
+          sounds: ['./assets/sounds/incoming_order_chime.wav'],
         },
       ],
       [

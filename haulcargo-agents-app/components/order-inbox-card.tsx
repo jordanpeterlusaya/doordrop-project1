@@ -10,6 +10,7 @@ import {
   agentStatusError,
   deskStatusLabel,
   isIncomingOffer,
+  money,
   nextDeskStep,
   offerStillValid,
   shipmentCode,
@@ -29,21 +30,6 @@ function routeLine(item: CarrierShipment) {
   return to || from || '—';
 }
 
-function partyLine(item: CarrierShipment) {
-  const sender = [item.senderName || item.customerName, item.senderPhone || item.customerPhone]
-    .map((v) => String(v || '').trim())
-    .filter(Boolean)
-    .join(' ');
-  const recipient = [item.recipientName, item.recipientPhone]
-    .map((v) => String(v || '').trim())
-    .filter(Boolean)
-    .join(' ');
-  if (sender && recipient) return `Mtumaji ${sender} · Mpokeaji ${recipient}`;
-  if (sender) return `Mtumaji ${sender}`;
-  if (recipient) return `Mpokeaji ${recipient}`;
-  return '';
-}
-
 export function OrderInboxCard({ item, carrierId }: Props) {
   const { user } = useCarrierSession();
   const [busy, setBusy] = useState(false);
@@ -51,6 +37,7 @@ export function OrderInboxCard({ item, carrierId }: Props) {
   const liveOffer = offer && offerStillValid(item);
   const next = !offer && item.carrierId === carrierId ? nextDeskStep(item) : null;
   const weight = Number(item.weightKg) || 0;
+  const payout = Number(item.carrierNet) || Number(item.cashExpected) || 0;
   const email = user?.email || '';
 
   const run = (work: Promise<unknown>) => {
@@ -69,7 +56,7 @@ export function OrderInboxCard({ item, carrierId }: Props) {
   };
 
   const onReject = () => {
-    Alert.alert('Kataa oda', 'Una uhakika unataka kukataa oda hii?', [
+    Alert.alert('Kataa oda', undefined, [
       { text: 'Ghairi', style: 'cancel' },
       {
         text: 'Kataa',
@@ -88,111 +75,79 @@ export function OrderInboxCard({ item, carrierId }: Props) {
     <Pressable
       onPress={() => router.push(`/order/${item.id}`)}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.card, liveOffer && styles.cardOffer, pressed && styles.pressed]}>
-      {liveOffer ? <View style={styles.accent} /> : null}
-      <View style={styles.body}>
-        <View style={styles.topRow}>
-          <Text style={styles.code} numberOfLines={1}>
-            {shipmentCode(item)}
-          </Text>
-          <Text style={[styles.status, liveOffer && styles.statusNew]}>
-            {liveOffer ? 'Mpya' : deskStatusLabel(item)}
-          </Text>
-        </View>
-
-        <Text style={styles.route} numberOfLines={2}>
-          {routeLine(item)}
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
+      <View style={styles.top}>
+        <Text style={styles.code} numberOfLines={1}>
+          {shipmentCode(item)}
         </Text>
-
-        {partyLine(item) ? (
-          <Text style={styles.parties} numberOfLines={2}>
-            {partyLine(item)}
-          </Text>
-        ) : null}
-
-        <View style={styles.metaRow}>
-          <Text style={styles.weight}>{weight ? `${weight} kg` : '—'}</Text>
-          {liveOffer ? <OfferCountdown shipment={item} compact /> : null}
-        </View>
-
         {liveOffer ? (
-          <View style={styles.actions}>
-            <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onAccept();
-              }}
-              disabled={busy}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.acceptBtn,
-                pressed && styles.acceptPressed,
-                busy && styles.actionBusy,
-              ]}>
-              <Text style={styles.acceptText}>{busy ? '…' : 'Kubali'}</Text>
-            </Pressable>
-            <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onReject();
-              }}
-              disabled={busy}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.rejectBtn,
-                pressed && styles.rejectPressed,
-                busy && styles.actionBusyOutline,
-              ]}>
-              <Text style={styles.rejectText}>Kataa</Text>
-            </Pressable>
-          </View>
-        ) : next ? (
-          <View style={styles.actions}>
-            <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onAdvance();
-              }}
-              disabled={busy}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.acceptBtn,
-                pressed && styles.acceptPressed,
-                busy && styles.actionBusy,
-              ]}>
-              <Text style={styles.acceptText}>{busy ? '…' : next.label}</Text>
-            </Pressable>
-          </View>
-        ) : null}
+          <OfferCountdown shipment={item} compact />
+        ) : (
+          <Text style={styles.status}>{deskStatusLabel(item)}</Text>
+        )}
       </View>
+
+      <Text style={styles.route} numberOfLines={2}>
+        {routeLine(item)}
+      </Text>
+
+      <View style={styles.meta}>
+        <Text style={styles.weight}>{weight ? `${weight} kg` : '—'}</Text>
+        {payout > 0 ? <Text style={styles.payout}>{money(payout)}</Text> : null}
+      </View>
+
+      {liveOffer ? (
+        <View style={styles.actions}>
+          <Pressable
+            onPress={(event) => {
+              event.stopPropagation?.();
+              onAccept();
+            }}
+            disabled={busy}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.accept, pressed && styles.acceptPressed, busy && styles.acceptBusy]}>
+            <Text style={styles.acceptText}>{busy ? '…' : 'Kubali'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={(event) => {
+              event.stopPropagation?.();
+              onReject();
+            }}
+            disabled={busy}
+            accessibilityRole="button"
+            hitSlop={8}
+            style={styles.reject}>
+            <Text style={styles.rejectText}>Kataa</Text>
+          </Pressable>
+        </View>
+      ) : next ? (
+        <Pressable
+          onPress={(event) => {
+            event.stopPropagation?.();
+            onAdvance();
+          }}
+          disabled={busy}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.accept, styles.advance, pressed && styles.acceptPressed, busy && styles.acceptBusy]}>
+          <Text style={styles.acceptText}>{busy ? '…' : next.label}</Text>
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    flexDirection: 'row',
     backgroundColor: theme.white,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.line,
-    marginBottom: 8,
-    overflow: 'hidden',
-  },
-  cardOffer: {
-    borderColor: theme.border,
-  },
-  accent: {
-    width: 3,
-    backgroundColor: theme.brandYellow,
-  },
-  body: {
-    flex: 1,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 12,
+    marginBottom: 8,
   },
   pressed: { opacity: 0.94 },
-  topRow: {
+  top: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -208,80 +163,67 @@ const styles = StyleSheet.create({
   status: {
     fontFamily: typography.semibold,
     fontSize: 11,
-    color: theme.muted,
-    textTransform: 'uppercase',
     letterSpacing: 0.3,
-  },
-  statusNew: {
-    color: theme.ink,
+    textTransform: 'uppercase',
+    color: theme.muted,
   },
   route: {
     marginTop: 6,
     fontFamily: typography.bold,
     fontSize: 16,
     lineHeight: 21,
-    color: theme.ink,
     letterSpacing: -0.3,
+    color: theme.ink,
   },
-  parties: {
+  meta: {
     marginTop: 6,
-    fontFamily: typography.body,
-    fontSize: 12,
-    lineHeight: 16,
-    color: theme.muted,
-  },
-  metaRow: {
-    marginTop: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 12,
   },
   weight: {
     fontFamily: typography.body,
     fontSize: 13,
     color: theme.muted,
   },
+  payout: {
+    fontFamily: typography.semibold,
+    fontSize: 14,
+    color: theme.ink,
+  },
   actions: {
     marginTop: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
   },
-  acceptBtn: {
+  accept: {
     flex: 1,
-    backgroundColor: '#000000',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
     minHeight: 40,
+    borderRadius: 8,
+    backgroundColor: '#000000',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 12,
   },
+  advance: { marginTop: 12, flex: 0, alignSelf: 'stretch' },
   acceptPressed: { backgroundColor: '#1A1A1A' },
-  actionBusy: { backgroundColor: theme.cta.disabledBackgroundColor },
-  actionBusyOutline: { opacity: 0.55 },
+  acceptBusy: { backgroundColor: theme.cta.disabledBackgroundColor },
   acceptText: {
     fontFamily: typography.semibold,
     fontSize: 14,
     color: '#FFFFFF',
   },
-  rejectBtn: {
-    flex: 1,
-    backgroundColor: theme.white,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: theme.ink,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  reject: {
     minHeight: 40,
+    paddingHorizontal: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rejectPressed: { backgroundColor: theme.primarySoft },
   rejectText: {
     fontFamily: typography.semibold,
     fontSize: 14,
-    color: theme.ink,
+    color: theme.muted,
   },
 });

@@ -10,13 +10,11 @@ import { OfferCountdown } from '@/components/offer-countdown';
 import { PrimaryButton } from '@/components/ui';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
-import { acceptOffer, advanceDeskStep, rejectOffer, requestCommissionPayment } from '@/lib/carrier-actions';
+import { acceptOffer, advanceDeskStep, rejectOffer } from '@/lib/carrier-actions';
 import {
   agentStatusError,
-  cashStatusLabel,
   deskIndex,
   deskStatusLabel,
-  isCompletedShipment,
   isIncomingOffer,
   money,
   nextDeskStep,
@@ -93,15 +91,7 @@ export default function OrderDetailScreen() {
   const cargoType = String(item.parcelDescription || '').trim();
   const weight = Number(item.weightKg) || 0;
   const cargoLine = [cargoType, weight ? `${weight} kg` : ''].filter(Boolean).join(' · ');
-  const priceLine = [
-    item.carrierNet != null ? money(item.carrierNet) : '',
-    item.haulFee != null ? `kamisheni ${money(item.haulFee)}` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
-  const cash = String(item.cashStatus || '').toLowerCase();
-  const canRequestPay =
-    owned && isCompletedShipment(item) && (cash === 'unpaid' || cash === 'collected') && Number(item.haulFee) > 0;
+  const priceLine = item.carrierNet != null ? money(item.carrierNet) : '';
 
   const copyCode = async () => {
     await Clipboard.setStringAsync(code);
@@ -125,16 +115,6 @@ export default function OrderDetailScreen() {
     void run(() => advanceDeskStep(item.id, carrierId, next.key, email));
   };
 
-  const payCommission = () => {
-    Alert.alert('Lipa kamisheni', `Ombi la ${money(item.haulFee)}. Si malipo yaliyokamilika.`, [
-      { text: 'Ghairi', style: 'cancel' },
-      {
-        text: 'Tuma ombi',
-        onPress: () => void run(() => requestCommissionPayment(item.id, carrierId, email)),
-      },
-    ]);
-  };
-
   let primaryLabel = '';
   let primaryPress: () => void = () => undefined;
   if (liveOffer) {
@@ -143,9 +123,6 @@ export default function OrderDetailScreen() {
   } else if (next) {
     primaryLabel = next.key === 'arrived' ? 'Weka imefika' : next.label;
     primaryPress = goNext;
-  } else if (canRequestPay) {
-    primaryLabel = 'Lipa kamisheni';
-    primaryPress = payCommission;
   }
 
   if (expiredOffer || (!owned && !offer)) {
@@ -161,10 +138,6 @@ export default function OrderDetailScreen() {
   }
 
   const statusLine = copied ? 'Imenakiliwa' : liveOffer ? 'Oda mpya' : deskStatusLabel(item);
-  const cashNote =
-    isCompletedShipment(item) && (cash === 'pending_reconciliation' || cash === 'reconciled')
-      ? cashStatusLabel(item.cashStatus)
-      : '';
 
   return (
     <View style={styles.page}>
@@ -212,7 +185,6 @@ export default function OrderDetailScreen() {
           <View style={styles.block}>
             <Text style={styles.kicker}>Bei</Text>
             <Text style={styles.line}>{priceLine}</Text>
-            {cashNote ? <Text style={styles.note}>{cashNote}</Text> : null}
           </View>
         ) : null}
 
@@ -355,12 +327,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
     color: theme.ink,
-  },
-  note: {
-    marginTop: 4,
-    fontFamily: typography.body,
-    fontSize: 13,
-    color: theme.muted,
   },
   person: {
     flexDirection: 'row',

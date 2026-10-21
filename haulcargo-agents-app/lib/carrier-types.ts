@@ -29,6 +29,8 @@ export type Carrier = {
   operatingDays?: string[];
   phoneNormalized?: string;
   phoneVerified?: boolean;
+  /** Last number confirmed for a commission USSD push. */
+  commissionPayerPhone?: string;
 };
 
 export type CarrierRoute = {
@@ -85,6 +87,9 @@ export type CarrierShipment = {
   haulFee?: number;
   carrierNet?: number;
   cashStatus?: string;
+  /** Set while a threshold USSD push is in flight. Reconciled only after the provider confirms. */
+  commissionPaymentId?: string;
+  commissionPreviousCashStatus?: string;
   parcelPhotoUrls?: string[];
   tripId?: string;
   tripName?: string;

@@ -298,7 +298,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
             banner.payoutLabel,
           ].filter(Boolean);
           void alertForNewOffer({
-            title: 'Oda mpya ya mzigo — Kubali sasa',
+            title: 'Oda mpya',
             body: bodyParts.join(' · '),
             orderId: newest.id,
           });

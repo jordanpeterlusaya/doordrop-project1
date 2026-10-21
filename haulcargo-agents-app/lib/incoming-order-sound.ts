@@ -2,12 +2,14 @@ import { Asset } from 'expo-asset';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { Platform, Vibration } from 'react-native';
 
+// Short desk chime — not incoming_order_alarm.wav.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const INCOMING_ORDER_ALARM_ASSET = require('@/assets/sounds/incoming_order_alarm.wav');
+const INCOMING_ORDER_CHIME_ASSET = require('@/assets/sounds/incoming_order_chime.wav');
 
-const MAX_ALARM_DURATION_MS = 45_000;
-const VIBRATION_REPEAT_INTERVAL_MS = 3_200;
-const OFFER_VIBRATION_PATTERN = [0, 420, 140, 420, 140, 520, 160, 640];
+const CHIME_FILE = 'incoming_order_chime.wav';
+const MAX_CHIME_DURATION_MS = 18_000;
+const VIBRATION_REPEAT_INTERVAL_MS = 1_600;
+const OFFER_VIBRATION_PATTERN = [0, 180, 90, 180];
 
 let sharedPlayer: AudioPlayer | null = null;
 let resolvedLocalUri: string | null = null;
@@ -65,7 +67,7 @@ async function ensureAudioReady(): Promise<string | number> {
   }
 
   try {
-    const asset = Asset.fromModule(INCOMING_ORDER_ALARM_ASSET);
+    const asset = Asset.fromModule(INCOMING_ORDER_CHIME_ASSET);
     if (!asset.localUri) {
       await asset.downloadAsync();
     }
@@ -78,10 +80,10 @@ async function ensureAudioReady(): Promise<string | number> {
     );
   }
 
-  return INCOMING_ORDER_ALARM_ASSET;
+  return INCOMING_ORDER_CHIME_ASSET;
 }
 
-/** Preload the custom incoming order alarm sound on app startup. */
+/** Preload the incoming-order chime on app startup. */
 export async function preloadIncomingOrderAlarm(): Promise<void> {
   try {
     await ensureAudioReady();
@@ -102,15 +104,15 @@ function clearTimers() {
 }
 
 /**
- * Plays the custom incoming order alarm sound (`incoming_order_alarm.wav`)
- * and pulses vibration until the carrier interacts or the timeout elapses.
+ * Plays the incoming-order chime (`incoming_order_chime.wav`) with vibration
+ * until Kubali, Kataa, dismiss, or the short repeat window ends.
  */
 export async function startIncomingOrderAlarm(
   orderId?: string,
   opts?: { loop?: boolean; durationMs?: number }
 ): Promise<boolean> {
   const loop = opts?.loop ?? true;
-  const durationMs = opts?.durationMs ?? MAX_ALARM_DURATION_MS;
+  const durationMs = opts?.durationMs ?? MAX_CHIME_DURATION_MS;
 
   clearTimers();
   activeOrderId = orderId || activeOrderId || 'incoming-offer';
@@ -148,6 +150,11 @@ export async function startIncomingOrderAlarm(
     sharedPlayer.muted = false;
     await sharedPlayer.seekTo(0).catch(() => undefined);
     sharedPlayer.play();
+    try {
+      Vibration.vibrate(OFFER_VIBRATION_PATTERN);
+    } catch {
+      // ignore
+    }
 
     if (loop) {
       vibrationInterval = setInterval(() => {
@@ -169,7 +176,7 @@ export async function startIncomingOrderAlarm(
 
     console.info('[HAUL_AGENTS_SOUND_START]', {
       orderId: activeOrderId,
-      sound: 'incoming_order_alarm.wav',
+      sound: CHIME_FILE,
       loop,
       source: typeof source === 'string' ? source : 'asset-module',
       at: new Date().toISOString(),
