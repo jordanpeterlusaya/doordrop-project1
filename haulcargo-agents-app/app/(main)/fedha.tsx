@@ -57,7 +57,9 @@ export default function FedhaScreen() {
   const ceiling = commissionPayCeiling(standing);
   const blocked = unpaid >= ceiling;
 
-  const rememberIntent = () => {
+  const rememberIntent = (payAmount: number) => {
+    const chosen = Math.round(Number(payAmount) || 0);
+    if (chosen <= 0 || chosen > unpaid) return;
     if (!isValidTzPhone(phone)) {
       setPhoneHint('Weka namba ya simu.');
       return;
@@ -67,7 +69,7 @@ export default function FedhaScreen() {
       carrierId,
       phone: phone.trim(),
       network,
-      amount: unpaid,
+      amount: chosen,
       at: new Date().toISOString(),
     }).catch(() => undefined);
   };
@@ -106,12 +108,14 @@ export default function FedhaScreen() {
         </View>
       </View>
 
-      {unpaid <= 0 ? <Text style={styles.debtNote}>Hakuna deni</Text> : null}
-      {blocked ? (
-        <Text style={styles.blocked}>Ofa mpya zimesimama mpaka kamisheni ilipwe.</Text>
-      ) : (
-        <Text style={styles.debtNote}>{`Lipa ukifika ${money(ceiling)}`}</Text>
+      {unpaid <= 0 ? <Text style={styles.debtNote}>Hakuna deni</Text> : (
+        <Text style={styles.debtNote}>Lipa kiasi chochote sasa.</Text>
       )}
+      <Text style={blocked ? styles.blocked : styles.debtNote}>
+        {blocked
+          ? `Ofa mpya zimesimama. Zinaendelea Unadaiwa ikishuka chini ya ${money(ceiling)}.`
+          : `Oda mpya zinasimama Unadaiwa ikifika ${money(ceiling)}.`}
+      </Text>
 
       {unpaid > 0 ? (
         <Pressable

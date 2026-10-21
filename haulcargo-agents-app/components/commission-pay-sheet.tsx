@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -38,11 +38,12 @@ type Props = {
   phoneHint: string;
   onChangePhone: (value: string) => void;
   onChangeNetwork: (value: PayNetworkKey) => void;
-  onPay: () => void;
+  /** Chosen amount only. Does not call a provider or mark commission paid. */
+  onPay: (amount: number) => void;
   onClose: () => void;
 };
 
-/** HAUL Drive checkout layout. Lipa stays ready and does not call a provider. */
+/** HAUL Drive checkout layout. Any amount up to Unadaiwa. Lipa does not call a provider. */
 export function CommissionPaySheet({
   visible,
   amount,
@@ -55,6 +56,33 @@ export function CommissionPaySheet({
   onClose,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const owed = Math.max(0, Math.round(Number(amount) || 0));
+  const owedRef = useRef(owed);
+  owedRef.current = owed;
+  const [draft, setDraft] = useState('');
+  const [amountHint, setAmountHint] = useState('');
+
+  useEffect(() => {
+    if (!visible) return;
+    const next = owedRef.current;
+    setDraft(next > 0 ? String(next) : '');
+    setAmountHint('');
+  }, [visible]);
+
+  const chosen = Math.round(Number(draft.replace(/[^\d]/g, '')) || 0);
+
+  const submit = () => {
+    if (chosen <= 0) {
+      setAmountHint('Weka kiasi.');
+      return;
+    }
+    if (chosen > owed) {
+      setAmountHint(`Kiasi kisizidi ${money(owed)}.`);
+      return;
+    }
+    setAmountHint('');
+    onPay(chosen);
+  };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -65,6 +93,22 @@ export function CommissionPaySheet({
           <Text style={styles.kicker}>Unadaiwa</Text>
           <Text style={styles.amount}>{money(amount)}</Text>
           <Text style={styles.caption}>Kamisheni</Text>
+
+          <Text style={styles.section}>Kiasi</Text>
+          <TextInput
+            value={draft}
+            onChangeText={(value) => {
+              setDraft(value.replace(/[^\d]/g, ''));
+              if (amountHint) setAmountHint('');
+            }}
+            keyboardType="number-pad"
+            placeholder={owed > 0 ? String(owed) : '0'}
+            placeholderTextColor="#94A3B8"
+            style={styles.input}
+            accessibilityLabel="Kiasi cha kulipa"
+          />
+          <Text style={styles.amountHelp}>Andika kiasi chochote, mpaka Unadaiwa.</Text>
+          {amountHint ? <Text style={styles.hint}>{amountHint}</Text> : null}
 
           <Text style={styles.section}>Lipa kwa</Text>
           {PAY_NETWORKS.map((item) => {
@@ -101,10 +145,10 @@ export function CommissionPaySheet({
           {phoneHint ? <Text style={styles.hint}>{phoneHint}</Text> : null}
 
           <Pressable
-            onPress={onPay}
+            onPress={submit}
             accessibilityRole="button"
             style={({ pressed }) => [styles.pay, pressed && styles.payPressed]}>
-            <Text style={styles.payText}>{`Lipa · ${money(amount)}`}</Text>
+            <Text style={styles.payText}>{`Lipa · ${money(chosen)}`}</Text>
           </Pressable>
           <Text style={styles.note}>Unadaiwa inabaki mpaka malipo yatakapothibitishwa.</Text>
         </View>
@@ -251,6 +295,13 @@ const styles = StyleSheet.create({
     color: '#0B1220',
     fontSize: 17,
     fontFamily: typography.semibold,
+  },
+  amountHelp: {
+    marginTop: 8,
+    fontFamily: typography.body,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#6B7280',
   },
   hint: {
     marginTop: 8,
