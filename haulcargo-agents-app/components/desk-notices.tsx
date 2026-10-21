@@ -46,42 +46,36 @@ export function DeskNotices() {
   const queueRef = useRef<DeskNotice[]>([]);
   const shownRef = useRef(new Set<DeskNotice['id']>());
   const showingRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef(AppState.currentState);
-
-  const clearTimer = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  };
 
   const pump = () => {
     if (showingRef.current) return;
     const next = queueRef.current.shift() || null;
-    if (!next) {
-      setCurrent(null);
-      return;
-    }
+    if (!next) return;
     showingRef.current = true;
     setCurrent(next);
-    clearTimer();
-    timerRef.current = setTimeout(() => {
-      showingRef.current = false;
-      setCurrent(null);
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        pump();
-      }, 180);
-    }, DISMISS_MS);
   };
+
+  useEffect(() => {
+    if (!current) return undefined;
+    const handle = setTimeout(() => {
+      showingRef.current = false;
+      const next = queueRef.current.shift() || null;
+      if (next) {
+        showingRef.current = true;
+        setCurrent(next);
+        return;
+      }
+      setCurrent(null);
+    }, DISMISS_MS);
+    return () => clearTimeout(handle);
+  }, [current]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       const previous = appStateRef.current;
       appStateRef.current = next;
       if (next === 'active' && previous !== 'active') {
-        clearTimer();
         showingRef.current = false;
         queueRef.current = [];
         shownRef.current.clear();
@@ -89,10 +83,7 @@ export function DeskNotices() {
         setForeground((value) => value + 1);
       }
     });
-    return () => {
-      sub.remove();
-      clearTimer();
-    };
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {
