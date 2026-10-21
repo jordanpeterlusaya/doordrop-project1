@@ -139,9 +139,25 @@ export function tierProgressLabel(standing: CarrierStanding) {
   return `mfululizo ${standing.streak} / ${standing.nextMin} kufikia ${standing.nextLabel}`;
 }
 
-export function tierWarning(standing: CarrierStanding, offersPaused = false) {
-  if (offersPaused || standing.closure) return 'Akaunti inaweza kufungwa';
-  if (standing.highCommission) return `Cancel ${standing.cancelPercent}%. Kamisheni sasa 20%.`;
-  if (standing.cancelRate >= CANCEL_WARN_RATE) return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
-  return '';
+/** Homepage tier row. "4 / 100" — streak toward the next tier, nothing else. */
+export function tierProgressShort(standing: CarrierStanding) {
+  if (standing.nextMin == null) return 'Uko juu';
+  return `${standing.streak} / ${standing.nextMin}`;
+}
+
+/**
+ * Cancel notice, empty while the rate is healthy.
+ * 15%+: onyo. Above 25% with enough decisions: 20% commission.
+ * "Akaunti inaweza kufungwa" only in the 40% closure band.
+ * A fraud hold or offer pause does not print that sentence on its own.
+ */
+export function tierWarning(standing: CarrierStanding, _offersPaused = false) {
+  if (standing.cancelRate < CANCEL_WARN_RATE) return '';
+  if (standing.cancelRate >= CLOSURE_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS) {
+    return 'Akaunti inaweza kufungwa';
+  }
+  if (standing.cancelRate > HIGH_COMMISSION_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS) {
+    return `Cancel ${standing.cancelPercent}%. Kamisheni sasa 20%.`;
+  }
+  return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
 }

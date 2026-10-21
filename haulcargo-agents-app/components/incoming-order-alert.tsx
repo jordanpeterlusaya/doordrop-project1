@@ -1,10 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { OfferCountdown } from '@/components/offer-countdown';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { acceptOffer, rejectOffer } from '@/lib/carrier-actions';
@@ -12,7 +11,7 @@ import { agentStatusError } from '@/lib/carrier-helpers';
 import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-/** Floating desk alert for a new cargo offer. Chime plays until Kubali, Kataa, or dismiss. */
+/** Bottom sheet for a new offer. Sits under the desk rows. Chime stops on action. */
 export function IncomingOrderAlert() {
   const { offerBanner, dismissOfferBanner, carrier, user } = useCarrierSession();
   const insets = useSafeAreaInsets();
@@ -22,19 +21,15 @@ export function IncomingOrderAlert() {
 
   const carrierId = carrier.id;
   const email = user?.email || '';
-  const weight = offerBanner.weightKg ? `${offerBanner.weightKg} kg` : '';
+  const weight = offerBanner.weightKg ? `${offerBanner.weightKg} kg` : '—';
   const payout = offerBanner.payoutLabel || '';
+  const route =
+    offerBanner.routeLabel && offerBanner.routeLabel !== offerBanner.code ? offerBanner.routeLabel : '';
+  const tabClearance = 54 + Math.max(insets.bottom, Platform.OS === 'android' ? 10 : 6) + 10;
 
   const handleDismiss = () => {
     stopIncomingOrderAlarm('dismiss');
     dismissOfferBanner();
-  };
-
-  const handleOpenOrder = () => {
-    const shipmentId = offerBanner.shipmentId;
-    stopIncomingOrderAlarm('open-order');
-    dismissOfferBanner();
-    router.push(`/order/${shipmentId}`);
   };
 
   const handleAccept = async () => {
@@ -79,32 +74,32 @@ export function IncomingOrderAlert() {
   };
 
   return (
-    <View pointerEvents="box-none" style={[styles.overlay, { paddingTop: Math.max(insets.top + 8, 12) }]}>
+    <View pointerEvents="box-none" style={[styles.host, { bottom: tabClearance }]}>
       <View style={styles.card} accessibilityRole="alert">
-        <View style={styles.top}>
-          <Text style={styles.kicker}>Oda mpya</Text>
-          <View style={styles.topRight}>
-            <OfferCountdown shipment={offerBanner.shipment} compact />
-            <Pressable
-              onPress={handleDismiss}
-              hitSlop={10}
-              accessibilityRole="button"
-              accessibilityLabel="Funga"
-              style={styles.close}>
-              <Ionicons name="close" size={16} color={theme.ink} />
-            </Pressable>
-          </View>
+        <View style={styles.head}>
+          <Text style={styles.code} numberOfLines={1}>
+            {offerBanner.code}
+          </Text>
+          <Pressable
+            onPress={handleDismiss}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Funga"
+            style={styles.close}>
+            <Ionicons name="close" size={16} color={theme.ink} />
+          </Pressable>
         </View>
 
-        <Pressable onPress={handleOpenOrder} accessibilityRole="button">
+        {route ? (
           <Text style={styles.route} numberOfLines={2}>
-            {offerBanner.routeLabel}
+            {route}
           </Text>
-          <View style={styles.meta}>
-            <Text style={styles.metaText}>{weight || '—'}</Text>
-            {payout ? <Text style={styles.payout}>{payout}</Text> : null}
-          </View>
-        </Pressable>
+        ) : null}
+
+        <View style={styles.meta}>
+          <Text style={styles.metaText}>{weight}</Text>
+          {payout ? <Text style={styles.payout}>{payout}</Text> : null}
+        </View>
 
         <View style={styles.actions}>
           <Pressable
@@ -124,17 +119,15 @@ export function IncomingOrderAlert() {
 }
 
 const styles = StyleSheet.create({
-  overlay: {
+  host: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 999,
-    paddingHorizontal: 16,
+    left: 16,
+    right: 16,
+    zIndex: 20,
   },
   card: {
     backgroundColor: theme.white,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#D6D9DE',
     paddingHorizontal: 14,
@@ -146,23 +139,19 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 6,
   },
-  top: {
+  head: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
-  kicker: {
-    fontFamily: typography.semibold,
-    fontSize: 11,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-    color: theme.muted,
-  },
-  topRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  code: {
+    flex: 1,
+    fontFamily: typography.bold,
+    fontSize: 15,
+    lineHeight: 20,
+    letterSpacing: 0.3,
+    color: theme.ink,
   },
   close: {
     width: 28,
@@ -175,10 +164,9 @@ const styles = StyleSheet.create({
   },
   route: {
     marginTop: 8,
-    fontFamily: typography.bold,
-    fontSize: 16,
-    lineHeight: 21,
-    letterSpacing: -0.3,
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    lineHeight: 20,
     color: theme.ink,
   },
   meta: {

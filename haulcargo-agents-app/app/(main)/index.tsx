@@ -1,8 +1,8 @@
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { HomeStanding } from '@/components/home-standing';
 import { OrderInboxCard } from '@/components/order-inbox-card';
-import { TierBadge } from '@/components/tier-badge';
 import { EmptyState, Screen } from '@/components/ui';
 import { tierWarning } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
@@ -43,26 +43,15 @@ export default function HomeScreen() {
   }, [shipments, carrierId, decisions, carrier?.rejected, carrier?.postAcceptCancels]);
 
   const empty = offers.length === 0 && active.length === 0;
-  const warning = tierWarning(standing, Boolean(carrier?.offersPaused || carrier?.fraudHold));
+  const warning = tierWarning(standing);
 
   return (
     <Screen scroll edges="top" backgroundColor="#F4F5F7">
-      <View style={styles.header}>
-        <View style={styles.identity}>
-          <View style={styles.brandRow}>
-            <View style={styles.mark} />
-            <Text style={styles.brand}>HAUL</Text>
-          </View>
-          <Text style={styles.company} numberOfLines={2} accessibilityRole="header">
-            {company}
-          </Text>
-          {warning ? (
-            <Text style={[styles.warning, (carrier?.offersPaused || carrier?.fraudHold || standing.closure) && styles.warningHard]}>
-              {warning}
-            </Text>
-          ) : null}
-        </View>
-        <TierBadge standing={standing} />
+      <View style={styles.desk}>
+        <Text style={styles.company} numberOfLines={1} accessibilityRole="header">
+          {company}
+        </Text>
+        <HomeStanding standing={standing} warning={warning} />
       </View>
 
       {offers.length > 0 ? (
@@ -89,48 +78,15 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 22,
-  },
-  identity: { flex: 1, minWidth: 0 },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  mark: {
-    width: 7,
-    height: 7,
-    borderRadius: 2,
-    backgroundColor: theme.brandYellow,
-  },
-  brand: {
-    fontFamily: typography.semibold,
-    fontSize: 11,
-    letterSpacing: 1.4,
-    color: theme.muted,
+  desk: {
+    marginBottom: 28,
   },
   company: {
     fontFamily: typography.bold,
-    fontSize: 22,
-    lineHeight: 28,
-    letterSpacing: -0.4,
+    fontSize: 26,
+    lineHeight: 32,
+    letterSpacing: -0.5,
     color: theme.ink,
-  },
-  warning: {
-    marginTop: 6,
-    fontFamily: typography.semibold,
-    fontSize: 12,
-    lineHeight: 16,
-    color: theme.ink,
-  },
-  warningHard: {
-    color: theme.danger,
   },
   section: { marginBottom: 8 },
   sectionLabel: {

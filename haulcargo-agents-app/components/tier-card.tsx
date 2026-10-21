@@ -2,50 +2,68 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { TierMedal } from '@/components/tier-medal';
-import { tierBenefitLabel, tierProgressLabel, tierWarning, type CarrierStanding } from '@/constants/carrier-desk';
+import { tierWarning, type CarrierStanding } from '@/constants/carrier-desk';
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.fact}>
+      <Text style={styles.factLabel}>{label}</Text>
+      <Text style={styles.factValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+/** Full gamification on Akaunti. Homepage stays the short desk. */
 export function TierCard({ standing, offersPaused = false }: { standing: CarrierStanding; offersPaused?: boolean }) {
-  const benefit = tierBenefitLabel(standing);
-  const progress = tierProgressLabel(standing);
   const warning = tierWarning(standing, offersPaused);
-  const summary = `${standing.tier.label}. ${progress}. ${benefit}. Cancel ${standing.cancelPercent}%. ${warning}`.trim();
+  const closure = warning.startsWith('Akaunti');
+  const next =
+    standing.nextLabel && standing.nextMin != null ? `${standing.nextLabel} · ${standing.nextMin}` : 'Uko juu';
+  const summary = `${standing.tier.label}. Mfululizo ${standing.streak}. Inayofuata ${next}. Kamisheni ${standing.feePercent}%. Cancel ${standing.cancelPercent}%. ${warning}`.trim();
+
   return (
     <View style={styles.card} accessibilityRole="summary" accessibilityLabel={summary}>
-      <TierMedal id={standing.tier.id} width={64} />
-      <View style={styles.copy}>
-        <Text style={styles.kicker}>Kiwango</Text>
-        <Text style={styles.name}>{standing.tier.label}</Text>
-        <Text style={styles.progress}>{progress}</Text>
-        <View style={styles.track}>
-          <View style={[styles.fill, { width: `${Math.round(standing.ratio * 100)}%` }]} />
+      <View style={styles.head}>
+        <TierMedal id={standing.tier.id} width={48} />
+        <View style={styles.headCopy}>
+          <Text style={styles.kicker}>Kiwango</Text>
+          <Text style={styles.name} numberOfLines={1}>
+            {standing.tier.label}
+          </Text>
         </View>
-        <Text style={styles.stats}>Cancel {standing.cancelPercent}%</Text>
-        <Text style={styles.benefit}>{benefit}</Text>
-        {standing.nextLabel ? <Text style={styles.next}>Inayofuata · {standing.nextLabel}</Text> : null}
-        {warning ? (
-          <Text style={[styles.warning, (offersPaused || standing.closure) && styles.warningHard]}>{warning}</Text>
-        ) : null}
       </View>
+      <Fact label="Mfululizo" value={String(standing.streak)} />
+      <Fact label="Inayofuata" value={next} />
+      <Fact label="Kamisheni" value={`${standing.feePercent}%`} />
+      <Fact label="Cancel" value={`${standing.cancelPercent}%`} />
+      {warning ? <Text style={[styles.warning, closure && styles.warningHard]}>{warning}</Text> : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
     marginBottom: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
     borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.line,
-    backgroundColor: theme.tile,
+    backgroundColor: theme.white,
   },
-  copy: { flex: 1, minWidth: 0 },
+  head: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+    minHeight: 56,
+  },
+  headCopy: { flex: 1, minWidth: 0 },
   kicker: {
     fontFamily: typography.semibold,
     fontSize: 11,
@@ -56,52 +74,37 @@ const styles = StyleSheet.create({
   name: {
     marginTop: 2,
     fontFamily: typography.bold,
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 22,
+    lineHeight: 28,
     letterSpacing: -0.3,
     color: theme.ink,
   },
-  progress: {
-    marginTop: 4,
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    lineHeight: 18,
-    color: theme.ink,
+  fact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 40,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.line,
   },
-  track: {
-    marginTop: 8,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#E6EAF0',
-    overflow: 'hidden',
-  },
-  fill: {
-    height: 4,
-    backgroundColor: '#000000',
-  },
-  stats: {
-    marginTop: 8,
-    fontFamily: typography.semibold,
-    fontSize: 13,
-    lineHeight: 18,
-    color: theme.ink,
-  },
-  benefit: {
-    marginTop: 2,
+  factLabel: {
     fontFamily: typography.body,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
-    color: theme.ink,
-  },
-  next: {
-    marginTop: 2,
-    fontFamily: typography.body,
-    fontSize: 12,
-    lineHeight: 16,
     color: theme.muted,
   },
+  factValue: {
+    flexShrink: 1,
+    fontFamily: typography.semibold,
+    fontSize: 15,
+    lineHeight: 20,
+    color: theme.ink,
+    textAlign: 'right',
+  },
   warning: {
-    marginTop: 8,
+    marginTop: 4,
+    marginBottom: 8,
     fontFamily: typography.semibold,
     fontSize: 13,
     lineHeight: 18,
