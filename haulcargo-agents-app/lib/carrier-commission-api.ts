@@ -13,6 +13,7 @@ export type CommissionPayResult = {
   canPay?: boolean;
   settled?: boolean;
   duplicate?: boolean;
+  message?: string;
   error?: string;
 };
 
@@ -30,22 +31,29 @@ async function postCommission(path: string, body: Record<string, unknown>) {
   });
   const payload = (await response.json().catch(() => ({}))) as CommissionPayResult;
   if (!response.ok) {
-    const error = new Error(payload.error || 'USSD haijatumwa. Jaribu tena.') as ApiError;
+    const error = new Error(swahiliPayError(payload.error)) as ApiError;
     error.statusCode = response.status;
     throw error;
   }
   return payload;
 }
 
-/** Asks the server to send a real mobile-money USSD/STK push for the commission balance. */
-export function requestCommissionUssd(input: { phoneNumber: string; network: string }) {
+function swahiliPayError(value: unknown) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length > 90 || /salio/i.test(text)) return 'USSD haijatumwa. Jaribu tena.';
+  return text;
+}
+
+/** Asks the server to send a TrivaPesa USSD push. Unadaiwa changes only after confirmation. */
+export function requestCommissionUssd(input: { phoneNumber: string; network: string; amount: number }) {
   return postCommission('/carrier/commission/ussd', {
     phoneNumber: input.phoneNumber,
     network: input.network,
+    amount: Math.round(input.amount),
   });
 }
 
-/** Checks the provider. Does not mark commission paid by itself. */
-export function verifyCommissionUssd() {
-  return postCommission('/carrier/commission/verify', {});
+/** Checks TrivaPesa. Does not mark commission paid by itself. */
+export function verifyCommissionUssd(orderId?: string) {
+  return postCommission('/carrier/commission/verify', orderId ? { orderId } : {});
 }

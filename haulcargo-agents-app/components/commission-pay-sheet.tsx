@@ -38,18 +38,22 @@ type Props = {
   phoneHint: string;
   onChangePhone: (value: string) => void;
   onChangeNetwork: (value: PayNetworkKey) => void;
-  /** Chosen amount only. Does not call a provider or mark commission paid. */
+  busy?: boolean;
+  statusNote?: string;
+  /** Starts a USSD push for this amount. Does not mark commission paid. */
   onPay: (amount: number) => void;
   onClose: () => void;
 };
 
-/** HAUL Drive checkout layout. Any amount up to Unadaiwa. Lipa does not call a provider. */
+/** HAUL Drive checkout layout. Any amount up to Unadaiwa. Lipa only starts the push. */
 export function CommissionPaySheet({
   visible,
   amount,
   phone,
   network,
   phoneHint,
+  busy = false,
+  statusNote = '',
   onChangePhone,
   onChangeNetwork,
   onPay,
@@ -72,6 +76,7 @@ export function CommissionPaySheet({
   const chosen = Math.round(Number(draft.replace(/[^\d]/g, '')) || 0);
 
   const submit = () => {
+    if (busy) return;
     if (chosen <= 0) {
       setAmountHint('Weka kiasi.');
       return;
@@ -148,8 +153,9 @@ export function CommissionPaySheet({
             onPress={submit}
             accessibilityRole="button"
             style={({ pressed }) => [styles.pay, pressed && styles.payPressed]}>
-            <Text style={styles.payText}>{`Lipa · ${money(chosen)}`}</Text>
+            <Text style={styles.payText}>{busy ? 'Inatuma…' : `Lipa · ${money(chosen)}`}</Text>
           </Pressable>
+          {statusNote ? <Text style={styles.hint}>{statusNote}</Text> : null}
           <Text style={styles.note}>Unadaiwa inabaki mpaka malipo yatakapothibitishwa.</Text>
         </View>
       </KeyboardAvoidingView>

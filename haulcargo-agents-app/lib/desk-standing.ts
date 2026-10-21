@@ -43,14 +43,21 @@ export function deskStanding(
   });
 }
 
+/** Remainder of haulFee after confirmed commission payments. Reconciled rows are fully covered. */
+export function haulFeeOutstanding(item: CarrierShipment) {
+  const fee = Math.max(0, Math.round(Number(item.haulFee) || 0));
+  if (!isCompletedShipment(item) || fee <= 0) return 0;
+  if (String(item.cashStatus || '').toLowerCase() === 'reconciled') return 0;
+  const paid = Math.min(fee, Math.max(0, Math.round(Number(item.commissionPaidTzs) || 0)));
+  return fee - paid;
+}
+
 /** Unpaid haulFee on finished jobs. Reconciled rows are already paid. */
 export function unpaidHaulFee(shipments: CarrierShipment[], carrierId: string) {
   let unpaid = 0;
   for (const item of shipments) {
-    if (item.carrierId !== carrierId || !isCompletedShipment(item)) continue;
-    if (String(item.cashStatus || '').toLowerCase() === 'reconciled') continue;
-    const fee = Math.max(0, Math.round(Number(item.haulFee) || 0));
-    if (fee > 0) unpaid += fee;
+    if (item.carrierId !== carrierId) continue;
+    unpaid += haulFeeOutstanding(item);
   }
   return unpaid;
 }

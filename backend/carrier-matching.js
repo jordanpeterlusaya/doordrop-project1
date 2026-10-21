@@ -825,9 +825,14 @@ async function loadDeskStats(db, carrierIds) {
     const list = times.get(carrierId) || [];
     list.push(shipmentEventMs(data));
     times.set(carrierId, list);
-    if (String(data.cashStatus || '').toLowerCase() === 'reconciled') return;
     const fee = Math.max(0, Math.round(Number(data.haulFee) || 0));
-    if (fee > 0) unpaid.set(carrierId, (unpaid.get(carrierId) || 0) + fee);
+    if (fee <= 0) return;
+    const reconciled = String(data.cashStatus || '').toLowerCase() === 'reconciled';
+    const paid = reconciled
+      ? fee
+      : Math.min(fee, Math.max(0, Math.round(Number(data.commissionPaidTzs) || 0)));
+    const due = fee - paid;
+    if (due > 0) unpaid.set(carrierId, (unpaid.get(carrierId) || 0) + due);
   };
   byStatus.docs.forEach(add);
   byStep.docs.forEach(add);

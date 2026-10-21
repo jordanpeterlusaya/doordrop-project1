@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { CommissionPaySheet, type PayNetworkKey } from '@/components/commission-pay-sheet';
@@ -9,8 +9,9 @@ import { commissionPayCeiling, tierBenefitLabel } from '@/constants/carrier-desk
 import { theme } from '@/constants/theme';
 import { typography } from '@/constants/typography';
 import { isValidTzPhone } from '@/lib/phone';
-import { deskStanding, unpaidHaulFee } from '@/lib/desk-standing';
+import { deskStanding, haulFeeOutstanding, unpaidHaulFee } from '@/lib/desk-standing';
 import { loadCommissionPayIntent, saveCommissionPayIntent } from '@/lib/commission-intent';
+import { requestCommissionUssd, verifyCommissionUssd } from '@/lib/carrier-commission-api';
 import { fireTimeMs, isCompletedShipment, money, shipmentCode } from '@/lib/carrier-helpers';
 import type { CarrierShipment } from '@/lib/carrier-types';
 import { useCarrierSession } from '@/providers/carrier-session';
@@ -22,6 +23,10 @@ export default function FedhaScreen() {
   const [network, setNetwork] = useState<PayNetworkKey>('mpesa');
   const [phoneHint, setPhoneHint] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [payBusy, setPayBusy] = useState(false);
+  const [sheetNote, setSheetNote] = useState('');
+  const [waitNote, setWaitNote] = useState('');
+  const orderRef = useRef('');
 
   useEffect(() => {
     const next = carrier?.phone || '';
@@ -41,6 +46,39 @@ export default function FedhaScreen() {
     };
   }, [carrierId]);
 
+  useEffect(() => {
+    if (!carrierId) return undefined;
+    let stopped = false;
+    const tick = async (force: boolean) => {
+      if (!force && !orderRef.current) return;
+      try {
+        const result = await verifyCommissionUssd(orderRef.current || undefined);
+        if (stopped) return;
+        if (result.status === 'pending') {
+          if (result.orderId) orderRef.current = result.orderId;
+          setWaitNote('Subiri uthibitisho kwenye simu.');
+          return;
+        }
+        if (result.status === 'failed' && orderRef.current) {
+          orderRef.current = '';
+          setWaitNote('');
+          setSheetNote('Malipo hayajakamilika.');
+          return;
+        }
+        setWaitNote('');
+        orderRef.current = '';
+      } catch {
+        // Unknown result leaves Unadaiwa as it is.
+      }
+    };
+    void tick(true);
+    const timer = setInterval(() => void tick(false), 4000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [carrierId]);
+
   const delivered = useMemo(() => {
     return shipments
       .filter((item) => item.carrierId === carrierId && isCompletedShipment(item))
@@ -57,21 +95,44 @@ export default function FedhaScreen() {
   const ceiling = commissionPayCeiling(standing);
   const blocked = unpaid >= ceiling;
 
-  const rememberIntent = (payAmount: number) => {
+  const payCommission = async (payAmount: number) => {
     const chosen = Math.round(Number(payAmount) || 0);
+    if (payBusy) return;
     if (chosen <= 0 || chosen > unpaid) return;
     if (!isValidTzPhone(phone)) {
       setPhoneHint('Weka namba ya simu.');
       return;
     }
     setPhoneHint('');
-    void saveCommissionPayIntent({
-      carrierId,
-      phone: phone.trim(),
-      network,
-      amount: chosen,
-      at: new Date().toISOString(),
-    }).catch(() => undefined);
+    setSheetNote('');
+    setPayBusy(true);
+    try {
+      const result = await requestCommissionUssd({
+        phoneNumber: phone.trim(),
+        network,
+        amount: chosen,
+      });
+      void saveCommissionPayIntent({
+        carrierId,
+        phone: phone.trim(),
+        network,
+        amount: chosen,
+        at: new Date().toISOString(),
+      }).catch(() => undefined);
+      if (result.orderId) orderRef.current = result.orderId;
+      if (result.status === 'failed') {
+        setWaitNote('');
+        setSheetNote('Malipo hayajakamilika.');
+        return;
+      }
+      setWaitNote('Subiri uthibitisho kwenye simu.');
+      setSheetNote('Subiri uthibitisho kwenye simu.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'USSD haijatumwa. Jaribu tena.';
+      setSheetNote(message);
+    } finally {
+      setPayBusy(false);
+    }
   };
 
   return (
@@ -125,6 +186,8 @@ export default function FedhaScreen() {
           <Text style={styles.openPayText}>Lipa kamisheni</Text>
         </Pressable>
       ) : null}
+      {waitNote ? <Text style={styles.debtNote}>{waitNote}</Text> : null}
+      {!sheetOpen && sheetNote && sheetNote !== waitNote ? <Text style={styles.debtNote}>{sheetNote}</Text> : null}
 
       <CommissionPaySheet
         visible={sheetOpen}
@@ -132,12 +195,14 @@ export default function FedhaScreen() {
         phone={phone}
         network={network}
         phoneHint={phoneHint}
+        busy={payBusy}
+        statusNote={sheetNote}
         onChangePhone={(value) => {
           setPhone(value);
           if (phoneHint) setPhoneHint('');
         }}
         onChangeNetwork={setNetwork}
-        onPay={rememberIntent}
+        onPay={(value) => void payCommission(value)}
         onClose={() => setSheetOpen(false)}
       />
 
@@ -156,14 +221,13 @@ export default function FedhaScreen() {
 }
 
 function DeliveredRow({ item }: { item: CarrierShipment }) {
-  const fee = Number(item.haulFee) || 0;
-  const reconciled = String(item.cashStatus || '').toLowerCase() === 'reconciled';
+  const owed = haulFeeOutstanding(item);
   return (
     <View style={styles.row}>
       <Text style={styles.code}>{shipmentCode(item)}</Text>
       <View style={styles.rowMoney}>
         <Text style={styles.amt}>{money(item.carrierNet)}</Text>
-        {fee > 0 && !reconciled ? <Text style={styles.fee}>Deni {money(fee)}</Text> : null}
+        {owed > 0 ? <Text style={styles.fee}>Deni {money(owed)}</Text> : null}
       </View>
     </View>
   );

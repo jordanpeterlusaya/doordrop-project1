@@ -571,10 +571,7 @@ async function handleDriverPaymentHistory(req, res) {
 
 async function handleDriverPaymentWebhook(req, res) {
   const body = await readJsonBody(req);
-  const orderId = String(body?.order_id || body?.orderId || body?.reference || '').trim();
-  const payload = orderId.startsWith('HCC-')
-    ? await handleCarrierCommissionWebhook(req, body)
-    : await handleMongikeWebhook(req, body);
+  const payload = await handleMongikeWebhook(req, body);
   sendJson(res, 200, { ok: true, ...payload }, getRequestOrigin(req));
 }
 
@@ -634,6 +631,7 @@ async function requestListener(req, res) {
             'POST /carrier/shipments/arrive',
             'POST /carrier/commission/ussd',
             'POST /carrier/commission/verify',
+            'POST /carrier/commission/webhook/trivapesa',
             'POST /driver-payments/webhook/mongike',
           ],
         },
@@ -665,6 +663,7 @@ async function requestListener(req, res) {
           googlePlacesConfigured: Boolean(config.googlePlacesApiKey),
           googleRoutesConfigured: Boolean(config.googleRoutesApiKey),
           mongikeConfigured: Boolean(process.env.MONGIKE_API_KEY),
+          trivapesaConfigured: Boolean(process.env.TRIVAPESA_API_KEY || process.env.TRIVAPESA_KEY),
           smsConfigured,
           smsProvider: smsProvider || null,
           driverAccessFeeTzs,
@@ -816,6 +815,12 @@ async function requestListener(req, res) {
     if (req.method === 'POST' && url.pathname === '/carrier/commission/verify') {
       const payload = await verifyCarrierCommissionPayment(req);
       sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier/commission/webhook/trivapesa') {
+      const payload = await handleCarrierCommissionWebhook(req);
+      sendJson(res, 200, { ok: true, ...payload }, originHeader);
       return;
     }
 

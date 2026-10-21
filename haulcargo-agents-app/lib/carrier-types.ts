@@ -98,7 +98,8 @@ export type CarrierShipment = {
   haulFee?: number;
   carrierNet?: number;
   cashStatus?: string;
-  /** Set while a threshold USSD push is in flight. Reconciled only after the provider confirms. */
+  /** TZS of haulFee already covered by a confirmed TrivaPesa payment. Partial payments stay under reconciled. */
+  commissionPaidTzs?: number;
   commissionPaymentId?: string;
   commissionPreviousCashStatus?: string;
   parcelPhotoUrls?: string[];

@@ -1,19 +1,23 @@
 const { FieldValue } = require('firebase-admin/firestore');
 
 const { ensureFirebaseAdmin, readJsonBodyLimited, requireAuthenticatedUser } = require('./media-upload');
+const {
+  MIN_COLLECTION_TZS,
+  REQUEST_NETWORKS,
+  commissionWebhookUrl,
+  createCollection,
+  eventName,
+  fetchCollection,
+  rawBodyString,
+  requestNetwork,
+  signatureHeader,
+  verifyWebhookSignature,
+  webhookSecret,
+} = require('./trivapesa-payments');
 
-/**
- * USSD collect minimum only. New-offer paywall ceilings are per tier in
- * carrier-matching.js (Bronze 30000, Silver 60000, Gold 100000, Platinum 150000).
- * Tier rates change the stored haulFee for new offers only.
- *
- * Bronze 0–99, Silver 100–249, Gold 250–499, Platinum 500+ are an unbroken
- * streak of Imefika/delivered shipments. A company reject resets that streak.
- */
-const COMMISSION_PAY_THRESHOLD_TZS = 30_000;
 const PAYMENT_COLLECTION = 'carrierCommissionPayments';
-const USSD_HOLD_MS = 3 * 60 * 1000;
-const DEFAULT_MONGIKE_API_BASE_URL = 'https://mongike.com/api/v1';
+const FRESH_PUSH_MS = 2 * 60 * 1000;
+const WAIT_MESSAGE = 'Subiri uthibitisho kwenye simu.';
 
 function normalizePhoneNumber(value) {
   const digits = String(value || '').replace(/[^\d]/g, '');
@@ -24,114 +28,16 @@ function normalizePhoneNumber(value) {
   return digits;
 }
 
-function isValidMongikePhone(phone) {
+function isValidTzMobile(phone) {
   return /^255[67]\d{8}$/.test(String(phone || ''));
 }
 
 function normalizePaymentStatus(status) {
   const normalized = String(status || '').trim().toUpperCase();
   if (['COMPLETED', 'COMPLETE', 'SUCCESS', 'SUCCESSFUL', 'PAID'].includes(normalized)) return 'completed';
-  if (['FAILED', 'FAILURE', 'CANCELLED', 'CANCELED', 'REJECTED'].includes(normalized)) return 'failed';
-  if (normalized === 'EXPIRED') return 'expired';
+  if (['FAILED', 'FAILURE', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(normalized)) return 'failed';
   if (['CREATING', 'CREATED', 'INITIATED', 'PROCESSING', 'PENDING'].includes(normalized)) return 'pending';
-  return normalized ? normalized.toLowerCase() : 'pending';
-}
-
-function enabledNetworks() {
-  const enabled = String(process.env.DRIVER_PAYMENT_ENABLED_NETWORKS || 'mpesa,mixx,airtel')
-    .split(',')
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-  return [
-    { key: 'mpesa', label: 'M-Pesa', enabled: enabled.includes('mpesa') },
-    { key: 'mixx', label: 'Mixx by Yas', enabled: enabled.includes('mixx') },
-    { key: 'airtel', label: 'Airtel Money', enabled: enabled.includes('airtel') },
-  ];
-}
-
-function getMongikeApiKey() {
-  return String(process.env.MONGIKE_API_KEY || '').trim();
-}
-
-function getMongikeApiBaseUrl() {
-  return String(process.env.MONGIKE_API_BASE_URL || DEFAULT_MONGIKE_API_BASE_URL).trim().replace(/\/+$/, '');
-}
-
-async function callMongike(pathname, body) {
-  const apiKey = getMongikeApiKey();
-  if (!apiKey) {
-    const error = new Error('Malipo hayajasanidiwa.');
-    error.statusCode = 503;
-    throw error;
-  }
-  const response = await fetch(`${getMongikeApiBaseUrl()}${pathname}`, {
-    method: body ? 'POST' : 'GET',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'HAUL-Agents/1.0',
-      'x-api-key': apiKey,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(20000),
-  });
-  const responseText = await response.text();
-  let parsed = null;
-  try {
-    parsed = responseText ? JSON.parse(responseText) : null;
-  } catch {
-    parsed = null;
-  }
-  if (!response.ok) {
-    const message = parsed?.message || parsed?.error || 'USSD haijatumwa. Jaribu tena.';
-    const error = new Error(message);
-    error.statusCode = response.status >= 500 ? 502 : 400;
-    throw error;
-  }
-  return parsed || {};
-}
-
-function callMongikeInitiatePayment(payload) {
-  return callMongike('/payments/mobile-money/tanzania', payload);
-}
-
-const WALLET_HISTORY_CACHE = { at: 0, transactions: [] };
-
-async function fetchMongikeTransactionByOrderId(orderId, mongikePaymentId, gatewayRef) {
-  const now = Date.now();
-  if (now - WALLET_HISTORY_CACHE.at > 20_000 || !WALLET_HISTORY_CACHE.transactions.length) {
-    const payload = await callMongike('/wallet/history');
-    const transactions = payload?.transactions || payload?.data || [];
-    WALLET_HISTORY_CACHE.at = now;
-    WALLET_HISTORY_CACHE.transactions = Array.isArray(transactions) ? transactions : [];
-  }
-  const wantedOrder = String(orderId || '').trim();
-  const wantedId = String(mongikePaymentId || '').trim();
-  const wantedRef = String(gatewayRef || '').trim();
-  return (
-    WALLET_HISTORY_CACHE.transactions.find((item) => {
-      const reference = String(item?.reference || item?.order_id || '').trim();
-      const id = String(item?.id || '').trim();
-      const merchantReference = String(item?.merchantReference || item?.gateway_ref || '').trim();
-      return (
-        (wantedOrder && reference === wantedOrder) ||
-        (wantedId && id === wantedId) ||
-        (wantedRef && merchantReference === wantedRef)
-      );
-    }) || null
-  );
-}
-
-function extractMongikePaymentRecord(payload) {
-  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload || {};
-  const paymentStatus = data.status || data.payment_status || payload?.payment_status || 'PENDING';
-  return {
-    id: data.id || '',
-    gatewayRef: data.gateway_ref || data.merchantReference || data.reference || payload?.reference || '',
-    status: normalizePaymentStatus(paymentStatus),
-    providerStatus: paymentStatus,
-    message: payload?.message || '',
-  };
+  return normalized ? 'pending' : 'pending';
 }
 
 function badRequest(message) {
@@ -152,15 +58,23 @@ function notFound(message) {
   return error;
 }
 
-function shortPayError(error) {
-  let text = String(error?.message || 'USSD haijatumwa. Jaribu tena.').replace(/\s+/g, ' ').trim();
-  if (/salio la sms|sms limeisha|mambo_insufficient|not configured|mobile money is not/i.test(text)) {
-    text = /not configured|mobile money is not/i.test(text)
-      ? 'Malipo hayajasanidiwa.'
-      : 'USSD haijatumwa. Jaribu tena.';
+function publicPayError(error) {
+  const text = String(error?.publicMessage || error?.message || '').replace(/\s+/g, ' ').trim();
+  if (
+    text === 'Malipo hayajasanidiwa.' ||
+    text === 'Weka namba sahihi ya simu.' ||
+    text === 'Weka kiasi.' ||
+    text === 'Kiasi kisizidi deni.' ||
+    text === 'Kiasi cha chini ni TSh 100.' ||
+    text === 'Mtandao huu haupo.' ||
+    text === 'Hakuna deni.' ||
+    text === 'Akaunti haina kampuni.' ||
+    text === WAIT_MESSAGE
+  ) {
+    return text;
   }
-  if (!text || text.length > 90) return 'USSD haijatumwa. Jaribu tena.';
-  return text;
+  if (/salio/i.test(text)) return 'USSD haijatumwa. Jaribu tena.';
+  return 'USSD haijatumwa. Jaribu tena.';
 }
 
 function isCompletedShipment(shipment) {
@@ -177,12 +91,63 @@ function haulFeeOf(shipment) {
   return Math.max(0, Math.round(Number(shipment?.haulFee) || 0));
 }
 
-function unpaidShipments(rows) {
-  return rows.filter((item) => isCompletedShipment(item) && !isReconciled(item) && haulFeeOf(item) > 0);
+function paidTowardFee(shipment) {
+  const fee = haulFeeOf(shipment);
+  if (fee <= 0) return 0;
+  if (isReconciled(shipment)) return fee;
+  const paid = Math.max(0, Math.round(Number(shipment?.commissionPaidTzs) || 0));
+  return Math.min(fee, paid);
 }
 
-function sumFees(rows) {
-  return rows.reduce((total, item) => total + haulFeeOf(item), 0);
+function outstandingFee(shipment) {
+  if (!isCompletedShipment(shipment)) return 0;
+  return Math.max(0, haulFeeOf(shipment) - paidTowardFee(shipment));
+}
+
+function timeMs(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis() || 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value._seconds === 'number') return value._seconds * 1000;
+  if (typeof value.seconds === 'number') return value.seconds * 1000;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function finishedMs(shipment) {
+  return timeMs(shipment?.arrivedAt) || timeMs(shipment?.deliveredAt) || timeMs(shipment?.updatedAt) || 0;
+}
+
+/** Oldest finished unpaid fee first. Fully covered rows become reconciled. */
+function planAllocation(shipments, amount) {
+  const budget = Math.max(0, Math.round(Number(amount) || 0));
+  const ordered = [...(shipments || [])].sort((left, right) => {
+    const delta = finishedMs(left) - finishedMs(right);
+    if (delta) return delta;
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
+  });
+  let remaining = budget;
+  const updates = [];
+  for (const shipment of ordered) {
+    if (remaining <= 0) break;
+    const due = outstandingFee(shipment);
+    if (due <= 0) continue;
+    const take = Math.min(due, remaining);
+    remaining -= take;
+    const fee = haulFeeOf(shipment);
+    const paid = paidTowardFee(shipment) + take;
+    updates.push({
+      id: String(shipment.id || ''),
+      take,
+      commissionPaidTzs: paid,
+      cashStatus: paid >= fee ? 'reconciled' : 'unpaid',
+    });
+  }
+  return {
+    updates,
+    allocated: budget - remaining,
+    unallocated: remaining,
+  };
 }
 
 function dbHandle() {
@@ -217,6 +182,35 @@ function paymentRef(db, orderId) {
   return db.collection(PAYMENT_COLLECTION).doc(orderId);
 }
 
+function openOrderIds(carrier) {
+  const listed = Array.isArray(carrier?.commissionOpenOrderIds) ? carrier.commissionOpenOrderIds : [];
+  const ids = [];
+  for (const value of [...listed, carrier?.commissionPayment?.orderId]) {
+    const id = String(value || '').trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids.slice(-8);
+}
+
+function summarize(rows) {
+  const open = rows.filter((item) => outstandingFee(item) > 0);
+  const unpaidTzs = open.reduce((total, item) => total + outstandingFee(item), 0);
+  return {
+    ok: true,
+    unpaidTzs,
+    canPay: unpaidTzs >= 1,
+    completedOrders: rows.filter(isCompletedShipment).length,
+    currency: 'TZS',
+    provider: 'trivapesa',
+  };
+}
+
+async function readCarrier(db, carrierId) {
+  const snap = await db.collection('carriers').doc(carrierId).get();
+  if (!snap.exists) throw notFound('Kampuni haipo.');
+  return { id: snap.id, ...snap.data() };
+}
+
 async function commitChunked(db, writes) {
   const size = 400;
   for (let index = 0; index < writes.length; index += size) {
@@ -226,323 +220,190 @@ async function commitChunked(db, writes) {
   }
 }
 
-function summarize(rows, livePending) {
-  const completed = rows.filter(isCompletedShipment);
-  const open = unpaidShipments(rows);
-  const unpaidTzs = sumFees(open);
-  const held = open.some(
-    (item) =>
-      String(item.cashStatus || '').toLowerCase() === 'pending_reconciliation' &&
-      String(item.commissionPaymentId || '').startsWith('HCC-')
-  );
-  const pending = Boolean(livePending || held);
-  return {
-    ok: true,
-    status: pending ? 'pending' : unpaidTzs >= COMMISSION_PAY_THRESHOLD_TZS ? 'due' : 'below_threshold',
-    unpaidTzs,
-    threshold: COMMISSION_PAY_THRESHOLD_TZS,
-    canPay: unpaidTzs >= COMMISSION_PAY_THRESHOLD_TZS && !pending,
-    completedOrders: completed.length,
-    currency: 'TZS',
-  };
-}
-
-async function applyCarrierCommissionStatus(input) {
-  const db = dbHandle();
-  const orderId = String(input.orderId || '').trim();
-  if (!orderId) throw badRequest('order_id inahitajika.');
-  const ref = paymentRef(db, orderId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    return { ignored: true, orderId };
-  }
-
-  const payment = { id: snap.id, ...snap.data() };
-  const current = normalizePaymentStatus(payment.status);
-  if (current === 'completed') {
-    return { idempotent: true, orderId, status: 'completed' };
-  }
-
-  const nextStatus = normalizePaymentStatus(input.status);
-  const carrierRef = db.collection('carriers').doc(String(payment.carrierId || ''));
-  const shipmentIds = Array.isArray(payment.shipmentIds) ? payment.shipmentIds.map((id) => String(id)) : [];
-  const previousCashStatus = payment.previousCashStatus || {};
-  const expected = Math.round(Number(payment.amount) || 0);
-  const reported = Number(input.amount);
-  const shortPaid = Number.isFinite(reported) && reported > 0 && reported + 0.5 < expected;
-  const failed = nextStatus !== 'completed' || shortPaid;
+async function markIntentFailed(db, payment, reason) {
+  const orderId = String(payment.orderId || payment.id || '');
+  const carrierId = String(payment.carrierId || '');
+  const carrierSnap = carrierId ? await db.collection('carriers').doc(carrierId).get() : null;
+  const carrier = carrierSnap?.exists ? carrierSnap.data() : {};
+  const openIds = openOrderIds(carrier).filter((id) => id !== orderId);
   const nowIso = new Date().toISOString();
-
-  if (failed) {
-    const reason = shortPaid
-      ? 'Kiasi si kamili.'
-      : shortPayError({ message: input.providerStatus || nextStatus || 'failed' });
-    const writes = [
-      (batch) =>
-        batch.set(
-          ref,
-          {
-            status: 'failed',
-            providerStatus: input.providerStatus || input.status || '',
-            failureReason: reason,
-            gatewayRef: input.reference || payment.gatewayRef || '',
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        ),
-      (batch) =>
-        batch.set(
-          carrierRef,
-          {
-            commissionPayment: {
-              orderId,
-              status: 'failed',
-              amount: expected,
-              failureReason: reason,
-              updatedAt: nowIso,
-            },
-          },
-          { merge: true }
-        ),
-    ];
-    for (const shipmentId of shipmentIds) {
-      const cashStatus = String(previousCashStatus[shipmentId] || 'unpaid');
-      writes.push((batch) =>
-        batch.set(
-          db.collection('carrierShipments').doc(shipmentId),
-          {
-            cashStatus,
-            commissionPaymentId: FieldValue.delete(),
-            commissionPreviousCashStatus: FieldValue.delete(),
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        )
-      );
-    }
-    await commitChunked(db, writes);
-    return { orderId, status: 'failed' };
-  }
-
   const writes = [
     (batch) =>
       batch.set(
-        ref,
+        paymentRef(db, orderId),
         {
-          status: 'completed',
-          providerStatus: input.providerStatus || input.status || 'COMPLETED',
-          gatewayRef: input.reference || payment.gatewayRef || '',
-          reference: input.reference || payment.reference || '',
-          completedAt: FieldValue.serverTimestamp(),
+          status: 'failed',
+          failureReason: 'Malipo hayajakamilika.',
+          providerStatus: reason || 'FAILED',
           updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      ),
-    (batch) =>
-      batch.set(
-        carrierRef,
-        {
-          commissionPayment: {
-            orderId,
-            status: 'completed',
-            amount: expected,
-            completedAt: nowIso,
-            updatedAt: nowIso,
-          },
-          commissionPayerPhone: payment.payerPhone || '',
         },
         { merge: true }
       ),
   ];
-  for (const shipmentId of shipmentIds) {
+  if (carrierId) {
     writes.push((batch) =>
       batch.set(
-        db.collection('carrierShipments').doc(shipmentId),
+        db.collection('carriers').doc(carrierId),
         {
-          cashStatus: 'reconciled',
-          commissionPaymentId: orderId,
-          commissionReconciledAt: FieldValue.serverTimestamp(),
-          commissionPreviousCashStatus: FieldValue.delete(),
-          updatedAt: FieldValue.serverTimestamp(),
+          commissionOpenOrderIds: openIds,
+          commissionPayment: {
+            orderId,
+            status: 'failed',
+            amount: Math.round(Number(payment.amount) || 0),
+            failureReason: 'Malipo hayajakamilika.',
+            updatedAt: nowIso,
+          },
         },
         { merge: true }
       )
     );
   }
   await commitChunked(db, writes);
-  return { orderId, status: 'completed', settled: true };
+  return { orderId, status: 'failed' };
 }
 
-async function readCarrier(db, carrierId) {
-  const snap = await db.collection('carriers').doc(carrierId).get();
-  if (!snap.exists) throw notFound('Kampuni haipo.');
-  return { id: snap.id, ...snap.data() };
-}
-
-async function settleOpenPayment(db, carrier) {
-  const current = carrier?.commissionPayment || {};
-  const orderId = String(current.orderId || '').trim();
-  const status = normalizePaymentStatus(current.status);
-  if (!orderId || !['pending', 'creating'].includes(status)) return null;
-  const snap = await paymentRef(db, orderId).get();
-  if (!snap.exists) return null;
-  const payment = { id: snap.id, ...snap.data() };
-  if (normalizePaymentStatus(payment.status) === 'completed') return { status: 'completed', settled: true };
-  if (normalizePaymentStatus(payment.status) === 'failed') return { status: 'failed' };
-
-  let remote = null;
-  try {
-    remote = await fetchMongikeTransactionByOrderId(
-      payment.orderId || orderId,
-      payment.mongikePaymentId,
-      payment.gatewayRef || payment.reference
-    );
-  } catch (error) {
-    console.warn('carrier commission verify skipped', error?.message || 'error');
+async function allocateConfirmedPayment(db, payment, remote) {
+  const orderId = String(payment.orderId || payment.id || '');
+  const carrierId = String(payment.carrierId || '');
+  const reported = Number(remote.amount);
+  const confirmed = Number.isFinite(reported) && reported > 0
+    ? Math.round(reported)
+    : Math.round(Number(payment.amount) || 0);
+  if (!orderId || !carrierId || !Number.isFinite(confirmed) || confirmed <= 0) {
+    return { orderId, status: 'pending' };
   }
+  const rows = await loadShipments(db, carrierId);
+  const carrierRef = db.collection('carriers').doc(carrierId);
+  const ref = paymentRef(db, orderId);
+  const shipmentRefs = rows
+    .filter((item) => outstandingFee(item) > 0)
+    .map((item) => db.collection('carrierShipments').doc(item.id));
 
-  if (remote) {
-    const remoteStatus = normalizePaymentStatus(remote.status);
-    if (remoteStatus === 'completed' || remoteStatus === 'failed' || remoteStatus === 'expired') {
-      return applyCarrierCommissionStatus({
-        orderId,
-        status: remote.status,
-        providerStatus: remote.status,
-        reference: remote.merchantReference || remote.gateway_ref || payment.gatewayRef,
-        amount: remote.amount || payment.amount,
-      });
-    }
-  }
-
-  const expiresAt = Number(current.expiresAtMs || payment.expiresAtMs || 0);
-  if (expiresAt && expiresAt <= Date.now()) {
-    return applyCarrierCommissionStatus({
-      orderId,
-      status: 'expired',
-      providerStatus: 'EXPIRED',
-      reference: payment.gatewayRef || '',
-      amount: payment.amount,
-    });
-  }
-  return { status: 'pending', orderId };
-}
-
-async function claimLock(db, carrierId, amount, shipmentIds) {
-  const ref = db.collection('carriers').doc(carrierId);
   return db.runTransaction(async (transaction) => {
-    const snap = await transaction.get(ref);
-    if (!snap.exists) throw notFound('Kampuni haipo.');
-    const data = snap.data() || {};
-    const current = data.commissionPayment || {};
-    const status = normalizePaymentStatus(current.status);
-    const expiresAt = Number(current.expiresAtMs || 0);
-    const lockedUntil = Number(current.lockedUntilMs || 0);
-    const stillHeld =
-      (status === 'pending' && (!expiresAt || expiresAt > Date.now())) ||
-      (status === 'creating' && lockedUntil > Date.now());
-    if (stillHeld) {
-      return { duplicate: true, payment: current };
+    const paySnap = await transaction.get(ref);
+    if (!paySnap.exists) return { ignored: true, orderId };
+    const current = paySnap.data() || {};
+    if (String(current.status || '') === 'completed') {
+      return { idempotent: true, orderId, status: 'completed', settled: true };
+    }
+    const shipSnaps = [];
+    for (const shipmentRef of shipmentRefs) {
+      shipSnaps.push(await transaction.get(shipmentRef));
+    }
+    const carrierSnap = await transaction.get(carrierRef);
+    const liveRows = shipSnaps.filter((snap) => snap.exists).map((snap) => ({ id: snap.id, ...snap.data() }));
+    const plan = planAllocation(liveRows, confirmed);
+    const nowIso = new Date().toISOString();
+    for (const update of plan.updates) {
+      const shipmentRef = db.collection('carrierShipments').doc(update.id);
+      const patch = {
+        commissionPaidTzs: update.commissionPaidTzs,
+        cashStatus: update.cashStatus,
+        commissionPaymentId: orderId,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (update.cashStatus === 'reconciled') {
+        patch.commissionReconciledAt = FieldValue.serverTimestamp();
+      }
+      transaction.set(shipmentRef, patch, { merge: true });
     }
     transaction.set(
       ref,
       {
+        status: 'completed',
+        providerStatus: remote.status || 'SUCCESS',
+        trivapesaReference: remote.reference || current.trivapesaReference || '',
+        providerNetwork: remote.network || current.providerNetwork || '',
+        confirmedAmount: confirmed,
+        allocatedTzs: plan.allocated,
+        unallocatedTzs: plan.unallocated,
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    const openIds = openOrderIds(carrierSnap.data()).filter((id) => id !== orderId);
+    transaction.set(
+      carrierRef,
+      {
+        commissionOpenOrderIds: openIds,
+        commissionPayerPhone: current.payerPhone || '',
         commissionPayment: {
-          status: 'creating',
-          amount,
-          shipmentIds,
-          lockedUntilMs: Date.now() + 70_000,
-          updatedAt: new Date().toISOString(),
+          orderId,
+          status: 'completed',
+          amount: confirmed,
+          allocatedTzs: plan.allocated,
+          completedAt: nowIso,
+          updatedAt: nowIso,
         },
       },
       { merge: true }
     );
-    return { duplicate: false, carrier: { id: snap.id, ...data } };
+    return { orderId, status: 'completed', settled: true, allocatedTzs: plan.allocated };
   });
 }
 
-async function markPushPending(db, input) {
-  const expiresAtMs = Date.now() + USSD_HOLD_MS;
-  const nowIso = new Date().toISOString();
-  const writes = [
-    (batch) =>
-      batch.set(
-        paymentRef(db, input.orderId),
-        {
-          orderId: input.orderId,
-          carrierId: input.carrierId,
-          amount: input.amount,
-          currency: 'TZS',
-          status: 'pending',
-          network: input.network,
-          payerPhone: input.payerPhone,
-          shipmentIds: input.shipmentIds,
-          previousCashStatus: input.previousCashStatus,
-          mongikePaymentId: input.record.id || '',
-          gatewayRef: input.record.gatewayRef || '',
-          providerStatus: input.record.providerStatus || 'PENDING',
-          expiresAtMs,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      ),
-    (batch) =>
-      batch.set(
-        db.collection('carriers').doc(input.carrierId),
-        {
-          commissionPayerPhone: input.payerPhone,
-          commissionPayment: {
-            orderId: input.orderId,
-            status: 'pending',
-            amount: input.amount,
-            shipmentIds: input.shipmentIds,
-            payerPhone: input.payerPhone,
-            network: input.network,
-            expiresAtMs,
-            updatedAt: nowIso,
-          },
-        },
-        { merge: true }
-      ),
-  ];
-  for (const shipment of input.shipments) {
-    writes.push((batch) =>
-      batch.set(
-        db.collection('carrierShipments').doc(shipment.id),
-        {
-          cashStatus: 'pending_reconciliation',
-          commissionPaymentId: input.orderId,
-          commissionPreviousCashStatus: String(shipment.cashStatus || 'unpaid'),
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      )
-    );
+async function syncPayment(db, orderId) {
+  const id = String(orderId || '').trim();
+  if (!id) return null;
+  const snap = await paymentRef(db, id).get();
+  if (!snap.exists) return { ignored: true, orderId: id };
+  const payment = { id: snap.id, ...snap.data() };
+  if (String(payment.status || '') === 'completed') {
+    return { idempotent: true, orderId: id, status: 'completed', settled: true };
   }
-  await commitChunked(db, writes);
-  return expiresAtMs;
+  const locallyFailed = String(payment.status || '') === 'failed';
+  let remote = null;
+  try {
+    remote = await fetchCollection({
+      reference: payment.trivapesaReference,
+      externalId: payment.orderId || id,
+    });
+  } catch (error) {
+    console.warn('trivapesa status skipped', error?.providerCode || error?.statusCode || 'error');
+    if (locallyFailed) return { orderId: id, status: 'failed' };
+    return { orderId: id, status: 'pending', unknown: true };
+  }
+  if (!remote) {
+    const age = Date.now() - Number(payment.createdAtMs || 0);
+    const pushed = Boolean(payment.trivapesaReference);
+    const abandoned = !locallyFailed && age > (pushed ? 24 * 60 * 60 * 1000 : FRESH_PUSH_MS);
+    if (abandoned) {
+      await markIntentFailed(db, payment, 'FAILED');
+      return { orderId: id, status: 'failed' };
+    }
+    return locallyFailed
+      ? { orderId: id, status: 'failed' }
+      : { orderId: id, status: 'pending' };
+  }
+  const next = normalizePaymentStatus(remote.status);
+  if (next === 'completed') {
+    return allocateConfirmedPayment(db, payment, remote);
+  }
+  if (next === 'failed') {
+    if (!locallyFailed) await markIntentFailed(db, payment, remote.status);
+    return { orderId: id, status: 'failed' };
+  }
+  if (locallyFailed) return { orderId: id, status: 'failed' };
+  return { orderId: id, status: 'pending' };
 }
 
-async function markPushFailed(db, carrierId, orderId, reason) {
-  const nowIso = new Date().toISOString();
-  await paymentRef(db, orderId).set(
-    {
-      status: 'failed',
-      failureReason: reason,
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-  await db.collection('carriers').doc(carrierId).set(
-    {
-      commissionPayment: {
-        orderId,
-        status: 'failed',
-        failureReason: reason,
-        updatedAt: nowIso,
-      },
-    },
-    { merge: true }
-  );
+async function settleOpenPayments(db, carrier) {
+  const results = [];
+  for (const orderId of openOrderIds(carrier)) {
+    results.push(await syncPayment(db, orderId));
+  }
+  return results;
+}
+
+function freshPending(carrier) {
+  const current = carrier?.commissionPayment || {};
+  if (normalizePaymentStatus(current.status) !== 'pending') return null;
+  const orderId = String(current.orderId || '').trim();
+  if (!orderId) return null;
+  const createdAt = Number(current.createdAtMs || 0);
+  if (!createdAt || Date.now() - createdAt > FRESH_PUSH_MS) return null;
+  return current;
 }
 
 async function initiateCarrierCommissionPayment(req) {
@@ -553,164 +414,229 @@ async function initiateCarrierCommissionPayment(req) {
   if (!carrierId) throw forbidden('Akaunti haina kampuni.');
 
   let carrier = await readCarrier(db, carrierId);
-  const settled = await settleOpenPayment(db, carrier);
-  if (settled?.status === 'completed' || settled?.status === 'failed' || settled?.status === 'expired') {
-    carrier = await readCarrier(db, carrierId);
-  }
+  await settleOpenPayments(db, carrier);
+  carrier = await readCarrier(db, carrierId);
 
   const rows = await loadShipments(db, carrierId);
-  const open = unpaidShipments(rows);
-  const unpaidTzs = sumFees(open);
-  const base = summarize(rows, false);
-  if (unpaidTzs < COMMISSION_PAY_THRESHOLD_TZS) {
-    return { ...base, settled: settled?.settled === true || settled?.status === 'completed' };
-  }
+  const base = summarize(rows);
+  if (base.unpaidTzs <= 0) throw badRequest('Hakuna deni.');
+
+  const amount = Math.round(Number(body.amount));
+  if (!Number.isFinite(amount) || amount < 1) throw badRequest('Weka kiasi.');
+  if (amount > base.unpaidTzs) throw badRequest('Kiasi kisizidi deni.');
+  if (amount < MIN_COLLECTION_TZS) throw badRequest('Kiasi cha chini ni TSh 100.');
 
   const phone = normalizePhoneNumber(
     body.phoneNumber || body.buyerPhone || carrier.commissionPayerPhone || carrier.phone || decoded.phone_number
   );
-  if (!isValidMongikePhone(phone)) throw badRequest('Weka namba sahihi ya simu.');
+  if (!isValidTzMobile(phone)) throw badRequest('Weka namba sahihi ya simu.');
 
-  const selectedNetwork = String(body.network || 'mpesa').trim().toLowerCase();
-  const networks = enabledNetworks();
-  const network = networks.some((item) => item.key === selectedNetwork) ? selectedNetwork : 'mpesa';
-  const networkConfig = networks.find((item) => item.key === network);
-  if (!networkConfig?.enabled) throw badRequest('Mtandao huu haupo.');
+  const selectedNetwork = String(body.network || '').trim().toLowerCase();
+  if (!requestNetwork(selectedNetwork)) throw badRequest('Mtandao huu haupo.');
 
-  const claim = await claimLock(
-    db,
-    carrierId,
-    unpaidTzs,
-    open.map((item) => item.id)
-  );
-  if (claim.duplicate) {
+  const fresh = freshPending(carrier);
+  if (fresh) {
     return {
-      ...summarize(rows, true),
+      ...base,
       status: 'pending',
       duplicate: true,
-      orderId: String(claim.payment.orderId || ''),
-      amount: Number(claim.payment.amount || unpaidTzs),
-      canPay: false,
+      orderId: String(fresh.orderId || ''),
+      amount: Number(fresh.amount || amount),
+      message: WAIT_MESSAGE,
     };
   }
 
   const orderId = generateOrderId(carrierId);
-  const previousCashStatus = {};
-  for (const shipment of open) previousCashStatus[shipment.id] = String(shipment.cashStatus || 'unpaid');
   const companyName = String(carrier.tradingName || carrier.companyName || carrier.name || 'HAUL carrier').trim();
-  const email = String(carrier.email || decoded.email || '').trim().toLowerCase();
-
+  const createdAtMs = Date.now();
   await paymentRef(db, orderId).set({
     orderId,
     carrierId,
-    amount: unpaidTzs,
+    amount,
     currency: 'TZS',
     status: 'creating',
-    network,
+    provider: 'trivapesa',
+    network: selectedNetwork,
     payerPhone: phone,
     buyerName: companyName,
-    shipmentIds: open.map((item) => item.id),
-    previousCashStatus,
-    product: 'HAUL carrier commission',
+    callbackUrl: commissionWebhookUrl(),
+    createdAtMs,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  const mongikeRequest = {
-    order_id: orderId,
-    amount: unpaidTzs,
-    buyer_phone: phone,
-    buyer_name: companyName,
-    ...(email ? { buyer_email: email } : {}),
-    fee_payer: 'MERCHANT',
-    metadata: {
-      product: 'HAUL carrier commission',
-      carrierId,
-      app: 'haulcargo-agents',
-      shipmentCount: open.length,
-    },
-  };
-
   try {
-    const mongikeResponse = await callMongikeInitiatePayment(mongikeRequest);
-    const record = extractMongikePaymentRecord(mongikeResponse);
-    if (record.status === 'failed' || record.status === 'expired') {
-      const reason = shortPayError({ message: record.message || 'USSD haijatumwa. Jaribu tena.' });
-      await markPushFailed(db, carrierId, orderId, reason);
-      throw badRequest(reason);
+    const created = await createCollection({
+      amount,
+      phone,
+      customerName: companyName,
+      externalId: orderId,
+      network: selectedNetwork,
+    });
+    const providerStatus = normalizePaymentStatus(created.status);
+    if (providerStatus === 'failed') {
+      await markIntentFailed(db, { orderId, carrierId, amount }, created.status);
+      throw badRequest('USSD haijatumwa. Jaribu tena.');
     }
-    try {
-      await markPushPending(db, {
+    const openIds = [...openOrderIds(carrier), orderId].slice(-8);
+    const nowIso = new Date().toISOString();
+    await paymentRef(db, orderId).set(
+      {
+        status: 'pending',
+        trivapesaReference: created.reference,
+        providerStatus: created.status || 'PENDING',
+        providerNetwork: created.network || REQUEST_NETWORKS[selectedNetwork] || '',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection('carriers').doc(carrierId).set(
+      {
+        commissionPayerPhone: phone,
+        commissionOpenOrderIds: openIds,
+        commissionPayment: {
+          orderId,
+          status: 'pending',
+          amount,
+          network: selectedNetwork,
+          payerPhone: phone,
+          createdAtMs,
+          updatedAt: nowIso,
+        },
+      },
+      { merge: true }
+    );
+    if (providerStatus === 'completed') {
+      const settled = await syncPayment(db, orderId);
+      const after = await loadShipments(db, carrierId);
+      return {
+        ...summarize(after),
+        status: settled?.status || 'completed',
+        settled: settled?.settled === true,
         orderId,
-        carrierId,
-        amount: unpaidTzs,
-        network,
-        payerPhone: phone,
-        shipmentIds: open.map((item) => item.id),
-        previousCashStatus,
-        shipments: open,
-        record,
-      });
-    } catch (error) {
-      console.warn('carrier commission hold write failed', error?.message || 'error');
+        amount,
+        message: settled?.settled ? '' : WAIT_MESSAGE,
+      };
     }
     return {
-      ...summarize(rows, true),
+      ...base,
       status: 'pending',
       duplicate: false,
       orderId,
-      amount: unpaidTzs,
-      canPay: false,
+      amount,
+      message: WAIT_MESSAGE,
     };
   } catch (error) {
-    const reason = shortPayError(error);
     const snap = await paymentRef(db, orderId).get().catch(() => null);
-    if (normalizePaymentStatus(snap?.data()?.status) === 'creating') {
-      await markPushFailed(db, carrierId, orderId, reason).catch(() => undefined);
+    const status = String(snap?.data()?.status || '');
+    if (status === 'creating') {
+      let remote = null;
+      try {
+        remote = await fetchCollection({ externalId: orderId });
+      } catch {
+        remote = null;
+      }
+      if (remote && normalizePaymentStatus(remote.status) !== 'failed') {
+        await paymentRef(db, orderId).set(
+          {
+            status: 'pending',
+            trivapesaReference: remote.reference || '',
+            providerStatus: remote.status || 'PENDING',
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        return {
+          ...base,
+          status: 'pending',
+          orderId,
+          amount,
+          message: WAIT_MESSAGE,
+        };
+      }
+      await markIntentFailed(db, { orderId, carrierId, amount }, 'FAILED').catch(() => undefined);
     }
-    if (error?.statusCode === 400 && reason === String(error.message || '')) throw error;
-    throw badRequest(reason);
+    if (error?.statusCode === 400 && publicPayError(error) === String(error.message || '')) throw error;
+    throw badRequest(publicPayError(error));
   }
 }
 
 async function verifyCarrierCommissionPayment(req) {
   const decoded = await requireAuthenticatedUser(req);
+  const body = await readJsonBodyLimited(req, 8 * 1024).catch(() => ({}));
   const db = dbHandle();
   const carrierId = await resolveCarrierId(db, decoded.uid);
   if (!carrierId) throw forbidden('Akaunti haina kampuni.');
-  const carrier = await readCarrier(db, carrierId);
-  const settled = await settleOpenPayment(db, carrier);
+  let carrier = await readCarrier(db, carrierId);
+  const requested = String(body?.orderId || '').trim();
+  if (requested && !openOrderIds(carrier).includes(requested)) {
+    const snap = await paymentRef(db, requested).get();
+    if (snap.exists && String(snap.data()?.carrierId || '') === carrierId) {
+      await syncPayment(db, requested);
+    }
+  }
+  const results = await settleOpenPayments(db, carrier);
+  carrier = await readCarrier(db, carrierId);
   const rows = await loadShipments(db, carrierId);
-  const pending = settled?.status === 'pending';
+  const summary = summarize(rows);
+  const latest = results.filter(Boolean).reverse().find((item) => item.orderId) || {};
+  const pending = normalizePaymentStatus(carrier.commissionPayment?.status) === 'pending';
+  const watched = results.find((item) => requested && item?.orderId === requested);
+  const watchedFailed = watched?.status === 'failed';
   return {
-    ...summarize(rows, pending),
-    settled: settled?.status === 'completed' || settled?.settled === true,
-    orderId: settled?.orderId || carrier.commissionPayment?.orderId || '',
+    ...summary,
+    status: pending ? 'pending' : watchedFailed ? 'failed' : watched?.status === 'completed' ? 'completed' : summary.unpaidTzs > 0 ? 'due' : 'clear',
+    settled: results.some((item) => item?.settled === true || item?.status === 'completed'),
+    orderId: pending ? String(carrier.commissionPayment?.orderId || '') : requested || latest.orderId || '',
+    message: pending ? WAIT_MESSAGE : watchedFailed ? 'Malipo hayajakamilika.' : '',
   };
 }
 
-async function handleCarrierCommissionWebhook(req, body) {
-  const apiKey = getMongikeApiKey();
-  const webhookApiKey = String(req.headers['x-api-key'] || req.headers['X-Api-Key'] || '').trim();
-  if (!apiKey || webhookApiKey !== apiKey) {
+async function handleCarrierCommissionWebhook(req) {
+  const raw = rawBodyString(req);
+  const header = signatureHeader(req);
+  if (!verifyWebhookSignature(webhookSecret(), raw, header)) {
     const error = new Error('Invalid payment webhook signature.');
     error.statusCode = 401;
     throw error;
   }
-  const payload = body && typeof body === 'object' ? body : {};
-  return applyCarrierCommissionStatus({
-    orderId: payload.order_id || payload.orderId || payload.reference,
-    status: payload.payment_status || payload.status,
-    providerStatus: payload.payment_status || payload.status,
-    reference: payload.reference || payload.gateway_ref || payload.gatewayRef || payload.merchantReference,
-    amount: payload.amount,
-  });
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    const error = new Error('Invalid payment webhook signature.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const name = eventName(req, payload).toLowerCase();
+  if (name && !name.startsWith('collection.')) {
+    return { ignored: true, event: name };
+  }
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  const orderId = String(data?.external_id || payload?.external_id || '').trim();
+  if (!orderId) return { ignored: true };
+  const db = dbHandle();
+  const snap = await paymentRef(db, orderId).get();
+  if (!snap.exists) return { ignored: true, orderId };
+  const result = await syncPayment(db, orderId);
+  if (result?.unknown || (name === 'collection.success' && result?.status === 'pending')) {
+    const error = new Error('Payment status could not be verified.');
+    error.statusCode = 502;
+    throw error;
+  }
+  return result || { ok: true, orderId };
 }
 
 module.exports = {
-  COMMISSION_PAY_THRESHOLD_TZS,
-  applyCarrierCommissionStatus,
+  WAIT_MESSAGE,
+  allocateConfirmedPayment,
   handleCarrierCommissionWebhook,
   initiateCarrierCommissionPayment,
+  normalizePaymentStatus,
+  outstandingFee,
+  paidTowardFee,
+  planAllocation,
+  publicPayError,
   verifyCarrierCommissionPayment,
+  verifyWebhookSignature,
 };

@@ -5398,6 +5398,18 @@ function isReconciledHaulFee(item) {
   return String(item?.cashStatus || '').toLowerCase() === 'reconciled';
 }
 
+function carrierFeePaid(item) {
+  const fee = carrierHaulFeeAmount(item);
+  if (fee <= 0) return 0;
+  if (isReconciledHaulFee(item)) return fee;
+  const paid = Math.max(0, Math.round(Number(item?.commissionPaidTzs) || 0));
+  return Math.min(fee, paid);
+}
+
+function carrierFeeOwed(item) {
+  return Math.max(0, carrierHaulFeeAmount(item) - carrierFeePaid(item));
+}
+
 function completionStreakCount(completionTimes, breakTimes, undatedBreak) {
   if (undatedBreak) return 0;
   const latestBreak = (breakTimes || []).reduce((max, ms) => Math.max(max, Math.floor(Number(ms) || 0)), 0);
@@ -5477,8 +5489,8 @@ function carrierCashBook() {
     if (!row.nameFromShipment) row.nameFromShipment = safeText(item.carrierCompanyName, '');
     const fee = carrierHaulFeeAmount(item);
     if (fee <= 0) continue;
-    if (isReconciledHaulFee(item)) row.paid += fee;
-    else row.owed += fee;
+    row.paid += carrierFeePaid(item);
+    row.owed += carrierFeeOwed(item);
   }
 
   const decisionsByCarrier = new Map();

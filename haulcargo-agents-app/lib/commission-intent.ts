@@ -10,7 +10,7 @@ export type CommissionPayIntent = {
   at: string;
 };
 
-/** Local note only. Does not tell a provider and does not mark commission paid. */
+/** Remembers the last phone and network on this device. Does not mark commission paid. */
 export async function loadCommissionPayIntent(carrierId: string): Promise<CommissionPayIntent | null> {
   try {
     const raw = await AsyncStorage.getItem(KEY);

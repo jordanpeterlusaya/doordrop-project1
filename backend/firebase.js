@@ -8,6 +8,8 @@ const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 const { config } = require('./config');
 
 const mongikeApiKey = defineString('MONGIKE_API_KEY');
+const trivapesaApiKey = defineString('TRIVAPESA_API_KEY', { default: '' });
+const trivapesaWebhookSecret = defineString('TRIVAPESA_WEBHOOK_SECRET', { default: '' });
 const googleServerApiKey = defineString('GOOGLE_SERVER_API_KEY');
 const smsProvider = defineString('SMS_PROVIDER', { default: '' });
 const mamboSmsApiToken = defineString('MAMBO_SMS_API_TOKEN', { default: '' });
@@ -147,6 +149,8 @@ function applyParam(envName, param) {
 
 function applyRuntimeSecrets() {
   applyParam('MONGIKE_API_KEY', mongikeApiKey);
+  applyParam('TRIVAPESA_API_KEY', trivapesaApiKey);
+  applyParam('TRIVAPESA_WEBHOOK_SECRET', trivapesaWebhookSecret);
   applyParam('GOOGLE_SERVER_API_KEY', googleServerApiKey);
   applyParam('SMS_PROVIDER', smsProvider);
   applyParam('MAMBO_SMS_API_TOKEN', mamboSmsApiToken);
