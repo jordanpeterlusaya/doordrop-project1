@@ -77,10 +77,19 @@ module.exports = {
       'expo-splash-screen',
       'expo-status-bar',
       [
+        'expo-audio',
+        {
+          recordAudioAndroid: false,
+          microphonePermission: false,
+          enableBackgroundPlayback: true,
+        },
+      ],
+      [
         'expo-notifications',
         {
           color: '#FFE500',
           defaultChannel: 'carrier_offers',
+          sounds: ['./assets/sounds/incoming_order_alarm.wav'],
         },
       ],
       [

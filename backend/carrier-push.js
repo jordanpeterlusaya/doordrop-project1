@@ -70,7 +70,7 @@ async function sendFcmMessages(tokens, { title, body, data }) {
           priority: 'high',
           notification: {
             channelId: 'carrier_offers',
-            sound: 'default',
+            sound: 'incoming_order_alarm.wav',
             defaultVibrateTimings: true,
             notificationCount: 1,
           },
@@ -90,7 +90,7 @@ async function sendFcmMessages(tokens, { title, body, data }) {
 async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, destination, score }) {
   if (!carrierId || !orderId) return { skipped: true, reason: 'missing-ids' };
 
-  const title = 'Oda mpya ya HAUL';
+  const title = 'Oda mpya ya mzigo — Kubali sasa';
   const body = `${orderNumber || orderId}${destination ? ` · ${destination}` : ''}${
     score ? ` · ${score}%` : ''
   }`;
@@ -117,7 +117,7 @@ async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, dest
   };
   const messages = tokens.expo.map((to) => ({
     to,
-    sound: 'default',
+    sound: 'incoming_order_alarm.wav',
     title,
     body,
     priority: 'high',

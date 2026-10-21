@@ -13,6 +13,7 @@ import { DESK_RAIL, type CarrierShipment } from '@/lib/carrier-types';
 import { markShipmentArrived } from '@/lib/carrier-arrive-api';
 import { darTodayKey, deskIndex, isCompletedShipment, offerExpiresMs } from '@/lib/carrier-helpers';
 import { db } from '@/lib/firebase';
+import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
 
 function stamp() {
   return new Date().toISOString();
@@ -27,6 +28,7 @@ function assertOfferedTo(current: Record<string, unknown>, carrierId: string) {
 }
 
 export async function acceptOffer(shipmentId: string, carrierId: string, actorEmail: string) {
+  stopIncomingOrderAlarm('offer-accepted');
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('Mzigo haupatikani.');
@@ -45,6 +47,7 @@ export async function acceptOffer(shipmentId: string, carrierId: string, actorEm
 }
 
 export async function rejectOffer(shipmentId: string, carrierId: string, actorEmail: string) {
+  stopIncomingOrderAlarm('offer-rejected');
   const ref = doc(db, 'carrierShipments', shipmentId);
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('Mzigo haupatikani.');

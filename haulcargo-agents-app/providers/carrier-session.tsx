@@ -34,14 +34,21 @@ import {
 import { loginAuthErrorMessage } from '@/lib/auth-errors';
 import { createCarrierFromRegistration, type RegisterCompanyInput } from '@/lib/carrier-registration';
 import type { Carrier, CarrierDecision, CarrierRoute, CarrierShipment, CarrierTrip } from '@/lib/carrier-types';
-import { isIncomingOffer, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
+import { fireTimeMs, isIncomingOffer, money, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
+import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
 import { alertForNewOffer, registerCarrierPushToken } from '@/lib/push-notifications';
 
 export type OfferBanner = {
   shipmentId: string;
   code: string;
+  origin: string;
   destination: string;
+  routeLabel: string;
+  weightKg: number;
+  parcelDescription: string;
+  payoutLabel: string;
+  shipment: CarrierShipment;
 };
 
 type SignInOptions = { rememberMe?: boolean };
@@ -161,6 +168,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   }, [resolveCarrier, user]);
 
   const dismissOfferBanner = useCallback(() => {
+    stopIncomingOrderAlarm('banner-dismissed');
     bannerId.current = null;
     setOfferBanner(null);
   }, []);
@@ -245,38 +253,71 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     }
     const id = carrier.id;
     const buckets: { offered: CarrierShipment[]; owned: CarrierShipment[] } = { offered: [], owned: [] };
+    const offerVersionKey = (item: CarrierShipment) =>
+      `${item.id}:${fireTimeMs(item.offeredAt) || fireTimeMs(item.offerExpiresAt) || 0}`;
+    const buildOfferBanner = (item: CarrierShipment): OfferBanner => {
+      const code = shipmentCode(item);
+      const origin = String(item.pickupLabel || item.origin || '').trim();
+      const destination = String(item.destination || item.routeLabel || '').trim();
+      const routeLabel = origin && destination ? `${origin} → ${destination}` : destination || origin || code;
+      const weightKg = Number(item.weightKg) || 0;
+      const parcelDescription = String(item.parcelDescription || '').trim();
+      const net = Number(item.carrierNet) || Number(item.cashExpected) || 0;
+      const payoutLabel = net > 0 ? money(net) : String(item.fareLabel || '').trim();
+      return {
+        shipmentId: item.id,
+        code,
+        origin,
+        destination,
+        routeLabel,
+        weightKg,
+        parcelDescription,
+        payoutLabel,
+        shipment: item,
+      };
+    };
     const publish = () => {
       const map = new Map<string, CarrierShipment>();
-      [...buckets.offered, ...buckets.owned].forEach((item) => map.set(item.id, item));
+      [...buckets.owned, ...buckets.offered].forEach((item) => map.set(item.id, item));
       const next = [...map.values()];
       const openOffers = next.filter((item) => isIncomingOffer(item, id) && offerStillValid(item));
       const nextIds = new Set(openOffers.map((item) => item.id));
-      if (!offersReady.current) {
-        knownOfferIds.current = nextIds;
-        offersReady.current = true;
-      } else {
-        const fresh = openOffers.filter((item) => !knownOfferIds.current.has(item.id));
+      const nextVersionKeys = new Set(openOffers.map(offerVersionKey));
+
+      if (bucketsReady.current.offered) {
+        const fresh = openOffers.filter((item) => !knownOfferIds.current.has(offerVersionKey(item)));
         if (fresh.length) {
           const newest = fresh[fresh.length - 1];
           bannerId.current = newest.id;
-          const code = shipmentCode(newest);
-          const destination = newest.destination || newest.routeLabel || '';
-          setOfferBanner({
-            shipmentId: newest.id,
-            code,
-            destination,
-          });
+          const banner = buildOfferBanner(newest);
+          setOfferBanner(banner);
+          const bodyParts = [
+            banner.code,
+            banner.routeLabel,
+            banner.weightKg ? `${banner.weightKg} kg` : '',
+            banner.payoutLabel,
+          ].filter(Boolean);
           void alertForNewOffer({
-            title: 'Oda mpya',
-            body: destination ? `${code} · ${destination}` : code,
+            title: 'Oda mpya ya mzigo — Kubali sasa',
+            body: bodyParts.join(' · '),
             orderId: newest.id,
           });
+        } else if (bannerId.current && nextIds.has(bannerId.current)) {
+          const currentBannerItem = openOffers.find((item) => item.id === bannerId.current);
+          if (currentBannerItem) {
+            setOfferBanner(buildOfferBanner(currentBannerItem));
+          }
         }
-        knownOfferIds.current = nextIds;
+        knownOfferIds.current = nextVersionKeys;
+        offersReady.current = true;
       }
+
       if (bannerId.current && !nextIds.has(bannerId.current)) {
         bannerId.current = null;
         setOfferBanner(null);
+      }
+      if (openOffers.length === 0) {
+        stopIncomingOrderAlarm('no-open-offers');
       }
       setShipments(next);
       if (bucketsReady.current.offered && bucketsReady.current.owned) setShipmentsReady(true);

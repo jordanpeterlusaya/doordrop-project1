@@ -15,6 +15,7 @@ import {
   inboxShipments,
   isIncomingOffer,
 } from '@/lib/carrier-helpers';
+import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
 import { useCarrierSession } from '@/providers/carrier-session';
 
 type FilterKey = 'all' | 'offers' | 'active' | 'today';
@@ -72,14 +73,26 @@ export default function HomeScreen() {
           style={styles.banner}
           onPress={() => {
             const shipmentId = offerBanner.shipmentId;
+            stopIncomingOrderAlarm('home-banner-tap');
             dismissOfferBanner();
             router.push(`/order/${shipmentId}`);
           }}>
-          <Text style={styles.bannerKicker}>ODA MPYA</Text>
+          <Text style={styles.bannerKicker}>ODA MPYA YA MZIGO — KUBALI SASA</Text>
           <Text style={styles.bannerBody} numberOfLines={2}>
             {offerBanner.code}
-            {offerBanner.destination ? ` · ${offerBanner.destination}` : ''}
+            {offerBanner.routeLabel ? ` · ${offerBanner.routeLabel}` : ''}
           </Text>
+          {offerBanner.weightKg || offerBanner.payoutLabel ? (
+            <Text style={styles.bannerMeta} numberOfLines={1}>
+              {[
+                offerBanner.weightKg ? `${offerBanner.weightKg} kg` : '',
+                offerBanner.parcelDescription,
+                offerBanner.payoutLabel,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          ) : null}
         </Pressable>
       ) : null}
 
@@ -158,7 +171,7 @@ const styles = StyleSheet.create({
     fontFamily: typography.bold,
     fontSize: 11,
     letterSpacing: 0.4,
-    color: theme.white,
+    color: theme.brandYellow,
     marginBottom: 2,
   },
   bannerBody: {
@@ -166,6 +179,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     color: theme.white,
+  },
+  bannerMeta: {
+    marginTop: 2,
+    fontFamily: typography.body,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#CBD5E1',
   },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
   list: { gap: 0 },
