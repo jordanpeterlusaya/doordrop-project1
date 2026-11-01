@@ -1,4 +1,43 @@
 import ErrorBoundary from './components/ErrorBoundary';
+import { DailyCommissionLock } from './components/daily-commission-lock';
+import { PilotIntro } from './components/pilot-intro';
+import {
+  DriveAccountHero,
+  DriveAuthPanel,
+  DriveBrandMark,
+  DriveBottomSheet,
+  DriveGhostButton,
+  DriveHomeMapGradients,
+  DriveIconWell,
+  DriveMenuRow,
+  DriveNearbyPin,
+  DriveNotificationRow,
+  DriveOrderCard,
+  DrivePrimaryButton,
+  DriveProEmptyState,
+  DriveRouteStops,
+  DriveScreenHeader,
+  DriveSectionTitle,
+  DriveStatRow,
+  DriveStatusPill,
+  DriveSurfaceCard,
+  DriveTripQuickActions,
+  DriveSegmentedControl,
+} from './components/drive-ui';
+import { BoltBottomNavItem, BoltRewardsScreen, BoltRideRow } from './components/pilot-bolt-ui';
+import {
+  HOME_SHEET_PEEK,
+  PilotEarningsPill,
+  PilotGoOnlineButton,
+  PilotMapChromeButton,
+  PilotSwipeDashboard,
+} from './components/pilot-home-sheet';
+import { PilotHelpScreen, openSupportCall, openSupportWhatsApp } from './components/pilot-help-screen';
+import { PilotMenuDrawer } from './components/pilot-menu-drawer';
+import { PilotOrderCancelledModal } from './components/pilot-order-cancelled-modal';
+import { DRIVE_DARK_MAP_STYLE } from './constants/drive-map-style';
+import { pilotStanding } from './constants/pilot-standing';
+import { DriveAccessLockScreen } from './components/drive-access-lock-screen';
 import { tryRequire } from './lib/safety';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
@@ -7,13 +46,13 @@ import {
   Manrope_700Bold,
 } from '@expo-google-fonts/manrope';
 import { useFonts } from 'expo-font';
-import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import { FirebaseError } from 'firebase/app';
 import {
     createUserWithEmailAndPassword,
     onAuthStateChanged,
+    sendPasswordResetEmail,
     signInWithEmailAndPassword,
     signOut,
     updateProfile,
@@ -25,36 +64,41 @@ import {
     serverTimestamp,
     updateDoc,
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
     Animated,
-    AppState,
-    type AppStateStatus,
+    Dimensions,
     Image,
     KeyboardAvoidingView,
     Linking,
+    Modal,
     Platform,
     Pressable,
     SafeAreaView,
     ScrollView,
+    StatusBar as AndroidStatusBar,
     StyleSheet,
     Switch,
     Text,
     TextInput,
-    Vibration,
+    useWindowDimensions,
     View,
 } from 'react-native';
 
-import { getFirebaseAuthErrorMessage, getFirebaseDataErrorMessage } from './lib/auth-errors';
+import { canonicalCargoVehicleKey, cargoOffersMatch, isCargoOfferIncoming } from './lib/cargo-order-agreement';
+import { connectCargoOfferSocket } from './lib/cargo-offer-socket';
+import { getFirebaseAuthErrorMessage, getFirebaseDataErrorMessage, getFirebasePasswordResetErrorMessage } from './lib/auth-errors';
 import { recordDriverActivity } from './lib/driver-analytics';
 import {
     formatDeliveryDateTime,
     getDeliveryOrderStatusLabel,
     acceptDriverOrder,
     declineDriverOrder,
+    submitDriverFare,
+    DEFAULT_FARE_NOTE,
+    DRIVER_NEGOTIATION_CHANCES,
     recordDriverAppOpen,
     registerDriver,
     rateDeliveryCustomer,
@@ -62,6 +106,7 @@ import {
     subscribeToDeliveryOrder,
     subscribeToDriver,
     subscribeToDriverOrders,
+    subscribeToOpenCargoOffers,
     updateDriverLocation,
     updateDriverOrderStatus,
     type DeliveryOrder,
@@ -70,39 +115,64 @@ import {
     type DriverVehicleType,
 } from './lib/driver-data';
 import {
+    fetchDriverCommissionStatus,
+    fetchDriverPaymentHistory,
     fetchDriverPaymentStatus,
-    initiateDriverAccessPayment,
-    verifyDriverAccessPayment,
+    initiateDriverCommissionUssd,
+    PaymentApiError,
+    subscribeToDriverPayments,
+    verifyDriverCommissionUssd,
     type DriverPaymentNetwork,
     type DriverPaymentNetworkKey,
     type DriverPaymentRecord,
     type DriverPaymentStatusResponse,
 } from './lib/driver-payments';
-import { auth, db, storage } from './lib/firebase';
-import { getDriverCopy } from './lib/driver-copy';
-import { loadDriverSettings, saveDriverSettings, type DriverLang } from './lib/driver-settings';
+import { summarizeDriverCommission } from './lib/driver-commission';
+import { auth, db } from './lib/firebase';
+import { getDriverCopy, type DriverCopy } from './lib/driver-copy';
+import { loadDriverSettings, saveDriverSettings, type DriverLang, type DriverSettings } from './lib/driver-settings';
+import { hasSeenPilotIntro, markPilotIntroSeen } from './lib/pilot-intro-storage';
 import { sendOrderMessage, subscribeToOrderMessages, type OrderMessage } from './lib/order-messages';
+import { fetchNearbyOnlineCustomers, subscribeToNearbyOnlineCustomers, type NearbyCustomer } from './lib/customer-presence';
+import { buildDemandZones, estimateOrderProbabilityAtPoint, getTopDemandZone } from './lib/demand-zones';
+import { fetchCustomerPhoneForOrder, resolveOrderContactPhone } from './lib/order-contact';
+import { openPhoneDialer, readablePhone } from './lib/phone-link';
+import { sendDirectCustomerMessage } from './lib/direct-messages';
+import { startIncomingOrderAlert, stopIncomingOrderAlert, setIncomingAlertOnline } from './lib/order-alert';
+import {
+  listenForForegroundOrderPushes,
+  listenForOrderNotificationTaps,
+  registerDriverPushToken,
+} from './lib/driver-push-notifications';
 import { normalizePhoneNumber } from './lib/phone-auth';
+import {
+  buildAccessPlanState,
+  formatAccessFeeLabel,
+  getAccessBillingPeriodKey,
+  getAccessPeriodStartMillis,
+  getDriverAccessPlan,
+  isDriverSubscriptionActive,
+} from './lib/driver-access';
+import { fetchRoadFollowingCoordinates, type MapPoint as RoadMapPoint } from './lib/road-route';
+import { driveHapticSuccess } from './lib/drive-haptics';
+import {
+  buildMapRegion,
+  DAR_ES_SALAAM_FALLBACK,
+  ensureLocationServicesEnabled,
+  getLocationWatchOptions,
+  readDeviceLocation,
+  requestDriveLocationPermissions,
+  resolveDriverMapPoint,
+  toMapPoint,
+} from './lib/drive-location';
+import { driveTheme, driveType } from './constants/drive-theme';
 
-type AuthMode = 'signin' | 'register';
-type DriverTab = 'home' | 'trip' | 'history' | 'notifications' | 'account';
+type AuthMode = 'signin' | 'register' | 'forgot';
+type DriverTab = 'home' | 'trip' | 'earn' | 'history' | 'notifications' | 'account';
 type AccountView = 'overview' | 'payments';
 type PaymentCheckoutStep = 'debt' | 'proof' | 'submitted';
 type FeedbackTone = 'error' | 'info' | 'success';
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-type SetupStep = 'profile' | 'vehicle' | 'documents';
-type DocumentKey = 'vehiclePhoto' | 'driverPhoto';
-type DriverDocumentUpload = {
-  uri?: string;
-  fileName?: string | null;
-  mimeType?: string | null;
-  downloadURL?: string;
-  storagePath?: string;
-  uploadedAt?: string;
-  uploadStatus?: 'uploaded' | 'pending_upload' | 'not_submitted';
-  uploadNote?: string;
-};
-type DriverDocumentUploads = Record<DocumentKey, DriverDocumentUpload | null>;
 type DriverNotification = {
   id: string;
   title: string;
@@ -110,6 +180,8 @@ type DriverNotification = {
   icon: IconName;
   tone: 'success' | 'info' | 'warning';
   time: string;
+  action?: 'trip' | 'chat' | 'payments' | 'account' | 'location';
+  unread?: boolean;
 };
 type TripAction = {
   label: string;
@@ -139,35 +211,23 @@ type ProfileSetupState = {
 };
 
 const ACTIVE_ORDER_STATUSES: DeliveryOrderStatus[] = ['driver_assigned', 'driver_at_pickup', 'in_transit'];
-const vehicleTypeOptions: { key: DriverVehicleType; label: string; icon: IconName }[] = [
-  { key: 'bodaboda', label: 'Bike', icon: 'motorbike' },
-  { key: 'toyo', label: 'TOYO', icon: 'car-pickup' },
-  { key: 'kirikuu', label: 'Kirikuu', icon: 'truck-fast-outline' },
+const vehicleTypeOptions: { key: 'toyo_electric' | 'toyo' | 'kirikuu' | 'canter'; label: string }[] = [
+  { key: 'toyo_electric', label: 'Toyo Electric' },
+  { key: 'toyo', label: 'TOYO' },
+  { key: 'kirikuu', label: 'Kirikuu' },
+  { key: 'canter', label: 'Canter' },
 ];
+const pilotVehicleArt = {
+  toyo_electric: require('./assets/images/cargo-avatar-toyo.png'),
+  toyo: require('./assets/images/cargo-avatar-toyo.png'),
+  kirikuu: require('./assets/images/cargo-avatar-kirikuu.png'),
+  canter: require('./assets/images/cargo-avatar-canter.png'),
+};
 const tabs: { key: DriverTab; icon: IconName }[] = [
   { key: 'home', icon: 'home-outline' },
-  { key: 'trip', icon: 'navigation-variant-outline' },
+  { key: 'earn', icon: 'cash-multiple' },
   { key: 'history', icon: 'clock-outline' },
-  { key: 'notifications', icon: 'bell-outline' },
-  { key: 'account', icon: 'account-outline' },
-];
-const setupSteps: { key: SetupStep; label: string; icon: IconName }[] = [
-  { key: 'profile', label: 'Profile', icon: 'account' },
-  { key: 'vehicle', label: 'Vehicle', icon: 'truck-fast-outline' },
-];
-const documentRequirements: { key: DocumentKey; label: string; helper: string; icon: IconName }[] = [
-  {
-    key: 'vehiclePhoto',
-    label: 'Picha ya gari',
-    helper: 'Upload a clear exterior photo showing the vehicle condition.',
-    icon: 'car-estate',
-  },
-  {
-    key: 'driverPhoto',
-    label: 'Picha ya dereva',
-    helper: 'Upload a clear driver profile photo for admin verification.',
-    icon: 'account-box-outline',
-  },
+  { key: 'account', icon: 'help-circle-outline' },
 ];
 const vehicleColorOptions: { label: string; swatch: string }[] = [
   { label: 'White', swatch: '#FFFFFF' },
@@ -177,84 +237,83 @@ const vehicleColorOptions: { label: string; swatch: string }[] = [
   { label: 'Blue', swatch: '#2563EB' },
   { label: 'Red', swatch: '#DC2626' },
 ];
-const defaultMongikePaymentNetworks: DriverPaymentNetwork[] = [
+const paymentNetworkLogos = {
+  mpesa: require('./assets/payments/mpesa.png'),
+  mixx: require('./assets/payments/mixx.png'),
+  airtel: require('./assets/payments/airtel.png'),
+} as const;
+
+function detectPaymentNetworkFromPhone(phone?: string | null): DriverPaymentNetworkKey | null {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const local = digits.startsWith('255') ? digits.slice(3) : digits.startsWith('0') ? digits.slice(1) : digits;
+  const prefix = local.slice(0, 2);
+  if (['74', '75', '76'].includes(prefix)) {
+    return 'mpesa';
+  }
+  if (['65', '67', '71'].includes(prefix)) {
+    return 'mixx';
+  }
+  if (['68', '69', '78'].includes(prefix)) {
+    return 'airtel';
+  }
+  return null;
+}
+
+function paymentNetworkLabel(key?: string | null) {
+  const network = String(key || '').toLowerCase();
+  if (network === 'mixx') {
+    return 'Mixx by Yas';
+  }
+  if (network === 'airtel' || network === 'airtelmoney') {
+    return 'Airtel Money';
+  }
+  return 'M-Pesa';
+}
+
+function paymentNetworkLogo(key?: string | null) {
+  const network = String(key || '').toLowerCase();
+  if (network === 'mixx') {
+    return paymentNetworkLogos.mixx;
+  }
+  if (network === 'airtel' || network === 'airtelmoney') {
+    return paymentNetworkLogos.airtel;
+  }
+  return paymentNetworkLogos.mpesa;
+}
+
+const defaultPaymentNetworks: DriverPaymentNetwork[] = [
   {
     key: 'mpesa',
     label: 'M-Pesa',
     provider: 'Vodacom',
-    color: '#16A34A',
-    logoUrl: 'https://images.seeklogo.com/logo-png/62/2/m-pesa-logo-png_seeklogo-622552.png',
+    color: '#EE1C25',
     enabled: true,
     comingSoon: false,
-    recipientPhone: '0750355402',
   },
   {
     key: 'mixx',
     label: 'Mixx by Yas',
-    provider: 'Yas / Tigo Pesa',
-    color: '#155EEF',
-    logoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f2/Yas_Tanzania.svg/512px-Yas_Tanzania.svg.png',
-    enabled: false,
-    comingSoon: true,
+    provider: 'Tigo / Yas',
+    color: '#00338D',
+    enabled: true,
+    comingSoon: false,
   },
   {
     key: 'airtel',
     label: 'Airtel Money',
     provider: 'Airtel',
-    color: '#DC2626',
-    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTweT0_EszZrApI-MHVpPBZueAISnt5GXJNnw&s',
-    enabled: false,
-    comingSoon: true,
-  },
-  {
-    key: 'halopesa',
-    label: 'HaloPesa',
-    provider: 'Halotel',
-    color: '#7C3AED',
-    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSbuLQMvrrg2lEeCHcKj_5qd7fTXGC3akQx0Q&s',
-    enabled: false,
-    comingSoon: true,
+    color: '#ED1C24',
+    enabled: true,
+    comingSoon: false,
   },
 ];
-const driverAccessFallbackDailyFeeTzs = 3000;
 const dayMs = 24 * 60 * 60 * 1000;
 const tanzaniaUtcOffsetMs = 3 * 60 * 60 * 1000;
-const assignedOrderVibrationPattern = [0, 900, 450, 900, 450, 1400, 700];
-const foregroundAssignedOrderVibrationPattern = [0, 700, 250, 700, 250, 1000];
-const setupStepOrder: SetupStep[] = ['profile', 'vehicle'];
-const appLogoImage = require('./assets/images/icon2.png');
 
 // Public hosted Terms & Privacy pages on DoorDrop Firebase Hosting.
 const TERMS_URL = 'https://efootball-app-9d175.web.app/terms/';
 const PRIVACY_URL = 'https://efootball-app-9d175.web.app/privacy';
 const DOORDRIVE_TERMS_VERSION = 'doordrive-driver-terms-2026-06-04';
-const driveTheme = {
-  colors: {
-    primary: '#16A34A',
-    primaryDark: '#14532D',
-    primarySoft: '#DCFCE7',
-    accent: '#F97316',
-    canvas: '#F5F7F6',
-    surface: '#FFFFFF',
-    dark: '#0F172A',
-    ink: '#111827',
-    subtext: '#64748B',
-    line: '#E2E8F0',
-    info: '#2563EB',
-    warning: '#EA580C',
-    danger: '#DC2626',
-  },
-  radius: {
-    lg: 22,
-    xl: 28,
-    pill: 999,
-  },
-};
-const driveType = {
-  regular: 'Manrope_400Regular',
-  semibold: 'Manrope_600SemiBold',
-  bold: 'Manrope_700Bold',
-} as const;
 
 function getInitialRegisterForm(): RegisterFormState {
   return {
@@ -264,17 +323,10 @@ function getInitialRegisterForm(): RegisterFormState {
     phoneNumber: '',
     password: '',
     confirmPassword: '',
-    vehicleType: 'bodaboda',
-    vehicleLabel: '',
+    vehicleType: 'toyo',
+    vehicleLabel: 'TOYO',
     vehicleColor: 'White',
     plateNumber: '',
-  };
-}
-
-function getInitialDocumentUploads(): DriverDocumentUploads {
-  return {
-    vehiclePhoto: null,
-    driverPhoto: null,
   };
 }
 
@@ -282,8 +334,8 @@ function getInitialProfileSetup(user?: User | null): ProfileSetupState {
   return {
     fullName: user?.displayName?.trim() || '',
     phoneNumber: '',
-    vehicleType: 'bodaboda',
-    vehicleLabel: '',
+    vehicleType: 'toyo',
+    vehicleLabel: 'TOYO',
     vehicleColor: '',
     plateNumber: '',
   };
@@ -300,129 +352,80 @@ function getRegisterVehicleLabel(form: RegisterFormState) {
   return form.vehicleLabel.trim() || getVehicleTypeLabel(form.vehicleType);
 }
 
+function toPilotVehicleType(vehicleType?: string): DriverVehicleType {
+  const normalized = String(vehicleType || '').trim().toLowerCase();
+  if (
+    normalized === 'toyo_electric' ||
+    normalized === 'toyo-electric' ||
+    normalized === 'toyoelectric' ||
+    normalized === 'electric_toyo'
+  ) {
+    return 'toyo_electric';
+  }
+  if (normalized === 'kirikuu') {
+    return 'kirikuu';
+  }
+  if (normalized === 'canter' || normalized === 'center' || normalized === 'fuso') {
+    return 'canter';
+  }
+  if (
+    normalized === 'toyo' ||
+    normalized === 'bajaj' ||
+    normalized === 'bajaji' ||
+    normalized === 'pickup' ||
+    normalized === 'van' ||
+    normalized === 'toyo_xl' ||
+    normalized === 'toyo-xl'
+  ) {
+    return 'toyo';
+  }
+  return 'toyo';
+}
+
 function getVehicleTypeLabel(vehicleType?: string) {
   const labels: Record<string, string> = {
-    bodaboda: 'Bodaboda / Motorcycle',
-    pikipiki: 'Bodaboda / Motorcycle',
-    boda: 'Bodaboda / Motorcycle',
-    motorcycle: 'Bodaboda / Motorcycle',
-    motorbike: 'Bodaboda / Motorcycle',
     kirikuu: 'Kirikuu',
+    toyo_electric: 'Toyo Electric',
     toyo: 'TOYO',
     toyo_xl: 'TOYO',
     pickup: 'TOYO',
     van: 'TOYO',
-    truck: 'TOYO',
+    bajaj: 'TOYO',
+    bajaji: 'TOYO',
+    canter: 'Canter',
+    center: 'Canter',
+    fuso: 'Canter',
   };
 
-  return labels[vehicleType || ''] || 'Vehicle pending';
+  return labels[toPilotVehicleType(vehicleType)] || 'TOYO';
 }
 
-function getDriverDocumentFallback(upload: DriverDocumentUpload | null | undefined): DriverDocumentUpload | null {
-  if (!upload?.uri) {
-    return {
-      uploadStatus: 'not_submitted',
-      uploadNote: 'Driver skipped this photo during quick signup.',
-    };
-  }
-
-  return {
-    fileName: upload.fileName || 'Driver document photo',
-    mimeType: upload.mimeType || 'image/jpeg',
-    uploadStatus: 'pending_upload',
-    uploadNote: 'Photo was selected in the driver app, but cloud upload was not completed.',
-  };
+function isPlaceholderDriverName(name?: string | null) {
+  const trimmed = String(name || '').trim();
+  return !trimmed || trimmed.toLowerCase() === 'doordrop driver';
 }
 
-function getImageExtension(upload: DriverDocumentUpload) {
-  const fromName = upload.fileName?.split('.').pop()?.toLowerCase();
-  if (fromName && /^[a-z0-9]+$/.test(fromName)) {
-    return fromName === 'jpeg' ? 'jpg' : fromName;
-  }
-
-  if (upload.mimeType?.includes('png')) {
-    return 'png';
-  }
-
-  if (upload.mimeType?.includes('webp')) {
-    return 'webp';
-  }
-
-  return 'jpg';
+function isCanonicalPilotVehicle(vehicleType?: string | null) {
+  const key = String(vehicleType || '').trim().toLowerCase();
+  return key === 'toyo_electric' || key === 'toyo' || key === 'kirikuu' || key === 'canter';
 }
 
-async function uploadDriverDocumentImage(driverId: string, key: DocumentKey, upload: DriverDocumentUpload) {
-  if (!upload.uri) {
-    return getDriverDocumentFallback(upload);
-  }
-
-  const response = await fetch(upload.uri);
-  const blob = await response.blob();
-  const extension = getImageExtension(upload);
-  const storagePath = `driver-verifications/${driverId}/${key}-${Date.now()}.${extension}`;
-  const imageRef = ref(storage, storagePath);
-  const mimeType = upload.mimeType || (extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg');
-
-  await uploadBytes(imageRef, blob, { contentType: mimeType });
-  const downloadURL = await getDownloadURL(imageRef);
-
-  return {
-    ...upload,
-    downloadURL,
-    storagePath,
-    uploadedAt: new Date().toISOString(),
-    uploadStatus: 'uploaded' as const,
-  };
-}
-
-async function uploadDriverVerificationImages(driverId: string, uploads: DriverDocumentUploads) {
-  const entries = await Promise.all(
-    documentRequirements.map(async (item) => {
-      const upload = uploads[item.key];
-      if (!upload) {
-        return [item.key, getDriverDocumentFallback(upload)] as const;
-      }
-
-      try {
-        return [item.key, await uploadDriverDocumentImage(driverId, item.key, upload)] as const;
-      } catch {
-        return [item.key, getDriverDocumentFallback(upload)] as const;
-      }
-    })
+function isCompleteDriverProfile(driver?: DriverRecord | null) {
+  return Boolean(
+    driver &&
+      !isPlaceholderDriverName(driver.fullName) &&
+      driver.phoneNumber?.trim() &&
+      (driver.vehicleType || driver.vehicleLabel?.trim()) &&
+      driver.plateNumber?.trim()
   );
-
-  return Object.fromEntries(entries) as DriverDocumentUploads;
-}
-
-function getDriverVerificationDocumentPlaceholders(uploads: DriverDocumentUploads) {
-  return Object.fromEntries(
-    documentRequirements.map((item) => [item.key, getDriverDocumentFallback(uploads[item.key])])
-  ) as DriverDocumentUploads;
-}
-
-async function syncDriverVerificationImages(driverId: string, uploads: DriverDocumentUploads) {
-  const verificationDocuments = await uploadDriverVerificationImages(driverId, uploads);
-
-  await updateDoc(doc(db, 'drivers', driverId), {
-    verificationDocuments,
-    vehiclePhotoURL: verificationDocuments.vehiclePhoto?.downloadURL || '',
-    driverPhotoURL: verificationDocuments.driverPhoto?.downloadURL || '',
-    updatedAt: serverTimestamp(),
-  });
-}
-
-function getNextSetupStep(step: SetupStep) {
-  const currentIndex = setupStepOrder.indexOf(step);
-  return setupStepOrder[Math.min(setupStepOrder.length - 1, currentIndex + 1)];
-}
-
-function getPreviousSetupStep(step: SetupStep) {
-  const currentIndex = setupStepOrder.indexOf(step);
-  return setupStepOrder[Math.max(0, currentIndex - 1)];
 }
 
 function isActiveOrderStatus(status?: DeliveryOrderStatus) {
   return !!status && ACTIVE_ORDER_STATUSES.includes(status);
+}
+
+function isIncomingOffer(order?: DeliveryOrder | null) {
+  return isCargoOfferIncoming(order);
 }
 
 function getNextTripAction(status?: DeliveryOrderStatus): TripAction | null {
@@ -435,6 +438,23 @@ function getNextTripAction(status?: DeliveryOrderStatus): TripAction | null {
       return { label: 'Mark delivered', nextStatus: 'delivered' as const, icon: 'check-circle-outline' };
     default:
       return null;
+  }
+}
+
+function getDriverOrderStatusCopy(status: DeliveryOrderStatus | undefined, copy: DriverCopy) {
+  switch (status) {
+    case 'driver_assigned':
+      return copy.newOrder;
+    case 'driver_at_pickup':
+      return copy.atPickup;
+    case 'in_transit':
+      return copy.onTrip;
+    case 'delivered':
+      return copy.deliveredStatus;
+    case 'cancelled':
+      return copy.cancelled;
+    default:
+      return copy.waitingOrder;
   }
 }
 
@@ -524,11 +544,36 @@ function getPointFromCoordinates(latitudeValue: unknown, longitudeValue: unknown
   return null;
 }
 
+function isOutsideParcelOrder(order: {
+  parcelScope?: string | null;
+  outsideDestinationCity?: string | null;
+  outsideDestinationLabel?: string | null;
+  outsideShippingMode?: string | null;
+}) {
+  if (String(order.parcelScope || '').trim().toLowerCase() === 'outside') {
+    return true;
+  }
+  return Boolean(
+    String(order.outsideDestinationCity || '').trim() ||
+      String(order.outsideDestinationLabel || '').trim() ||
+      String(order.outsideShippingMode || '').trim()
+  );
+}
+
 function getDriverVisibleDropoffLabel(order: DeliveryOrder) {
+  if (isOutsideParcelOrder(order)) {
+    return order.driverDropoffLabel?.trim() || 'DoorDrop Admin Handoff';
+  }
   return order.dropoffLabel?.trim() || order.outsideDestinationLabel?.trim() || order.driverDropoffLabel?.trim() || 'Drop-off';
 }
 
 function getDriverVisibleDropoffPoint(order: DeliveryOrder) {
+  if (isOutsideParcelOrder(order)) {
+    return (
+      getPointFromCoordinates(order.driverDropoffLatitude, order.driverDropoffLongitude) ??
+      getPointFromCoordinates(order.dropoffLatitude, order.dropoffLongitude)
+    );
+  }
   return (
     getPointFromCoordinates(order.dropoffLatitude, order.dropoffLongitude) ??
     getPointFromCoordinates(order.outsideDestinationLatitude, order.outsideDestinationLongitude) ??
@@ -552,6 +597,37 @@ function getDriverNavigationTarget(order: DeliveryOrder): NavigationTarget {
   };
 }
 
+function NearbyCustomerMarker({
+  MarkerComponent,
+  customer,
+  onPress,
+}: {
+  MarkerComponent: any;
+  customer: NearbyCustomer;
+  onPress: () => void;
+}) {
+  const [tracksViewChanges, setTracksViewChanges] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setTracksViewChanges(false), 2500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <MarkerComponent
+      coordinate={{ latitude: customer.displayLatitude, longitude: customer.displayLongitude }}
+      anchor={{ x: 0.5, y: 1 }}
+      tracksViewChanges={tracksViewChanges}
+      onPress={onPress}
+      tappable
+    >
+      <View style={styles.nearbyPersonPin} collapsable={false}>
+        <DriveNearbyPin />
+      </View>
+    </MarkerComponent>
+  );
+}
+
 function FeedbackBanner({ tone, message }: { tone: FeedbackTone; message: string }) {
   const toneStyle =
     tone === 'success'
@@ -559,9 +635,14 @@ function FeedbackBanner({ tone, message }: { tone: FeedbackTone; message: string
       : tone === 'error'
         ? styles.feedbackError
         : styles.feedbackInfo;
+  const iconName =
+    tone === 'success' ? 'check-circle-outline' : tone === 'error' ? 'alert-circle-outline' : 'information-outline';
+  const iconColor =
+    tone === 'success' ? driveTheme.colors.online : tone === 'error' ? driveTheme.colors.danger : driveTheme.colors.info;
 
   return (
     <View style={[styles.feedbackBanner, toneStyle]}>
+      <MaterialCommunityIcons name={iconName} size={18} color={iconColor} />
       <Text style={styles.feedbackText}>{message}</Text>
     </View>
   );
@@ -573,12 +654,16 @@ function AppButton({
   disabled,
   variant = 'primary',
   icon,
+  compact,
+  grow,
 }: {
   label: string;
   onPress?: () => void;
   disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'dark';
   icon?: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  compact?: boolean;
+  grow?: boolean;
 }) {
   const buttonStyle =
     variant === 'primary'
@@ -587,7 +672,12 @@ function AppButton({
         ? styles.buttonDark
         : styles.buttonSecondary;
   const textStyle = variant === 'secondary' ? styles.buttonTextSecondary : styles.buttonTextPrimary;
-  const iconColor = variant === 'secondary' ? driveTheme.colors.ink : '#FFFFFF';
+  const iconColor =
+    variant === 'secondary'
+      ? driveTheme.colors.ink
+      : variant === 'primary'
+        ? driveTheme.colors.ctaText
+        : '#FFFFFF';
 
   return (
     <Pressable
@@ -596,12 +686,14 @@ function AppButton({
       style={({ pressed }) => [
         styles.buttonBase,
         buttonStyle,
+        compact && styles.buttonCompact,
+        grow && styles.buttonGrow,
         disabled && styles.buttonDisabled,
         pressed && !disabled && styles.buttonPressed,
       ]}>
       <View style={styles.buttonInner}>
-        <Text style={textStyle}>{label}</Text>
-        {icon ? <MaterialCommunityIcons name={icon} size={18} color={iconColor} /> : null}
+        <Text style={[textStyle, compact && styles.buttonTextCompact]}>{label}</Text>
+        {icon ? <MaterialCommunityIcons name={icon} size={compact ? 16 : 18} color={iconColor} /> : null}
       </View>
     </Pressable>
   );
@@ -646,24 +738,31 @@ function VehicleTypePicker({
   value,
   onChange,
 }: {
-  value: DriverVehicleType;
+  value: string;
   onChange: (nextValue: DriverVehicleType) => void;
 }) {
   return (
-    <View style={styles.vehiclePicker}>
+    <View style={styles.vehicleCardList}>
       {vehicleTypeOptions.map((option) => {
         const selected = option.key === value;
         return (
           <Pressable
             key={option.key}
             onPress={() => onChange(option.key)}
-            style={[styles.vehicleChip, selected && styles.vehicleChipActive]}>
-            <MaterialCommunityIcons
-              name={option.icon}
-              size={18}
-              color={selected ? driveTheme.colors.primaryDark : driveTheme.colors.subtext}
-            />
-            <Text style={[styles.vehicleChipText, selected && styles.vehicleChipTextActive]}>{option.label}</Text>
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            style={({ pressed }) => [
+              styles.vehicleCard,
+              selected && styles.vehicleCardActive,
+              pressed && styles.buttonPressed,
+            ]}>
+            <Image source={pilotVehicleArt[option.key]} style={styles.vehicleCardArt} resizeMode="contain" />
+            <Text style={styles.vehicleCardLabel}>{option.label}</Text>
+            {selected ? (
+              <MaterialCommunityIcons name="check-circle" size={22} color={driveTheme.colors.ink} />
+            ) : (
+              <View style={styles.vehicleCardDot} />
+            )}
           </Pressable>
         );
       })}
@@ -701,51 +800,11 @@ function VehicleColorPicker({
   );
 }
 
-function SetupProgress({ activeStep }: { activeStep: SetupStep }) {
-  const activeIndex = setupStepOrder.indexOf(activeStep);
-
+function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={styles.setupProgressRow}>
-      {setupSteps.map((step, index) => {
-        const isComplete = index < activeIndex;
-        const isActive = index === activeIndex;
-        const iconName = isComplete ? 'check' : step.icon;
-
-        return (
-          <React.Fragment key={step.key}>
-            <View style={styles.setupStepItem}>
-              <View
-                style={[
-                  styles.setupStepCircle,
-                  isComplete && styles.setupStepCircleComplete,
-                  isActive && styles.setupStepCircleActive,
-                ]}>
-                <MaterialCommunityIcons
-                  name={iconName}
-                  size={18}
-                  color={isComplete || isActive ? '#FFFFFF' : driveTheme.colors.primaryDark}
-                />
-              </View>
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.setupStepLabel,
-                  (isComplete || isActive) && styles.setupStepLabelActive,
-                ]}>
-                {step.label}
-              </Text>
-            </View>
-            {index < setupSteps.length - 1 ? (
-              <View
-                style={[
-                  styles.setupConnector,
-                  index < activeIndex && styles.setupConnectorActive,
-                ]}
-              />
-            ) : null}
-          </React.Fragment>
-        );
-      })}
+    <View style={styles.formSection}>
+      <Text style={styles.formSectionTitle}>{title}</Text>
+      <View style={styles.formSectionBody}>{children}</View>
     </View>
   );
 }
@@ -757,6 +816,10 @@ function SetupField({
   keyboardType,
   secureTextEntry,
   autoCapitalize = 'words',
+  autoComplete,
+  textContentType,
+  returnKeyType,
+  onSubmitEditing,
 }: {
   value: string;
   onChangeText: (value: string) => void;
@@ -764,9 +827,16 @@ function SetupField({
   keyboardType?: 'default' | 'email-address' | 'phone-pad';
   secureTextEntry?: boolean;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  autoComplete?: React.ComponentProps<typeof TextInput>['autoComplete'];
+  textContentType?: React.ComponentProps<typeof TextInput>['textContentType'];
+  returnKeyType?: React.ComponentProps<typeof TextInput>['returnKeyType'];
+  onSubmitEditing?: () => void;
 }) {
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const isPassword = Boolean(secureTextEntry);
+
   return (
-    <View style={styles.setupInputShell}>
+    <View style={[styles.setupInputShell, !isPassword && styles.setupInputShellPlain]}>
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -775,9 +845,27 @@ function SetupField({
         keyboardType={keyboardType}
         autoCapitalize={autoCapitalize}
         autoCorrect={false}
-        secureTextEntry={secureTextEntry}
+        autoComplete={autoComplete}
+        textContentType={textContentType}
+        returnKeyType={returnKeyType}
+        onSubmitEditing={onSubmitEditing}
+        secureTextEntry={isPassword && !passwordVisible}
         style={styles.setupTextInput}
       />
+      {isPassword ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={passwordVisible ? 'Hide password' : 'Show password'}
+          hitSlop={8}
+          onPress={() => setPasswordVisible((current) => !current)}
+          style={({ pressed }) => [styles.setupPasswordToggle, pressed && styles.buttonPressed]}>
+          <MaterialCommunityIcons
+            name={passwordVisible ? 'eye-off-outline' : 'eye-outline'}
+            size={22}
+            color={driveTheme.colors.subtext}
+          />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -794,57 +882,13 @@ function SetupSelectField({
   swatchColor?: string;
 }) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.setupInputShell, styles.setupSelectShell, pressed && styles.buttonPressed]}>
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.setupInputShell, styles.setupInputShellPlain, styles.setupSelectShell, pressed && styles.buttonPressed]}>
       {swatchColor ? <View style={[styles.setupColorSwatch, { backgroundColor: swatchColor }]} /> : null}
       <Text style={[styles.setupSelectText, !value && styles.setupSelectPlaceholder]}>
         {value || placeholder}
       </Text>
       <MaterialCommunityIcons name="menu-down" size={30} color="#7B8B8D" />
     </Pressable>
-  );
-}
-
-function DocumentUploadList({
-  uploads,
-  onPick,
-}: {
-  uploads: DriverDocumentUploads;
-  onPick: (key: DocumentKey) => void;
-}) {
-  return (
-    <View style={styles.documentList}>
-      {documentRequirements.map((item) => {
-        const upload = uploads[item.key];
-        const uploaded = !!upload?.uri;
-
-        return (
-          <View key={item.key} style={styles.documentRow}>
-            <View style={styles.documentIconShell}>
-              {uploaded ? (
-                <Image source={{ uri: upload.uri }} style={styles.documentThumb} />
-              ) : (
-                <MaterialCommunityIcons name={item.icon} size={30} color={driveTheme.colors.primaryDark} />
-              )}
-            </View>
-            <View style={styles.documentCopy}>
-              <Text style={styles.documentTitle}>{item.label}</Text>
-              <Text style={styles.documentHelper}>{uploaded ? upload.fileName || 'Ready for admin review' : item.helper}</Text>
-            </View>
-            <Pressable
-              onPress={() => onPick(item.key)}
-              style={({ pressed }) => [
-                styles.documentUploadButton,
-                uploaded && styles.documentUploadButtonDone,
-                pressed && styles.buttonPressed,
-              ]}>
-              <Text style={[styles.documentUploadText, uploaded && styles.documentUploadTextDone]}>
-                {uploaded ? 'Change' : 'Upload'}
-              </Text>
-            </Pressable>
-          </View>
-        );
-      })}
-    </View>
   );
 }
 
@@ -963,6 +1007,9 @@ function TripMap({
   MapViewComponent,
   MarkerComponent,
   PolylineComponent,
+  mapHeight,
+  compact,
+  onRefreshLocation,
 }: {
   pickupPoint: MapPoint;
   dropoffPoint: MapPoint | null;
@@ -972,13 +1019,16 @@ function TripMap({
   MapViewComponent: any;
   MarkerComponent: any;
   PolylineComponent: any;
+  mapHeight?: number;
+  compact?: boolean;
+  onRefreshLocation?: () => void;
 }) {
   const MapView = MapViewComponent;
   const Marker = MarkerComponent;
   const Polyline = PolylineComponent;
   const fallbackMap = (
     <View style={styles.mapFallbackShell}>
-      <View style={styles.mapFallbackScene}>
+      <View style={[styles.mapFallbackScene, mapHeight ? { height: mapHeight } : null]}>
         <View style={styles.mapFallbackGlowA} />
         <View style={styles.mapFallbackGlowB} />
         <View style={styles.mapRouteLine} />
@@ -1030,52 +1080,71 @@ function TripMap({
     : pickupPoint;
 
   return (
-    <View style={styles.mapCard}>
+    <View style={[styles.mapCard, compact && styles.mapCardFill]}>
       {MapView ? (
         <MapView
           provider={undefined}
-          style={styles.mapView}
+          style={compact ? styles.mapViewFill : [styles.mapView, mapHeight ? { height: mapHeight } : null]}
           mapType="standard"
-          showsCompass
-          showsTraffic={false}
-	          toolbarEnabled={false}
-	          showsUserLocation={false}
-	          loadingEnabled
-	          initialRegion={{
-	            latitude: centerPoint.latitude,
-	            longitude: centerPoint.longitude,
-	            latitudeDelta: dropoffPoint ? Math.max(Math.abs(pickupPoint.latitude - dropoffPoint.latitude) * 2, 0.04) : 0.04,
-	            longitudeDelta: dropoffPoint ? Math.max(Math.abs(pickupPoint.longitude - dropoffPoint.longitude) * 2, 0.04) : 0.04,
-	          }}>
-	          {Marker ? <Marker coordinate={pickupPoint} title="Pickup" description="Pickup point" pinColor="#F97316" /> : null}
-	          {dropoffPoint && Marker ? <Marker coordinate={dropoffPoint} title="Drop-off" description="Drop-off point" pinColor="#0F9D58" /> : null}
-	          {driverPoint && Marker ? (
-	            <Marker coordinate={driverPoint} title="Driver" description="Current driver location" pinColor="#2563EB" />
-	          ) : null}
-	          {routePoints.length >= 2 && Polyline ? <Polyline coordinates={routePoints} strokeColor="#0F9D58" strokeWidth={4} /> : null}
-	        </MapView>
+          customMapStyle={DRIVE_DARK_MAP_STYLE}
+          userInterfaceStyle="dark"
+          liteMode={false}
+          showsCompass={false}
+          showsTraffic
+          showsMyLocationButton={false}
+          toolbarEnabled={false}
+          moveOnMarkerPress={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+          showsUserLocation
+          followsUserLocation
+          loadingEnabled
+          onPoiClick={() => undefined}
+          initialRegion={{
+            latitude: centerPoint.latitude,
+            longitude: centerPoint.longitude,
+            latitudeDelta: dropoffPoint ? Math.max(Math.abs(pickupPoint.latitude - dropoffPoint.latitude) * 2, 0.04) : 0.04,
+            longitudeDelta: dropoffPoint ? Math.max(Math.abs(pickupPoint.longitude - dropoffPoint.longitude) * 2, 0.04) : 0.04,
+          }}>
+          {Marker ? <Marker coordinate={pickupPoint} pinColor="#F97316" tappable={false} tracksViewChanges={false} /> : null}
+          {dropoffPoint && Marker ? <Marker coordinate={dropoffPoint} pinColor="#38BDF8" tappable={false} tracksViewChanges={false} /> : null}
+          {driverPoint && Marker ? (
+            <Marker coordinate={driverPoint} pinColor="#34C759" tappable={false} tracksViewChanges={false} />
+          ) : null}
+          {routePoints.length >= 2 && Polyline ? <Polyline coordinates={routePoints} strokeColor="#34C759" strokeWidth={5} /> : null}
+        </MapView>
       ) : (
-        <View style={[styles.mapView, { alignItems: 'center', justifyContent: 'center' }]}>
+        <View style={[compact ? styles.mapViewFill : styles.mapView, { alignItems: 'center', justifyContent: 'center' }]}>
           <Text style={{ color: '#94A3B8' }}>Map unavailable on this device</Text>
         </View>
       )}
-      <View pointerEvents="box-none" style={styles.mapOverlay}>
-        <View style={styles.mapOverlayTop}>
-          <View style={styles.mapBadge}>
-            <MaterialCommunityIcons name="map-marker-path" size={14} color="#FFFFFF" />
-            <Text style={styles.mapBadgeText}>{statusLabel}</Text>
-          </View>
-          <View style={styles.mapBadgeMuted}>
-            <MaterialCommunityIcons name="navigation-variant-outline" size={14} color={driveTheme.colors.ink} />
-            <Text style={styles.mapBadgeMutedText}>Route loaded</Text>
-          </View>
+      <View pointerEvents="box-none" style={[styles.mapOverlay, compact && styles.mapOverlayCompact]}>
+        <View style={[styles.mapOverlayTop, compact && styles.mapOverlayTopCompact]}>
+          {compact ? null : (
+            <View style={styles.mapBadge}>
+              <MaterialCommunityIcons name="map-marker-path" size={14} color="#FFFFFF" />
+              <Text style={styles.mapBadgeText}>{statusLabel}</Text>
+            </View>
+          )}
+          {onRefreshLocation ? (
+            <Pressable onPress={onRefreshLocation} style={({ pressed }) => [styles.mapBadgeMuted, pressed && styles.buttonPressed]}>
+              <MaterialCommunityIcons name="crosshairs-gps" size={16} color={driveTheme.colors.ink} />
+            </Pressable>
+          ) : compact ? null : (
+            <View style={styles.mapBadgeMuted}>
+              <MaterialCommunityIcons name="navigation-variant-outline" size={14} color={driveTheme.colors.ink} />
+              <Text style={styles.mapBadgeMutedText}>Route loaded</Text>
+            </View>
+          )}
         </View>
-        <View style={styles.mapOverlayBottom}>
-          <Pressable onPress={onOpenNavigation} style={({ pressed }) => [styles.mapNavButton, pressed && styles.buttonPressed]}>
-            <MaterialCommunityIcons name="navigation-variant-outline" size={18} color="#FFFFFF" />
-            <Text style={styles.mapNavButtonText}>Open navigation</Text>
-          </Pressable>
-        </View>
+        {compact ? null : (
+          <View style={styles.mapOverlayBottom}>
+            <Pressable onPress={onOpenNavigation} style={({ pressed }) => [styles.mapNavButton, pressed && styles.buttonPressed]}>
+              <MaterialCommunityIcons name="navigation-variant-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.mapNavButtonText}>Follow route</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -1109,8 +1178,8 @@ interface DriverExtraFields {
 // ──────────────────────────────────────────────
 // NEW: Utility to extract number from currency string
 // ──────────────────────────────────────────────
-function parseAmountFromLabel(label: string): number {
-  const digits = label.replace(/[^0-9]/g, '');
+function parseAmountFromLabel(label?: string | null): number {
+  const digits = String(label || '').replace(/[^0-9]/g, '');
   return parseInt(digits, 10) || 0;
 }
 
@@ -1141,6 +1210,16 @@ function getTanzaniaDayStartMillis(value = Date.now()) {
 function getTanzaniaWeekStartMillis(value = Date.now()) {
   const shiftedDate = new Date(value + tanzaniaUtcOffsetMs);
   return getTanzaniaDayStartMillis(value) - shiftedDate.getUTCDay() * dayMs;
+}
+
+function getPaymentFeedbackMessage(error: unknown, copy: DriverCopy, fallback: string) {
+  if (error instanceof PaymentApiError) {
+    return error.code === 'unavailable' ? copy.payServiceDown : copy.payOffline;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return fallback;
 }
 
 function getOrderTimestampMillis(value: unknown) {
@@ -1190,17 +1269,40 @@ export default function DoorDriveApp() {
     Manrope_600SemiBold,
     Manrope_700Bold,
   });
+  const { height: windowHeight } = useWindowDimensions();
+  const mapHeight = Math.round(Math.min(320, Math.max(180, windowHeight * 0.28)));
+  const statusBarInset =
+    Platform.OS === 'android' ? Math.max(AndroidStatusBar.currentHeight ?? 0, 24) + 12 : 0;
+  const androidNavInset =
+    Platform.OS === 'android'
+      ? Math.max(
+          52,
+          Dimensions.get('screen').height - windowHeight - (AndroidStatusBar.currentHeight ?? 0)
+        )
+      : 0;
   // ─── Original state ───────────────────────
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
+  const [registerStep, setRegisterStep] = useState<'details' | 'vehicle'>('vehicle');
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [showStartupSplash, setShowStartupSplash] = useState(true);
+  const [pilotIntroReady, setPilotIntroReady] = useState(false);
+  const [pilotIntroDone, setPilotIntroDone] = useState(false);
   const [authInitializing, setAuthInitializing] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
   const [driverOrdersLoading, setDriverOrdersLoading] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
   const [busyAction, setBusyAction] = useState('');
+  const [driverFareDraft, setDriverFareDraft] = useState<number | null>(null);
+  const [driverOfferNote, setDriverOfferNote] = useState(DEFAULT_FARE_NOTE);
   const [selectedTab, setSelectedTab] = useState<DriverTab>('home');
+  const [homeSheetExpanded, setHomeSheetExpanded] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [inAppNavMode, setInAppNavMode] = useState(false);
+  const [orderCancelledVisible, setOrderCancelledVisible] = useState(false);
+  const lastCancelledOrderIdRef = useRef<string | null>(null);
+  const [historySection, setHistorySection] = useState<'trips' | 'payments'>('trips');
   const [accountView, setAccountView] = useState<AccountView>('overview');
   const [paymentCheckoutStep, setPaymentCheckoutStep] = useState<PaymentCheckoutStep>('debt');
   const [feedback, setFeedback] = useState<{ tone: FeedbackTone; message: string } | null>(null);
@@ -1208,29 +1310,40 @@ export default function DoorDriveApp() {
   const [locationLabel, setLocationLabel] = useState('Location sync has not started yet.');
   const [driverProfile, setDriverProfile] = useState<DriverRecord | null>(null);
   const [driverOrders, setDriverOrders] = useState<DeliveryOrder[]>([]);
+  const [openCargoOffers, setOpenCargoOffers] = useState<DeliveryOrder[]>([]);
   const [tripMessages, setTripMessages] = useState<OrderMessage[]>([]);
   const [tripMessagesLoading, setTripMessagesLoading] = useState(false);
   const [tripMessageDraft, setTripMessageDraft] = useState('');
   const [tripMessageSending, setTripMessageSending] = useState(false);
+  const [tripChatOpen, setTripChatOpen] = useState(false);
+  const [nearbyCustomers, setNearbyCustomers] = useState<NearbyCustomer[]>([]);
+  const [activeOrderContactPhone, setActiveOrderContactPhone] = useState('');
+  const [liveMapPoint, setLiveMapPoint] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [selectedNearbyCustomer, setSelectedNearbyCustomer] = useState<NearbyCustomer | null>(null);
+  const [activeRoadRoute, setActiveRoadRoute] = useState<RoadMapPoint[]>([]);
+  const [leadMessageSending, setLeadMessageSending] = useState(false);
   const [customerRatingScore, setCustomerRatingScore] = useState(5);
   const [customerRatingComment, setCustomerRatingComment] = useState('');
   const [customerRatingSaving, setCustomerRatingSaving] = useState(false);
-  const [language, setLanguage] = useState<DriverLang>('en');
+  const [language, setLanguage] = useState<DriverLang>('sw');
+  const [languageChosen, setLanguageChosen] = useState(false);
   const [autoConfirm, setAutoConfirm] = useState(false);
   const autoAcceptedOrderIdRef = useRef<string | null>(null);
+  const ussdInitiateLockRef = useRef(false);
   const settingsReadyRef = useRef(false);
-  const splashProgress = useRef(new Animated.Value(0)).current;
+  const homeMapRef = useRef<any>(null);
   const copy = getDriverCopy(language);
+
+  const chooseLanguage = (next: DriverLang) => {
+    setLanguage(next);
+    setLanguageChosen(true);
+  };
 
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [registerForm, setRegisterForm] = useState<RegisterFormState>(getInitialRegisterForm());
-  const [registerStep, setRegisterStep] = useState<SetupStep>('profile');
-  const [registerDocuments, setRegisterDocuments] = useState<DriverDocumentUploads>(getInitialDocumentUploads());
   const [registerTermsAccepted, setRegisterTermsAccepted] = useState(false);
   const [profileSetup, setProfileSetup] = useState<ProfileSetupState>(getInitialProfileSetup(null));
-  const [profileSetupStep, setProfileSetupStep] = useState<SetupStep>('profile');
-  const [profileDocuments, setProfileDocuments] = useState<DriverDocumentUploads>(getInitialDocumentUploads());
   const [registrationSubmitted, setRegistrationSubmitted] = useState(false);
 
   // ─── NEW state for performance & payment tracking ───
@@ -1249,25 +1362,31 @@ export default function DoorDriveApp() {
   const sessionAccumulatorRef = useRef<number>(0);
   const knownTripMessageIdsRef = useRef<Set<string>>(new Set());
   const tripMessagesHydratedRef = useRef(false);
-  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const vibratingAssignedOrderRef = useRef<string | null>(null);
-  const openedAssignedOrderIdsRef = useRef<Set<string>>(new Set());
-  const driverAccessDailyFeeTzs = driverPaymentStatus?.subscription?.dailyFee || driverAccessFallbackDailyFeeTzs;
-  const weeklySubscriptionFeeTzs = driverAccessDailyFeeTzs;
+  const lastIncomingOrderIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    Animated.timing(splashProgress, {
-      toValue: 1,
-      duration: 4000,
-      useNativeDriver: false,
-    }).start();
     const splashTimer = setTimeout(() => setShowStartupSplash(false), 4000);
     return () => clearTimeout(splashTimer);
-  }, [splashProgress]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void hasSeenPilotIntro().then((seen) => {
+      if (cancelled) {
+        return;
+      }
+      setPilotIntroDone(seen);
+      setPilotIntroReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     void loadDriverSettings().then((settings) => {
       setLanguage(settings.language);
+      setLanguageChosen(Boolean(settings.languageChosen));
       setAutoConfirm(settings.autoConfirm);
       settingsReadyRef.current = true;
     });
@@ -1277,33 +1396,43 @@ export default function DoorDriveApp() {
     if (!settingsReadyRef.current) {
       return;
     }
-    void saveDriverSettings({ language, autoConfirm });
-  }, [autoConfirm, language]);
+    const settings: DriverSettings = { language, autoConfirm, languageChosen };
+    void saveDriverSettings(settings);
+  }, [autoConfirm, language, languageChosen]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowMillis(Date.now()), 30 * 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Guarded maps import to avoid crashing the app if the native maps module is unavailable.
+  // Guarded maps import. AndroidManifest now includes com.google.android.geo.API_KEY.
   const Maps = tryRequire<any>('react-native-maps');
   const MapView = Maps?.default ?? Maps ?? null;
   const Marker = Maps?.Marker ?? null;
   const Polyline = Maps?.Polyline ?? null;
+  const Circle = Maps?.Circle ?? null;
+  const mapsProvider = Platform.OS === 'android' ? Maps?.PROVIDER_GOOGLE : undefined;
 
   const normalizedRegisterPhone = useMemo(() => normalizePhoneNumber(registerForm.phoneNumber), [registerForm.phoneNumber]);
   const normalizedSetupPhone = useMemo(() => normalizePhoneNumber(profileSetup.phoneNumber), [profileSetup.phoneNumber]);
+  const driverProfileComplete = isCompleteDriverProfile(driverProfile);
+  const needsVehicleChoice = Boolean(driverProfileComplete && driverProfile && !isCanonicalPilotVehicle(driverProfile.vehicleType));
   const driverProfileMissing =
     !!authUser &&
     !profileLoading &&
     !registering &&
     !registrationSubmitted &&
-    (!driverProfile ||
-      !driverProfile.fullName?.trim() ||
-      !driverProfile.phoneNumber?.trim() ||
-      (!driverProfile.vehicleType && !driverProfile.vehicleLabel?.trim()) ||
-      !driverProfile.plateNumber?.trim());
+    !driverProfileComplete;
   const hasReadyDriverProfile = !!driverProfile && !driverProfileMissing;
+  const nearbyQueryKey = useMemo(() => {
+    const latitude = Number(liveMapPoint?.latitude ?? driverProfile?.currentLatitude);
+    const longitude = Number(liveMapPoint?.longitude ?? driverProfile?.currentLongitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return '';
+    }
+
+    return `${latitude.toFixed(3)},${longitude.toFixed(3)}`;
+  }, [driverProfile?.currentLatitude, driverProfile?.currentLongitude, liveMapPoint?.latitude, liveMapPoint?.longitude]);
   const activeOrder = useMemo(
     () => {
       const currentOrderId = driverProfile?.currentOrderId?.trim();
@@ -1314,10 +1443,96 @@ export default function DoorDriveApp() {
         }
       }
 
-      return driverOrders.find((order) => isActiveOrderStatus(order.status)) ?? null;
+      const assigned = driverOrders.find((order) => isActiveOrderStatus(order.status));
+      if (assigned) {
+        return assigned;
+      }
+
+      if (!driverProfile?.isAvailable) {
+        return null;
+      }
+
+      return openCargoOffers.find((order) => !order.declinedDriverIds?.includes(driverProfile.id)) ?? null;
     },
-    [driverOrders, driverProfile?.currentOrderId]
+    [driverOrders, driverProfile?.currentOrderId, driverProfile?.id, driverProfile?.isAvailable, openCargoOffers]
   );
+  useEffect(() => {
+    if (!activeOrder || activeOrder.fareType !== 'negotiated') {
+      setDriverFareDraft(null);
+      return;
+    }
+    const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+    const customerAmount =
+      typeof activeOrder.customerOffer === 'number' && activeOrder.customerOffer > 0
+        ? activeOrder.customerOffer
+        : minFare;
+    const driverAmount =
+      typeof activeOrder.driverOffer === 'number' && activeOrder.driverOffer > 0 ? activeOrder.driverOffer : 0;
+    const start =
+      activeOrder.lastOfferBy === 'driver' && driverAmount > 0
+        ? Math.max(minFare, driverAmount)
+        : Math.max(minFare, customerAmount);
+    setDriverFareDraft(start);
+  }, [
+    activeOrder?.customerOffer,
+    activeOrder?.driverOffer,
+    activeOrder?.fareType,
+    activeOrder?.id,
+    activeOrder?.lastOfferBy,
+    activeOrder?.minFare,
+  ]);
+  useEffect(() => {
+    setDriverOfferNote(DEFAULT_FARE_NOTE);
+  }, [activeOrder?.id]);
+  const isInstantCargoVerify = String(activeOrder?.assignmentMode || '') === 'cargo_ws';
+  const fareNegotiation = (() => {
+    if (!activeOrder || activeOrder.fareType !== 'negotiated') {
+      return null;
+    }
+    // Instant verify: fixed quoted fare — accept or decline only.
+    if (isInstantCargoVerify) {
+      const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+      const customerOffer = activeOrder.customerOffer ?? 0;
+      return {
+        minFare,
+        used: 0,
+        left: 0,
+        matching: true,
+        sameResend: false,
+        mustWait: false,
+        sendingNew: false,
+        chanceHint: '',
+        fixedFare: Math.max(minFare, customerOffer),
+      };
+    }
+    const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+    const customerOffer = activeOrder.customerOffer ?? 0;
+    const draft = Math.max(minFare, driverFareDraft ?? customerOffer ?? minFare);
+    const used = Math.max(0, Math.round(Number(activeOrder.driverNegotiationUsed) || 0));
+    const left = Math.max(0, DRIVER_NEGOTIATION_CHANCES - used);
+    const matching = cargoOffersMatch(customerOffer, draft);
+    const sameResend = activeOrder.lastOfferBy === 'driver' && cargoOffersMatch(activeOrder.driverOffer, draft);
+    const mustWait = left <= 0 && activeOrder.lastOfferBy !== 'customer' && !matching;
+    const sendingNew = !matching && !sameResend && left > 0;
+    const chanceHint = left <= 0 ? 'Mwisho' : left === 1 ? '1' : '';
+    return { minFare, used, left, matching, sameResend, mustWait, sendingNew, chanceHint };
+  })();
+  const demandZones = useMemo(() => buildDemandZones(nearbyCustomers), [nearbyCustomers]);
+  const topDemandZone = useMemo(() => getTopDemandZone(demandZones), [demandZones]);
+  const orderProbability = useMemo(() => {
+    const point =
+      getPointFromCoordinates(driverProfile?.currentLatitude, driverProfile?.currentLongitude) ?? liveMapPoint;
+    if (!point) {
+      return 0;
+    }
+    return estimateOrderProbabilityAtPoint(point, nearbyCustomers, demandZones);
+  }, [
+    demandZones,
+    driverProfile?.currentLatitude,
+    driverProfile?.currentLongitude,
+    liveMapPoint,
+    nearbyCustomers,
+  ]);
   const trackDriverActivity = (
     eventName: string,
     featureKey: string,
@@ -1325,7 +1540,7 @@ export default function DoorDriveApp() {
   ) => {
     void recordDriverActivity({
       driverId: authUser?.uid,
-      driverName: driverProfile?.fullName || authUser?.displayName || authUser?.email || 'DoorDrive driver',
+      driverName: driverProfile?.fullName || authUser?.displayName || authUser?.email || 'HAUL Pilots',
       eventName,
       featureKey,
       featureLabel: 'Driver operations',
@@ -1339,11 +1554,11 @@ export default function DoorDriveApp() {
       },
     });
   };
-  const todayDateKey = toLocalDateKey();
+  const todayDateKey = toTanzaniaDateKey(nowMillis);
   const todayOrders = useMemo(
     () => driverOrders.filter((order) => {
       const activityMillis = getOrderActivityMillis(order);
-      return !!activityMillis && toLocalDateKey(activityMillis) === todayDateKey;
+      return !!activityMillis && toTanzaniaDateKey(activityMillis) === todayDateKey;
     }),
     [driverOrders, todayDateKey]
   );
@@ -1357,11 +1572,49 @@ export default function DoorDriveApp() {
     (sum, order) => sum + parseAmountFromLabel(order.totalLabel || order.fareLabel),
     0
   );
-  const driverVerificationStatus = driverProfile?.verificationStatus || 'verified';
-  const driverVerificationPending = driverVerificationStatus === 'pending_admin_verification';
-  const driverVerificationRejected = driverVerificationStatus === 'rejected';
+  const rawVerificationStatus = String(driverProfile?.verificationStatus || '').trim().toLowerCase();
+  const driverVerificationPending =
+    rawVerificationStatus === 'pending_admin_verification' ||
+    rawVerificationStatus === 'pending' ||
+    rawVerificationStatus === 'submitted';
+  const driverVerificationRejected = rawVerificationStatus === 'rejected';
+  const accessPlan = getDriverAccessPlan(driverProfile);
+  const accessPeriodStartMillis = getAccessPeriodStartMillis(accessPlan, nowMillis);
+  const accessBillingKey = getAccessBillingPeriodKey(accessPlan, nowMillis);
+  const periodDeliveredOrders = useMemo(
+    () =>
+      driverOrders.filter(
+        (order) => order.status === 'delivered' && getDeliveredOrderMillis(order) >= accessPeriodStartMillis
+      ),
+    [driverOrders, accessPeriodStartMillis]
+  );
+  const periodCompletedCount = periodDeliveredOrders.length;
+  const deliveredOrderCount = accessPlan.period === 'week' ? periodCompletedCount : todayCompletedCount;
+  const accessDriver = {
+    ...driverProfile,
+    dailyCompletedDateKey: toTanzaniaDateKey(nowMillis),
+    dailyCompletedOrderCount: todayCompletedCount,
+    weeklyCompletedWeekKey: driverProfile?.weeklyCompletedWeekKey || accessBillingKey,
+    weeklyCompletedOrderCount:
+      String(driverProfile?.weeklyCompletedWeekKey || '') === accessBillingKey
+        ? Number(driverProfile?.weeklyCompletedOrderCount || periodCompletedCount)
+        : periodCompletedCount,
+    accessPaymentDuePeriodKey: driverProfile?.accessPaymentDuePeriodKey,
+  };
+  const accessPlanState = buildAccessPlanState(accessDriver, nowMillis, deliveredOrderCount);
+  const isWeeklyAccess = accessPlanState.period === 'week';
+  const driverAccessDailyFeeTzs = Number(
+    driverPaymentStatus?.subscription?.amount || driverPaymentStatus?.subscription?.dailyFee || accessPlanState.feeTzs
+  );
+  const weeklySubscriptionFeeTzs = driverAccessDailyFeeTzs;
+  const accessFeeLabel = formatAccessFeeLabel({
+    feeTzs: driverAccessDailyFeeTzs,
+    periodLabel: (driverPaymentStatus?.subscription?.periodLabel || accessPlanState.periodLabel) as 'day' | 'week',
+  });
   const subscriptionPaidUntilMillis = getOrderTimestampMillis(driverPaymentStatus?.subscription?.paidUntil || driverProfile?.subscriptionPaidUntil);
-  const subscriptionActive = hasReadyDriverProfile;
+  const subscriptionActive =
+    hasReadyDriverProfile &&
+    (driverPaymentStatus?.subscription?.active ?? isDriverSubscriptionActive(accessDriver, nowMillis, deliveredOrderCount));
   const latestPayment = driverPaymentStatus?.latestPayment || null;
   const latestPaymentStatus = (latestPayment?.status || driverProfile?.lastSubscriptionPaymentStatus || '').toLowerCase();
   const latestPaymentExpiresMillis = getOrderTimestampMillis(latestPayment?.expiresAt || driverProfile?.lastSubscriptionPaymentExpiresAt);
@@ -1369,33 +1622,116 @@ export default function DoorDriveApp() {
     !subscriptionActive &&
     ['creating', 'pending', 'initiated', 'processing'].includes(latestPaymentStatus) &&
     (!latestPaymentExpiresMillis || latestPaymentExpiresMillis > nowMillis);
-  const commissionOrders = useMemo(
-    () => driverOrders.filter((order) => order.status === 'delivered' && getDeliveredOrderMillis(order) >= getTanzaniaDayStartMillis()),
-    [driverOrders, todayDateKey]
-  );
-  const weeklyDeliveredOrderCount = commissionOrders.length;
+  const commissionOrders = periodDeliveredOrders;
+  const weeklyDeliveredOrderCount = accessPlan.period === 'week' ? periodCompletedCount : todayCompletedCount;
   const commissionDateKey = toTanzaniaDateKey(nowMillis);
   const dailyGrossEarnings = todayEarnings;
-  const dailyCommissionDue = driverAccessDailyFeeTzs;
-  const hasCommissionDue = hasReadyDriverProfile && !driverVerificationPending && !driverVerificationRejected && !subscriptionActive;
+  const commissionSummary = useMemo(
+    () => summarizeDriverCommission(driverOrders, driverProfile),
+    [driverOrders, driverProfile]
+  );
+  const dailyCommissionDue = commissionSummary.unpaidTzs;
+  const hasCommissionDue =
+    hasReadyDriverProfile &&
+    !driverVerificationPending &&
+    !driverVerificationRejected &&
+    commissionSummary.unpaidTzs > 0;
+  const commissionPaymentPending =
+    String(driverProfile?.commissionPayment?.status || driverProfile?.commissionStatus || '').toLowerCase() ===
+    'pending';
+  /** Lock only when unpaid commission hits the ceiling — not weekly subscription. */
+  const driverAccessBlocked =
+    hasReadyDriverProfile &&
+    !driverVerificationPending &&
+    !driverVerificationRejected &&
+    commissionSummary.locked;
   const subscriptionCountdownLabel = !hasReadyDriverProfile
-    ? 'Access starts after verification'
-    : 'Free to use';
-  const subscriptionCountdownShortLabel = !hasReadyDriverProfile ? 'Pending' : 'Free';
+    ? copy.accessCountdownVerify
+    : accessPlanState.unpaidDebt
+      ? isWeeklyAccess
+        ? copy.accessCountdownUnpaidDebtWeek
+        : copy.accessCountdownUnpaidDebt
+      : accessPlanState.workWindow && accessPlanState.completedOrders >= accessPlanState.minOrders
+        ? isWeeklyAccess
+          ? copy.accessCountdownPayAtWeekEnd(accessPlanState.completedOrders)
+          : copy.accessCountdownPayAtTen(accessPlanState.completedOrders)
+        : accessPlanState.grace
+          ? isWeeklyAccess
+            ? copy.accessCountdownProgressWeek(accessPlanState.completedOrders, accessPlanState.minOrders)
+            : copy.accessCountdownProgress(accessPlanState.completedOrders, accessPlanState.minOrders)
+          : subscriptionActive
+            ? isWeeklyAccess
+              ? copy.accessCountdownActiveWeek
+              : copy.accessCountdownActive
+            : isWeeklyAccess
+              ? copy.accessCountdownPayWeek(accessFeeLabel)
+              : copy.accessCountdownPayToday(accessFeeLabel);
+  const subscriptionCountdownShortLabel = !hasReadyDriverProfile
+    ? copy.accessShortPending
+    : accessPlanState.unpaidDebt
+      ? copy.accessShortUnpaid
+      : accessPlanState.workWindow && accessPlanState.completedOrders >= accessPlanState.minOrders
+        ? isWeeklyAccess
+          ? copy.accessShortPayAtWeekEnd(accessPlanState.completedOrders)
+          : copy.accessShortPayAtTen(accessPlanState.completedOrders)
+        : accessPlanState.grace
+          ? copy.accessShortProgress(accessPlanState.completedOrders, accessPlanState.minOrders)
+          : subscriptionActive
+            ? isWeeklyAccess
+              ? copy.accessShortActiveWeek
+              : copy.accessShortActive
+            : copy.accessShortPayNow;
   const subscriptionCountdownCaption = !hasReadyDriverProfile
-    ? 'Complete verification first.'
-    : 'You can receive and manage DoorDrop orders.';
+    ? copy.accessCaptionVerify
+    : accessPlanState.unpaidDebt
+      ? isWeeklyAccess
+        ? copy.accessCaptionUnpaidDebtWeek
+        : copy.accessCaptionUnpaidDebt
+      : accessPlanState.workWindow && accessPlanState.completedOrders >= accessPlanState.minOrders
+        ? isWeeklyAccess
+          ? copy.accessCaptionPayAtWeekEnd(accessPlanState.label, accessPlanState.minOrders)
+          : copy.accessCaptionPayAtTen(accessPlanState.label, accessPlanState.minOrders)
+        : accessPlanState.grace
+          ? isWeeklyAccess
+            ? copy.accessCaptionProgressWeek(accessPlanState.label, accessPlanState.remainingOrders)
+            : copy.accessCaptionProgress(accessPlanState.label, accessPlanState.remainingOrders)
+          : subscriptionActive
+            ? isWeeklyAccess
+              ? copy.accessCaptionActiveWeek(accessPlanState.label)
+              : copy.accessCaptionActive(accessPlanState.label)
+            : isWeeklyAccess
+              ? copy.accessCaptionPayUssdWeek(accessPlanState.label)
+              : copy.accessCaptionPayUssd(accessPlanState.label);
   const commissionPaymentOverdue = hasCommissionDue && !subscriptionPaymentPending;
-  const subscriptionStatusMessage = subscriptionActive ? 'Active' : subscriptionPaymentPending ? 'Pending payment' : 'Renew access';
+  const subscriptionStatusMessage = subscriptionActive
+    ? copy.accessStatusActive
+    : subscriptionPaymentPending
+      ? copy.accessStatusPending
+      : accessPlanState.grace
+        ? copy.accessStatusGrace
+        : copy.accessStatusRenew;
   const commissionPaidForDate = subscriptionPaymentPending;
-  const driverCanReceiveDispatch = !driverVerificationPending && !driverVerificationRejected && subscriptionActive;
-  const driverAccessBlocked = hasReadyDriverProfile && !driverVerificationPending && !driverVerificationRejected && !subscriptionActive;
-  const paymentNetworks = driverPaymentStatus?.networks?.length ? driverPaymentStatus.networks : defaultMongikePaymentNetworks;
+  const driverCanReceiveDispatch = !driverVerificationPending && !driverVerificationRejected;
+  const paymentNetworks = (driverPaymentStatus?.networks?.length ? driverPaymentStatus.networks : defaultPaymentNetworks).filter(
+    (item) => item.key === 'mpesa' || item.key === 'mixx' || item.key === 'airtel'
+  );
   const selectedNetworkMeta =
     paymentNetworks.find((item) => item.key === selectedPaymentNetwork) ||
     paymentNetworks.find((item) => item.enabled) ||
-    defaultMongikePaymentNetworks[0];
-  const paymentRecipientPhone = selectedNetworkMeta?.recipientPhone || '0750355402';
+    defaultPaymentNetworks[0];
+  const selectedNetworkLogo = paymentNetworkLogo(selectedPaymentNetwork);
+  const detectedPaymentNetwork = detectPaymentNetworkFromPhone(paymentPhoneNumber || driverProfile?.phoneNumber);
+  const selectedNetworkLabel = paymentNetworkLabel(selectedPaymentNetwork);
+  const paymentNetworkTileStyle = (key?: string | null) => {
+    const network = String(key || '').toLowerCase();
+    if (network === 'mixx') {
+      return styles.fintechLogoTileMixx;
+    }
+    if (network === 'airtel' || network === 'airtelmoney') {
+      return styles.fintechLogoTileAirtel;
+    }
+    return styles.fintechLogoTileMpesa;
+  };
   const availabilityLabel = activeOrder
     ? 'Busy on active trip'
     : driverVerificationPending
@@ -1410,7 +1746,7 @@ export default function DoorDriveApp() {
   const availabilityNote = activeOrder
     ? 'Dispatch can see that you are currently handling a live order.'
     : driverVerificationPending
-      ? 'Admin is reviewing your plate number, vehicle photo, and driver photo.'
+      ? 'Admin is reviewing your name, phone, vehicle, and plate number.'
       : driverVerificationRejected
         ? 'Your verification was rejected. Contact admin or update your profile details.'
         : hasCommissionDue
@@ -1433,15 +1769,18 @@ export default function DoorDriveApp() {
   );
   const notificationItems = useMemo<DriverNotification[]>(() => {
     const items: DriverNotification[] = [];
+    const awaitingAccept = isIncomingOffer(activeOrder);
 
     if (activeOrder) {
       items.push({
         id: `active-${activeOrder.id}`,
-        title: 'Active order assigned',
-        message: `${activeOrder.orderNumber} is ${getDeliveryOrderStatusLabel(activeOrder.status).toLowerCase()}.`,
-        icon: 'truck-delivery-outline',
-        tone: 'success',
+        title: awaitingAccept ? copy.notifActiveAssigned : copy.notifActiveTitle,
+        message: `${activeOrder.orderNumber} · ${getDriverOrderStatusCopy(activeOrder.status, copy)}`,
+        icon: awaitingAccept ? 'bell-ring-outline' : 'navigation-variant-outline',
+        tone: awaitingAccept ? 'warning' : 'info',
         time: formatDeliveryDateTime(activeOrder.createdAt),
+        action: 'trip',
+        unread: true,
       });
     }
 
@@ -1449,74 +1788,85 @@ export default function DoorDriveApp() {
     if (latestCustomerMessage) {
       items.push({
         id: `message-${latestCustomerMessage.id}`,
-        title: `Message from ${latestCustomerMessage.senderName || 'customer'}`,
+        title: copy.notifCustomerMessage,
         message: latestCustomerMessage.message,
         icon: 'message-text-outline',
         tone: 'info',
         time: formatDeliveryDateTime(latestCustomerMessage.createdAt),
+        action: 'chat',
+        unread: true,
       });
     }
 
     if (hasCommissionDue) {
       items.push({
         id: 'payment-due',
-        title: subscriptionPaymentPending ? 'Access pending' : 'Driver access',
-        message: subscriptionPaymentPending
-          ? 'Payment is pending. Approve the mobile money prompt.'
-          : `Renew daily access with TZS ${driverAccessDailyFeeTzs.toLocaleString()}.`,
+        title: commissionPaymentPending ? copy.notifPaymentPendingTitle : copy.notifPaymentDueTitle,
+        message: commissionPaymentPending
+          ? 'Malipo ya komisheni hayajathibitishwa.'
+          : `Unadaiwa TZS ${commissionSummary.unpaidTzs.toLocaleString()} · kiwango TZS ${commissionSummary.payCeilingTzs.toLocaleString()}`,
         icon: 'cash-clock',
         tone: 'warning',
         time: subscriptionStatusMessage,
+        action: 'payments',
+        unread: true,
       });
     }
 
     if (driverVerificationPending) {
       items.push({
         id: 'driver-verification-pending',
-        title: 'Admin verification pending',
-        message: 'DoorDrop admin is reviewing your plate number, vehicle photo, and driver photo.',
-        icon: 'shield-lock-outline',
+        title: copy.notifVerifyPendingTitle,
+        message: copy.notifVerifyPendingMsg,
+        icon: 'shield-check-outline',
         tone: 'warning',
-        time: 'Pending',
+        time: copy.pending,
+        action: 'account',
+        unread: true,
       });
     }
 
     if (driverVerificationRejected) {
       items.push({
         id: 'driver-verification-rejected',
-        title: 'Verification needs correction',
-        message: 'Contact admin or update your driver details before receiving orders.',
+        title: copy.notifVerifyRejectedTitle,
+        message: copy.notifVerifyRejectedMsg,
         icon: 'shield-alert-outline',
         tone: 'warning',
-        time: 'Action needed',
+        time: copy.due,
+        action: 'account',
+        unread: true,
       });
     }
 
     if (locationPermission === 'denied') {
       items.push({
         id: 'location-denied',
-        title: 'Location permission needed',
-        message: 'Turn on location access so customers and dispatch can track active trips.',
+        title: copy.notifLocationTitle,
+        message: copy.notifLocationMsg,
         icon: 'map-marker-alert-outline',
         tone: 'warning',
-        time: 'Now',
-      });
-    }
-
-    if (!activeOrder && driverProfile?.isAvailable && !hasCommissionDue && driverCanReceiveDispatch) {
-      items.push({
-        id: 'waiting-dispatch',
-        title: 'Online for dispatch',
-        message: 'You are visible to DoorDrop dispatch for the next assignment.',
-        icon: 'access-point',
-        tone: 'success',
-        time: 'Live',
+        time: copy.hold,
+        action: 'location',
+        unread: true,
       });
     }
 
     return items;
-  }, [activeOrder, driverCanReceiveDispatch, driverProfile?.isAvailable, driverVerificationPending, driverVerificationRejected, hasCommissionDue, locationPermission, paymentAmount, subscriptionPaymentPending, subscriptionStatusMessage, tripMessages, weeklySubscriptionFeeTzs]);
-  const unreadNotificationCount = notificationItems.filter((item) => item.tone !== 'success').length;
+  }, [activeOrder, commissionPaymentPending, commissionSummary.payCeilingTzs, commissionSummary.unpaidTzs, copy, driverVerificationPending, driverVerificationRejected, hasCommissionDue, locationPermission, subscriptionStatusMessage, tripMessages]);
+  const unreadNotificationCount = notificationItems.filter((item) => item.unread).length;
+
+  useEffect(() => {
+    if (!feedback) {
+      return;
+    }
+    const timer = setTimeout(() => setFeedback(null), 2800);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+
+  useEffect(() => {
+    setFeedback(null);
+  }, [selectedTab]);
 
   async function refreshDriverPayments(showSpinner = true) {
     if (!authUser?.uid) {
@@ -1535,7 +1885,7 @@ export default function DoorDriveApp() {
       if (showSpinner) {
         setFeedback({
           tone: 'error',
-          message: error instanceof Error ? error.message : 'Could not refresh payment status right now.',
+          message: getPaymentFeedbackMessage(error, copy, 'Could not refresh payment status right now.'),
         });
       }
     } finally {
@@ -1551,70 +1901,108 @@ export default function DoorDriveApp() {
   }, [authUser?.uid]);
 
   useEffect(() => {
-    if (!authUser?.uid || !subscriptionPaymentPending) {
+    if (!authUser?.uid) {
       return;
     }
 
-    const timer = setInterval(() => {
-      void verifyDriverAccessPayment(latestPayment?.id).then((status) => {
-        setDriverPaymentStatus(status);
-        setDriverPaymentHistory(status.history || []);
-      }).catch(() => null);
-    }, 10000);
-
-    return () => clearInterval(timer);
-  }, [authUser?.uid, latestPayment?.id, subscriptionPaymentPending]);
+    void refreshDriverPayments(false);
+  }, [authUser?.uid]);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      appStateRef.current = nextState;
+    const detected = detectPaymentNetworkFromPhone(paymentPhoneNumber || driverProfile?.phoneNumber);
+    if (detected) {
+      setSelectedPaymentNetwork(detected);
+    }
+  }, [driverProfile?.phoneNumber, paymentPhoneNumber]);
 
-      if (nextState === 'active' && vibratingAssignedOrderRef.current) {
-        openedAssignedOrderIdsRef.current.add(vibratingAssignedOrderRef.current);
-        vibratingAssignedOrderRef.current = null;
-        Vibration.cancel();
+  useEffect(() => {
+    if (!authUser?.uid || !commissionPaymentPending) {
+      return;
+    }
+
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const delay = setTimeout(() => {
+      interval = setInterval(() => {
+        void verifyDriverCommissionUssd(driverProfile?.commissionPayment?.orderId)
+          .then((status) => {
+            if (status.networks?.length) {
+              // keep pay sheet networks fresh when backend returns them
+            }
+            if (typeof status.unpaidTzs === 'number') {
+              setFeedback((current) =>
+                status.settled
+                  ? { tone: 'success', message: 'Malipo yamethibitishwa.' }
+                  : current
+              );
+            }
+          })
+          .catch(() => null);
+      }, 20000);
+    }, 15000);
+
+    return () => {
+      clearTimeout(delay);
+      if (interval) {
+        clearInterval(interval);
       }
+    };
+  }, [authUser?.uid, commissionPaymentPending, driverProfile?.commissionPayment?.orderId]);
+
+  useEffect(() => {
+    const awaitingAccept = isIncomingOffer(activeOrder);
+
+    if (awaitingAccept && activeOrder && lastIncomingOrderIdRef.current !== activeOrder.id) {
+      lastIncomingOrderIdRef.current = activeOrder.id;
+      startIncomingOrderAlert(activeOrder.id);
+      return;
+    }
+
+    if (!awaitingAccept) {
+      stopIncomingOrderAlert();
+    }
+  }, [activeOrder?.acceptedByDriverAt, activeOrder?.id, activeOrder?.status]);
+
+  useEffect(() => {
+    if (!authUser) {
+      lastIncomingOrderIdRef.current = null;
+      stopIncomingOrderAlert();
+      setIncomingAlertOnline(false);
+      return;
+    }
+
+    const awaitingAccept = isIncomingOffer(activeOrder);
+    setIncomingAlertOnline(Boolean(driverProfile?.isAvailable) || awaitingAccept);
+  }, [activeOrder?.acceptedByDriverAt, activeOrder?.id, activeOrder?.status, authUser, driverProfile?.isAvailable]);
+
+  useEffect(() => {
+    if (!authUser?.uid) {
+      return;
+    }
+
+    let cancelled = false;
+    void registerDriverPushToken(authUser.uid).catch((error) => {
+      console.warn(
+        '[HAUL_PILOTS_PUSH] register failed',
+        error instanceof Error ? error.message : 'error'
+      );
+    });
+
+    const stopForeground = listenForForegroundOrderPushes();
+    const stopTaps = listenForOrderNotificationTaps((orderId) => {
+      if (cancelled) {
+        return;
+      }
+      console.info('[HAUL_PILOTS_PUSH] notification tap', orderId);
+      setSelectedTab('home');
+      setMenuOpen(false);
     });
 
     return () => {
-      subscription.remove();
-      vibratingAssignedOrderRef.current = null;
-      Vibration.cancel();
+      cancelled = true;
+      stopForeground();
+      stopTaps();
     };
-  }, []);
-
-  useEffect(() => {
-    const assignedOrderId =
-      activeOrder?.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt ? activeOrder.id : '';
-
-    if (!assignedOrderId) {
-      if (vibratingAssignedOrderRef.current) {
-        vibratingAssignedOrderRef.current = null;
-        Vibration.cancel();
-      }
-      return;
-    }
-
-    if (appStateRef.current === 'active') {
-      if (vibratingAssignedOrderRef.current === assignedOrderId) {
-        vibratingAssignedOrderRef.current = null;
-        Vibration.cancel();
-      }
-      if (!openedAssignedOrderIdsRef.current.has(assignedOrderId)) {
-        Vibration.vibrate(foregroundAssignedOrderVibrationPattern, false);
-        openedAssignedOrderIdsRef.current.add(assignedOrderId);
-      }
-      return;
-    }
-
-    if (openedAssignedOrderIdsRef.current.has(assignedOrderId) || vibratingAssignedOrderRef.current === assignedOrderId) {
-      return;
-    }
-
-    vibratingAssignedOrderRef.current = assignedOrderId;
-    Vibration.cancel();
-    Vibration.vibrate(assignedOrderVibrationPattern, true);
-  }, [activeOrder?.acceptedByDriverAt, activeOrder?.id, activeOrder?.status]);
+  }, [authUser?.uid]);
 
   // ──────────────────────────────────────────────
   // Original effects (unchanged)
@@ -1640,8 +2028,6 @@ export default function DoorDriveApp() {
       setOnlineHours(0);
       setProfileLoading(false);
       setDriverOrdersLoading(false);
-      setRegisterStep('profile');
-      setProfileSetupStep('profile');
       setRegistrationSubmitted(false);
       knownTripMessageIdsRef.current = new Set();
       tripMessagesHydratedRef.current = false;
@@ -1697,11 +2083,94 @@ export default function DoorDriveApp() {
       }
     );
 
+    const unsubscribeDriverPayments = subscribeToDriverPayments(
+      authUser.uid,
+      (payments) => {
+        setDriverPaymentHistory(payments);
+      }
+    );
+
+    void fetchDriverPaymentHistory()
+      .then((payload) => {
+        if (payload.history?.length) {
+          setDriverPaymentHistory((current) => (current.length ? current : payload.history));
+        }
+      })
+      .catch(() => null);
+
     return () => {
       unsubscribeDriver();
       unsubscribeDriverOrders();
+      unsubscribeDriverPayments();
     };
   }, [authUser]);
+
+  useEffect(() => {
+    const vehicleType = canonicalCargoVehicleKey(driverProfile?.vehicleType);
+    if (!authUser?.uid || !driverProfile?.isAvailable || !vehicleType) {
+      setOpenCargoOffers([]);
+      return;
+    }
+
+    const unsubscribe = subscribeToOpenCargoOffers(vehicleType, (orders) => {
+      setOpenCargoOffers(orders);
+    });
+    return () => unsubscribe();
+  }, [authUser?.uid, driverProfile?.isAvailable, driverProfile?.vehicleType]);
+
+  const cargoOfferSocketRef = useRef<ReturnType<typeof connectCargoOfferSocket> | null>(null);
+
+  // Instant cargo verify WebSocket — receive assigned offers without open-pool polling.
+  useEffect(() => {
+    const driverId = authUser?.uid;
+    if (!driverId || !driverProfile?.isAvailable) {
+      cargoOfferSocketRef.current?.close();
+      cargoOfferSocketRef.current = null;
+      return;
+    }
+
+    let client: ReturnType<typeof connectCargoOfferSocket> | null = null;
+    try {
+      client = connectCargoOfferSocket({
+        onOpen: () => {
+          void (async () => {
+            const token = await auth.currentUser?.getIdToken().catch(() => '');
+            if (!token) {
+              return;
+            }
+            client?.send({ type: 'hello', role: 'driver', driverId, token });
+          })();
+        },
+        onEvent: (event) => {
+          if (event.type === 'offer' && event.orderId) {
+            // Firestore assignment also sets currentOrderId; this wakes the alert path immediately.
+            setFeedback({
+              tone: 'info',
+              message: 'Oda mpya ya mizigo — thibitisha sasa.',
+            });
+          }
+          if (event.type === 'cancelled' && event.orderId) {
+            if (lastCancelledOrderIdRef.current !== event.orderId) {
+              lastCancelledOrderIdRef.current = event.orderId;
+              setOrderCancelledVisible(true);
+              setInAppNavMode(false);
+            }
+          }
+        },
+      });
+      cargoOfferSocketRef.current = client;
+    } catch {
+      // WS URL may be unset in production builds until hosted; Firestore path still works for assigned orders.
+      cargoOfferSocketRef.current = null;
+    }
+
+    return () => {
+      client?.close();
+      if (cargoOfferSocketRef.current === client) {
+        cargoOfferSocketRef.current = null;
+      }
+    };
+  }, [authUser?.uid, driverProfile?.isAvailable]);
 
   useEffect(() => {
     const currentOrderId = driverProfile?.currentOrderId?.trim();
@@ -1714,6 +2183,16 @@ export default function DoorDriveApp() {
       (order) => {
         if (!order || order.driverId !== authUser.uid) {
           return;
+        }
+
+        if (
+          order.status === 'cancelled' &&
+          order.cancelledBy !== 'driver' &&
+          lastCancelledOrderIdRef.current !== order.id
+        ) {
+          lastCancelledOrderIdRef.current = order.id;
+          setOrderCancelledVisible(true);
+          setInAppNavMode(false);
         }
 
         setDriverOrders((currentOrders) => {
@@ -1737,10 +2216,10 @@ export default function DoorDriveApp() {
   }, [authUser?.uid, driverProfile?.currentOrderId]);
 
   useEffect(() => {
-    if (driverProfile) {
+    if (isCompleteDriverProfile(driverProfile)) {
       setRegistrationSubmitted(false);
     }
-  }, [driverProfile?.id]);
+  }, [driverProfile]);
 
   useEffect(() => {
     if (!authUser || !driverProfileMissing) {
@@ -1749,12 +2228,24 @@ export default function DoorDriveApp() {
 
     setProfileSetup((current) => ({
       ...current,
-      fullName: current.fullName || authUser.displayName?.trim() || '',
+      fullName:
+        current.fullName ||
+        (!isPlaceholderDriverName(driverProfile?.fullName) ? driverProfile?.fullName?.trim() : '') ||
+        authUser.displayName?.trim() ||
+        '',
+      phoneNumber: current.phoneNumber || driverProfile?.phoneNumber || '',
+      vehicleType: toPilotVehicleType(driverProfile?.vehicleType || current.vehicleType),
+      vehicleLabel: getVehicleTypeLabel(driverProfile?.vehicleType || current.vehicleType),
+      vehicleColor: current.vehicleColor || driverProfile?.vehicleColor || '',
+      plateNumber: current.plateNumber || driverProfile?.plateNumber || '',
     }));
-  }, [authUser, driverProfileMissing]);
+  }, [authUser, driverProfile, driverProfileMissing]);
 
   useEffect(() => {
     if (!authUser?.uid || !activeOrder?.id || driverProfile?.currentOrderId === activeOrder.id) {
+      return;
+    }
+    if (activeOrder.driverId !== authUser.uid || !isActiveOrderStatus(activeOrder.status) || isIncomingOffer(activeOrder)) {
       return;
     }
 
@@ -1763,13 +2254,62 @@ export default function DoorDriveApp() {
       isAvailable: false,
       updatedAt: serverTimestamp(),
     }).catch(() => null);
-  }, [activeOrder?.id, authUser?.uid, driverProfile?.currentOrderId]);
+  }, [activeOrder, authUser?.uid, driverProfile?.currentOrderId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!activeOrder) {
+      setActiveRoadRoute([]);
+      setInAppNavMode(false);
+      return;
+    }
+
+    const pickup = getOrderPickupPoint(activeOrder);
+    const dropoff = getDriverVisibleDropoffPoint(activeOrder);
+    const driverPoint = getPointFromCoordinates(driverProfile?.currentLatitude, driverProfile?.currentLongitude);
+
+    const origin =
+      activeOrder.status === 'driver_assigned' || activeOrder.status === 'driver_at_pickup'
+        ? driverPoint ?? pickup
+        : pickup;
+    const destination =
+      activeOrder.status === 'driver_assigned' || activeOrder.status === 'driver_at_pickup'
+        ? pickup
+        : dropoff;
+
+    if (!origin || !destination) {
+      setActiveRoadRoute([]);
+      return;
+    }
+
+    setActiveRoadRoute([origin, destination]);
+    void fetchRoadFollowingCoordinates(origin, destination).then((coordinates) => {
+      if (!cancelled && coordinates.length > 1) {
+        setActiveRoadRoute(coordinates);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeOrder?.id,
+    activeOrder?.status,
+    activeOrder?.pickupLatitude,
+    activeOrder?.pickupLongitude,
+    activeOrder?.dropoffLatitude,
+    activeOrder?.dropoffLongitude,
+    driverProfile?.currentLatitude,
+    driverProfile?.currentLongitude,
+  ]);
 
   useEffect(() => {
     if (!activeOrder?.id) {
       setTripMessages([]);
       setTripMessagesLoading(false);
       setTripMessageDraft('');
+      setTripChatOpen(false);
       knownTripMessageIdsRef.current = new Set();
       tripMessagesHydratedRef.current = false;
       return;
@@ -1801,8 +2341,10 @@ export default function DoorDriveApp() {
 
         const latestCustomerMessage = freshCustomerMessages[freshCustomerMessages.length - 1];
         if (latestCustomerMessage) {
-          setFeedback({ tone: 'info', message: `Customer message: ${latestCustomerMessage.message}` });
-          Alert.alert('New customer message', latestCustomerMessage.message);
+          setFeedback({
+            tone: 'info',
+            message: `${copy.notifNewMessageBanner}: ${latestCustomerMessage.message}`,
+          });
         }
       },
       (error) => {
@@ -1845,6 +2387,8 @@ export default function DoorDriveApp() {
         return;
       }
 
+      setLiveMapPoint({ latitude: coords.latitude, longitude: coords.longitude });
+
       setLocationLabel(
         `Live location synced ${new Date().toLocaleTimeString('en-US', {
           hour: 'numeric',
@@ -1857,51 +2401,48 @@ export default function DoorDriveApp() {
       setLocationPermission('requesting');
 
       try {
-        const permission = await Location.requestForegroundPermissionsAsync();
+        const servicesEnabled = await ensureLocationServicesEnabled();
+        if (!servicesEnabled) {
+          setLocationPermission('denied');
+          setLocationLabel(copy.locationServicesOff || 'Turn on location services on this phone to continue.');
+          return;
+        }
+
+        const permission = await requestDriveLocationPermissions();
 
         if (!active) {
           return;
         }
 
-        if (permission.status !== 'granted') {
+        if (!permission.granted) {
           await recordDriverAppOpen({
             uid: authUser.uid,
             email: authUser.email?.trim().toLowerCase(),
-            fullName: driverProfile?.fullName || authUser.displayName?.trim() || 'DoorDrive driver',
+            fullName: driverProfile?.fullName || authUser.displayName?.trim() || 'HAUL Pilots',
             phoneNumber: driverProfile?.phoneNumber || '',
           });
           setLocationPermission('denied');
-          setLocationLabel('Location permission is required for live driver tracking.');
+          setLocationLabel(copy.locationPermissionRequired || 'Location permission is required for live driver tracking.');
           return;
         }
 
         setLocationPermission('granted');
 
-        const current = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
+        const current = await readDeviceLocation();
 
         await recordDriverAppOpen({
           uid: authUser.uid,
           email: authUser.email?.trim().toLowerCase(),
-          fullName: driverProfile?.fullName || authUser.displayName?.trim() || 'DoorDrive driver',
+          fullName: driverProfile?.fullName || authUser.displayName?.trim() || 'HAUL Pilots',
           phoneNumber: driverProfile?.phoneNumber || '',
           latitude: current.coords.latitude,
           longitude: current.coords.longitude,
         });
         await pushLocation(current.coords);
 
-        subscription = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.High,
-            distanceInterval: 10,
-            timeInterval: 3000,
-            mayShowUserSettingsDialog: true,
-          },
-          (nextLocation) => {
-            void pushLocation(nextLocation.coords).catch(() => null);
-          }
-        );
+        subscription = await Location.watchPositionAsync(getLocationWatchOptions(), (nextLocation) => {
+          void pushLocation(nextLocation.coords).catch(() => null);
+        });
       } catch {
         if (!active) {
           return;
@@ -1922,10 +2463,21 @@ export default function DoorDriveApp() {
     authUser?.displayName,
     authUser?.email,
     authUser?.uid,
+    copy.locationPermissionRequired,
+    copy.locationServicesOff,
     driverProfile?.fullName,
     driverProfile?.phoneNumber,
     hasReadyDriverProfile,
   ]);
+
+  useEffect(() => {
+    const point = resolveDriverMapPoint(driverProfile, liveMapPoint);
+    if (!point || !homeMapRef.current?.animateToRegion) {
+      return;
+    }
+
+    homeMapRef.current.animateToRegion(buildMapRegion(point), 650);
+  }, [driverProfile?.currentLatitude, driverProfile?.currentLongitude, liveMapPoint?.latitude, liveMapPoint?.longitude]);
 
   // ──────────────────────────────────────────────
   // NEW: Online session timer
@@ -1970,6 +2522,78 @@ export default function DoorDriveApp() {
     };
   }, [driverProfile?.isAvailable, authUser?.uid, hasReadyDriverProfile]);
 
+  useEffect(() => {
+    if (!hasReadyDriverProfile || !nearbyQueryKey) {
+      setNearbyCustomers([]);
+      return;
+    }
+
+    const [latitudeText, longitudeText] = nearbyQueryKey.split(',');
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      setNearbyCustomers([]);
+      return;
+    }
+
+    const point = { latitude, longitude };
+    let cancelled = false;
+    // Shared map so API + Firestore results merge, not overwrite each other
+    const merged = new Map<string, NearbyCustomer>();
+
+    const applyBatch = (next: NearbyCustomer[]) => {
+      if (cancelled) {
+        return;
+      }
+      for (const customer of next) {
+        if (customer.id !== authUser?.uid) {
+          merged.set(customer.id, customer);
+        }
+      }
+      setNearbyCustomers([...merged.values()]);
+    };
+
+    const loadFromApi = () => {
+      void fetchNearbyOnlineCustomers(point)
+        .then(applyBatch)
+        .catch(() => undefined);
+    };
+
+    loadFromApi();
+    const timer = setInterval(loadFromApi, 15_000);
+    const unsubscribe = subscribeToNearbyOnlineCustomers(point, applyBatch, () => undefined);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      unsubscribe();
+    };
+  }, [authUser?.uid, hasReadyDriverProfile, nearbyQueryKey]);
+
+  useEffect(() => {
+    if (!activeOrder) {
+      setActiveOrderContactPhone('');
+      return;
+    }
+
+    const directPhone = resolveOrderContactPhone(activeOrder);
+    if (directPhone) {
+      setActiveOrderContactPhone(directPhone);
+      return;
+    }
+
+    let cancelled = false;
+    void fetchCustomerPhoneForOrder(activeOrder).then((phone) => {
+      if (!cancelled) {
+        setActiveOrderContactPhone(phone);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeOrder]);
+
   // ──────────────────────────────────────────────
   // NEW: Total earnings from delivered orders
   // ──────────────────────────────────────────────
@@ -1980,8 +2604,24 @@ export default function DoorDriveApp() {
     setTotalEarnings(deliveredTotal);
   }, [driverOrders]);
 
+  /** Agents-style streak standing (mfululizo), surfaced in Bolt Rewards UI. */
+  const pilotStandingState = useMemo(() => {
+    const completed =
+      Number(driverProfile?.completedOrderCount) ||
+      driverOrders.filter((order) => order.status === 'delivered').length;
+    const rejects = Math.max(
+      0,
+      Number((driverProfile as { rejectionCount?: number } | null)?.rejectionCount) || 0
+    );
+    const streak = Math.max(
+      0,
+      Number((driverProfile as { completionStreak?: number } | null)?.completionStreak) || completed
+    );
+    return pilotStanding({ streak, completed, rejects });
+  }, [driverOrders, driverProfile]);
+
   // ──────────────────────────────────────────────
-  // Keep the renewal banner in sync with the daily Mongike payment state.
+  // Keep access payment status in sync with the backend.
   // ──────────────────────────────────────────────
   useEffect(() => {
     setPaymentAmount(dailyCommissionDue);
@@ -2011,7 +2651,7 @@ export default function DoorDriveApp() {
     }
 
     if (!/\S+@\S+\.\S+/.test(normalizedEmail) || loginPassword.trim().length < 6) {
-      setFeedback({ tone: 'error', message: 'Enter your email and password to continue.' });
+      setFeedback({ tone: 'error', message: copy.authMissingLogin });
       return;
     }
 
@@ -2020,7 +2660,7 @@ export default function DoorDriveApp() {
 
     try {
       await signInWithEmailAndPassword(auth, normalizedEmail, loginPassword);
-      setFeedback({ tone: 'success', message: 'Signed in to DoorDrive.' });
+      setFeedback({ tone: 'success', message: 'Signed in to HAUL Pilots.' });
     } catch (error) {
       setFeedback({
         tone: 'error',
@@ -2040,22 +2680,26 @@ export default function DoorDriveApp() {
     const vehicleLabel = getRegisterVehicleLabel(registerForm);
     const password = registerForm.password.trim();
     const confirm = registerForm.confirmPassword.trim();
-    const passwordMatches = password.length >= 6 && (!confirm || confirm === password);
     const vehicleColor = registerForm.vehicleColor.trim() || 'White';
+
+    if (!confirm || confirm !== password) {
+      setFeedback({ tone: 'error', message: copy.authPasswordMismatch });
+      return;
+    }
 
     if (
       registering ||
       fullName.length < 2 ||
       !/\S+@\S+\.\S+/.test(normalizedEmail) ||
       !normalizedRegisterPhone ||
-      !passwordMatches ||
+      password.length < 6 ||
       !vehicleLabel ||
       !registerForm.plateNumber.trim() ||
       !registerTermsAccepted
     ) {
       setFeedback({
         tone: 'error',
-        message: 'Add your name, phone, email, password, plate number, and agree to the terms.',
+        message: !registerTermsAccepted ? copy.authTermsRequired : copy.authMissingRegister,
       });
       return;
     }
@@ -2070,29 +2714,26 @@ export default function DoorDriveApp() {
         displayName: fullName,
       });
 
-      const verificationDocuments = getDriverVerificationDocumentPlaceholders(registerDocuments);
+      const pilotVehicleType = toPilotVehicleType(registerForm.vehicleType);
+      const pilotVehicleLabel = getVehicleTypeLabel(pilotVehicleType);
 
       await registerDriver({
         uid: credential.user.uid,
         email: normalizedEmail,
         fullName,
         phoneNumber: normalizedRegisterPhone,
-        vehicleType: registerForm.vehicleType,
-        vehicleLabel,
+        vehicleType: pilotVehicleType,
+        vehicleLabel: pilotVehicleLabel,
         vehicleColor,
         plateNumber: registerForm.plateNumber.trim(),
         verificationStatus: 'pending_admin_verification',
-        verificationDocuments,
         acceptedTerms: true,
         acceptedTermsVersion: DOORDRIVE_TERMS_VERSION,
       });
 
-      void syncDriverVerificationImages(credential.user.uid, registerDocuments).catch(() => null);
-
       setRegisterForm(getInitialRegisterForm());
-      setRegisterDocuments(getInitialDocumentUploads());
       setRegisterTermsAccepted(false);
-      setRegisterStep('profile');
+      setRegisterStep('details');
       setRegistrationSubmitted(true);
       setFeedback({ tone: 'success', message: 'Account imetumwa kwa admin. Utaweza kupokea orders baada ya verification.' });
       void recordDriverActivity({
@@ -2104,8 +2745,8 @@ export default function DoorDriveApp() {
         screen: 'register',
         route: 'doordrive',
         metadata: {
-          vehicleType: registerForm.vehicleType,
-          vehicleLabel,
+          vehicleType: pilotVehicleType,
+          vehicleLabel: pilotVehicleLabel,
           verificationStatus: 'pending_admin_verification',
         },
       });
@@ -2114,8 +2755,12 @@ export default function DoorDriveApp() {
         tone: 'error',
         message:
           error instanceof FirebaseError
-            ? getFirebaseAuthErrorMessage(error.code)
-            : 'Unable to register the driver account right now.',
+            ? error.code.startsWith('auth/')
+              ? getFirebaseAuthErrorMessage(error.code)
+              : getFirebaseDataErrorMessage(error.code, 'Account haikuweza kufika admin. Jaribu tena.')
+            : error instanceof Error
+              ? error.message
+              : 'Unable to register the driver account right now.',
       });
     } finally {
       setRegistering(false);
@@ -2123,9 +2768,10 @@ export default function DoorDriveApp() {
   };
 
   const handleCompleteProfile = async () => {
-    const vehicleLabel = profileSetup.vehicleLabel.trim() || getVehicleTypeLabel(profileSetup.vehicleType);
+    const pilotVehicleType = toPilotVehicleType(profileSetup.vehicleType);
+    const vehicleLabel = getVehicleTypeLabel(pilotVehicleType);
 
-    if (!authUser || !normalizedSetupPhone || !profileSetup.fullName.trim() || !vehicleLabel || !profileSetup.vehicleColor.trim() || !profileSetup.plateNumber.trim()) {
+    if (!authUser || !normalizedSetupPhone || !profileSetup.fullName.trim() || !vehicleLabel || !profileSetup.plateNumber.trim()) {
       setFeedback({ tone: 'error', message: 'Finish the driver profile before continuing.' });
       return;
     }
@@ -2134,36 +2780,34 @@ export default function DoorDriveApp() {
     setFeedback(null);
 
     try {
-      const verificationDocuments = getDriverVerificationDocumentPlaceholders(profileDocuments);
-
       await registerDriver({
         uid: authUser.uid,
         email: authUser.email?.trim().toLowerCase(),
         fullName: profileSetup.fullName.trim(),
         phoneNumber: normalizedSetupPhone,
-        vehicleType: profileSetup.vehicleType,
+        vehicleType: pilotVehicleType,
         vehicleLabel,
-        vehicleColor: profileSetup.vehicleColor.trim(),
+        vehicleColor: profileSetup.vehicleColor.trim() || 'White',
         plateNumber: profileSetup.plateNumber.trim(),
         verificationStatus: 'pending_admin_verification',
-        verificationDocuments,
       });
-      void syncDriverVerificationImages(authUser.uid, profileDocuments).catch(() => null);
+
       setFeedback({ tone: 'success', message: 'Profile imetumwa kwa admin kwa verification.' });
-      setProfileDocuments(getInitialDocumentUploads());
-      setProfileSetupStep('profile');
       setRegistrationSubmitted(true);
       trackDriverActivity('driver_profile_completed', 'driver_onboarding', {
         vehicleType: profileSetup.vehicleType,
         verificationStatus: 'pending_admin_verification',
       });
     } catch (error) {
+      console.warn('Driver profile submit failed', error);
       setFeedback({
         tone: 'error',
         message:
           error instanceof FirebaseError
-            ? getFirebaseDataErrorMessage(error.code, 'Profile haikuweza kufika admin sasa hivi. Angalia internet kisha jaribu tena.')
-            : 'Profile haikuweza kufika admin sasa hivi. Angalia internet kisha jaribu tena.',
+            ? getFirebaseDataErrorMessage(error.code, 'Profile haikuweza kufika admin sasa hivi. Jaribu tena.')
+            : error instanceof Error
+              ? error.message
+              : 'Profile haikuweza kufika admin sasa hivi. Jaribu tena.',
       });
     } finally {
       setBusyAction('');
@@ -2172,11 +2816,6 @@ export default function DoorDriveApp() {
 
   const handleAdvanceTrip = async (nextStatus: DeliveryOrderStatus) => {
     if (!authUser || !activeOrder || busyAction) {
-      return;
-    }
-
-    if (!subscriptionActive) {
-      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before managing this trip.' });
       return;
     }
 
@@ -2255,11 +2894,9 @@ export default function DoorDriveApp() {
     if (!driverCanReceiveDispatch) {
       setFeedback({
         tone: 'error',
-        message: driverVerificationRejected
-          ? 'Verification yako inahitaji kurekebishwa kabla ya kupokea orders.'
-          : driverVerificationPending
-            ? 'Account yako bado inasubiri admin verification.'
-            : `Lipa TZS ${driverAccessDailyFeeTzs.toLocaleString()} daily access kabla ya kwenda online.`,
+        message          : driverVerificationRejected
+            ? 'Verification yako inahitaji kurekebishwa kabla ya kupokea orders.'
+            : 'Account yako bado inasubiri admin verification.',
       });
       return;
     }
@@ -2269,13 +2906,10 @@ export default function DoorDriveApp() {
 
     try {
       await setDriverAvailability(authUser.uid, !driverProfile.isAvailable);
+      void driveHapticSuccess();
       trackDriverActivity('driver_availability_changed', 'driver_availability', {
         nextAvailability: !driverProfile.isAvailable,
         hasCommissionDue,
-      });
-      setFeedback({
-        tone: 'success',
-        message: !driverProfile.isAvailable ? 'You are now visible to dispatch for assignment.' : 'You are now paused from dispatch assignment.',
       });
     } catch (error) {
       setFeedback({
@@ -2297,29 +2931,28 @@ export default function DoorDriveApp() {
       return;
     }
 
-    if (!subscriptionActive) {
-      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before refreshing live location.' });
-      return;
-    }
-
     setBusyAction('location-refresh');
     setFeedback(null);
 
     try {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== 'granted') {
+      const permission = await requestDriveLocationPermissions();
+      if (!permission.granted) {
         setLocationPermission('denied');
-        setLocationLabel('Location permission is still denied.');
+        setLocationLabel(copy.locationPermissionRequired || 'Location permission is still denied.');
         trackDriverActivity('driver_location_permission_denied', 'driver_location', {
           source: 'manual_refresh',
         });
         return;
       }
 
+      const servicesEnabled = await ensureLocationServicesEnabled();
+      if (!servicesEnabled) {
+        setFeedback({ tone: 'error', message: copy.locationServicesOff || 'Turn on location services on this phone.' });
+        return;
+      }
+
       setLocationPermission('granted');
-      const current = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
+      const current = await readDeviceLocation();
       await updateDriverLocation(authUser.uid, {
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
@@ -2349,21 +2982,40 @@ export default function DoorDriveApp() {
   };
 
   const handleCallCustomer = async () => {
-    if (!activeOrder?.customerPhone) {
-      setFeedback({ tone: 'info', message: 'Customer phone number is not available for this order yet.' });
+    const phone = activeOrderContactPhone || resolveOrderContactPhone(activeOrder);
+    if (!phone) {
+      setFeedback({ tone: 'info', message: copy.customerPhoneMissing || 'Customer phone number is not available for this order yet.' });
       return;
     }
 
-    const sanitized = activeOrder.customerPhone.replace(/\s+/g, '');
-    const target = `tel:${sanitized}`;
-    const supported = await Linking.canOpenURL(target);
-
-    if (!supported) {
-      Alert.alert('Call unavailable', `This device cannot call ${activeOrder.customerPhone}.`);
+    const dialable = readablePhone(phone);
+    if (!dialable) {
+      setFeedback({ tone: 'info', message: copy.customerPhoneMissing || 'Customer phone number is not available for this order yet.' });
       return;
     }
 
-    await Linking.openURL(target);
+    try {
+      await openPhoneDialer(dialable);
+    } catch {
+      Alert.alert(copy.callUnavailable || 'Call unavailable', dialable);
+    }
+  };
+
+  const handleNavigateToDemandHotspot = async () => {
+    if (!topDemandZone) {
+      return;
+    }
+
+    const destination = `${topDemandZone.latitude},${topDemandZone.longitude}`;
+    const nativeUrl = `google.navigation:q=${destination}`;
+    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
+
+    try {
+      const supported = await Linking.canOpenURL(nativeUrl);
+      await Linking.openURL(supported ? nativeUrl : webUrl);
+    } catch {
+      await Linking.openURL(webUrl);
+    }
   };
 
   const handleSendCustomerMessage = async () => {
@@ -2388,7 +3040,7 @@ export default function DoorDriveApp() {
         senderId: authUser.uid,
         senderRole: 'driver',
         senderName:
-          driverProfile?.fullName?.trim() || authUser.displayName?.trim() || activeOrder.driverName || 'DoorDrive driver',
+          driverProfile?.fullName?.trim() || authUser.displayName?.trim() || activeOrder.driverName || 'HAUL Pilots',
         message: trimmedMessage,
       });
       setTripMessageDraft('');
@@ -2413,6 +3065,55 @@ export default function DoorDriveApp() {
     }
   };
 
+  const closeLeadMessageSheet = () => {
+    setSelectedNearbyCustomer(null);
+  };
+
+  const handleSendLeadMessage = async (preset?: string) => {
+    if (!authUser?.uid || !selectedNearbyCustomer || leadMessageSending) {
+      return;
+    }
+
+    const trimmedMessage = String(preset || '').trim();
+    if (!trimmedMessage) {
+      setFeedback({ tone: 'info', message: 'Chagua template kutuma ujumbe.' });
+      return;
+    }
+
+    setLeadMessageSending(true);
+    setFeedback(null);
+
+    try {
+      await sendDirectCustomerMessage({
+        driverId: authUser.uid,
+        driverName: driverProfile?.fullName?.trim() || authUser.displayName?.trim() || 'HAUL Pilots',
+        driverVehicleType: driverProfile?.vehicleType,
+        customerId: selectedNearbyCustomer.id,
+        customerName: selectedNearbyCustomer.firstName,
+        message: trimmedMessage,
+      });
+      trackDriverActivity('driver_lead_message_sent', 'nearby_customers', {
+        customerId: selectedNearbyCustomer.id,
+        messageLength: trimmedMessage.length,
+      });
+      setFeedback({ tone: 'success', message: copy.leadMessageSent });
+      closeLeadMessageSheet();
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message:
+          error instanceof FirebaseError
+            ? getFirebaseDataErrorMessage(error.code, copy.leadMessagePlaceholder)
+            : error instanceof Error
+              ? error.message
+              : copy.leadMessagePlaceholder,
+      });
+    } finally {
+      setLeadMessageSending(false);
+    }
+  };
+
+  /** Keep the driver inside HAUL Pilots — follow the route on the in-app map. */
   const handleOpenNavigation = async () => {
     if (!activeOrder) {
       return;
@@ -2429,44 +3130,51 @@ export default function DoorDriveApp() {
       return;
     }
 
+    setInAppNavMode(true);
+    setSelectedTab('home');
+    setHomeSheetExpanded(false);
+
+    const driverPoint =
+      getPointFromCoordinates(activeOrder.driverLatitude, activeOrder.driverLongitude) ??
+      resolveDriverMapPoint(driverProfile, liveMapPoint);
+    const points = [driverPoint, target.point].filter(Boolean) as MapPoint[];
+    if (homeMapRef.current?.fitToCoordinates && points.length >= 2) {
+      try {
+        homeMapRef.current.fitToCoordinates(points, {
+          edgePadding: { top: 80, right: 48, bottom: 220, left: 48 },
+          animated: true,
+        });
+      } catch {
+        // ignore camera failures — polyline still guides
+      }
+    } else if (homeMapRef.current?.animateToRegion && target.point) {
+      homeMapRef.current.animateToRegion(buildMapRegion(target.point, 0.02, 0.02), 500);
+    }
+
+    trackDriverActivity('driver_in_app_navigation', 'driver_navigation', {
+      orderId: activeOrder.id,
+      orderNumber: activeOrder.orderNumber,
+      targetStatus: activeOrder.status,
+      target: target.kind,
+      provider: 'in_app_map',
+    });
+    setFeedback({ tone: 'info', message: copy.followingRoute });
+  };
+
+  const handleOpenExternalMaps = async () => {
+    if (!activeOrder) return;
+    const target = getDriverNavigationTarget(activeOrder);
+    if (!target.point) return;
     const destination = `${target.point.latitude},${target.point.longitude}`;
     const encodedDestination = encodeURIComponent(destination);
-    const navigationUrl =
-      Platform.OS === 'ios'
-        ? `comgooglemaps://?daddr=${encodedDestination}&directionsmode=driving`
-        : `google.navigation:q=${encodedDestination}&mode=d`;
-    const fallbackUrl =
+    const url =
       Platform.OS === 'ios'
         ? `http://maps.apple.com/?daddr=${encodedDestination}&dirflg=d`
         : `https://www.google.com/maps/dir/?api=1&destination=${encodedDestination}&travelmode=driving`;
-
     try {
-      await Linking.openURL(navigationUrl);
-      trackDriverActivity('driver_navigation_opened', 'driver_navigation', {
-	        orderId: activeOrder.id,
-	        orderNumber: activeOrder.orderNumber,
-	        targetStatus: activeOrder.status,
-	        target: target.kind,
-	        provider: Platform.OS === 'ios' ? 'google_maps_ios' : 'google_navigation',
-	      });
-      return;
+      await Linking.openURL(url);
     } catch {
-      try {
-        await Linking.openURL(fallbackUrl);
-        trackDriverActivity('driver_navigation_opened', 'driver_navigation', {
-	          orderId: activeOrder.id,
-	          orderNumber: activeOrder.orderNumber,
-	          targetStatus: activeOrder.status,
-	          target: target.kind,
-	          provider: Platform.OS === 'ios' ? 'apple_maps' : 'google_maps_web',
-	        });
-        return;
-      } catch {
-        setFeedback({
-          tone: 'info',
-          message: `Navigation could not be opened automatically for ${targetLabel || 'this stop'}.`,
-        });
-      }
+      setFeedback({ tone: 'info', message: copy.followRouteHint });
     }
   };
 
@@ -2480,7 +3188,7 @@ export default function DoorDriveApp() {
     try {
       await signOut(auth);
       setSelectedTab('home');
-      setFeedback({ tone: 'info', message: 'Signed out from DoorDrive.' });
+      setFeedback({ tone: 'info', message: 'Signed out from HAUL Pilots.' });
     } catch {
       setFeedback({ tone: 'error', message: 'Could not sign out right now.' });
     } finally {
@@ -2495,16 +3203,14 @@ export default function DoorDriveApp() {
     if (!hasCommissionDue) {
       setFeedback({
         tone: 'info',
-        message: subscriptionActive
-          ? 'Driver access iko active kwa sasa.'
-          : 'Driver access yako iko clear kwa sasa.',
+        message: 'Hakuna deni la komisheni. Unaendelea kupokea oda.',
       });
       return;
     }
 
-    if (subscriptionPaymentPending) {
+    if (commissionPaymentPending) {
       setPaymentCheckoutStep('submitted');
-      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Approve prompt ya mobile money kisha refresh status.' });
+      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Approve USSD kwenye simu yako kisha refresh status.' });
       return;
     }
 
@@ -2513,31 +3219,29 @@ export default function DoorDriveApp() {
     setPaymentCheckoutStep('proof');
   };
 
-  const handleInitiateMongikePayment = async () => {
-    if (!authUser?.uid || busyAction === 'commission-payment') {
+  const handleInitiateMongikePayment = async (forceRetry = false) => {
+    if (!authUser?.uid || busyAction === 'commission-payment' || ussdInitiateLockRef.current) {
       return;
     }
 
     if (!hasCommissionDue || !dailyCommissionDue) {
       setFeedback({
         tone: 'info',
-        message: subscriptionActive
-          ? 'Driver access iko active kwa sasa.'
-          : 'Huhitaji kulipa sasa hivi. Driver access yako iko clear.',
+        message: 'Hakuna deni la komisheni kwa sasa.',
       });
       return;
     }
 
-    if (subscriptionPaymentPending) {
+    if (commissionPaymentPending && !forceRetry) {
       setPaymentCheckoutStep('submitted');
-      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Angalia prompt kwenye simu yako.' });
+      setFeedback({ tone: 'info', message: 'Malipo yako yapo pending. Angalia prompt ya PIN kwenye simu yako.' });
       return;
     }
 
-    const normalizedPaymentPhone = normalizePhoneNumber(paymentPhoneNumber || driverProfile?.phoneNumber || '');
+    const normalizedPaymentPhone = normalizePhoneNumber(paymentPhoneNumber || driverProfile?.phoneNumber || '').replace(/^\+/, '');
 
-    if (!selectedNetworkMeta?.enabled) {
-      setFeedback({ tone: 'info', message: `${selectedNetworkMeta?.label || 'Network hii'} bado haijafunguliwa. Tumia Vodacom M-Pesa kwa sasa.` });
+    if (selectedNetworkMeta && selectedNetworkMeta.enabled === false) {
+      setFeedback({ tone: 'info', message: 'Chagua M-Pesa, Mixx by Yas, au Airtel Money.' });
       return;
     }
 
@@ -2546,40 +3250,49 @@ export default function DoorDriveApp() {
       return;
     }
 
+    ussdInitiateLockRef.current = true;
     setBusyAction('commission-payment');
     setFeedback(null);
 
+    let didSendUssd = false;
     try {
-      const status = await initiateDriverAccessPayment({
+      const status = await initiateDriverCommissionUssd({
         phoneNumber: normalizedPaymentPhone,
-        network: selectedPaymentNetwork,
+        network: detectedPaymentNetwork || selectedPaymentNetwork,
+        amount: dailyCommissionDue,
       });
-      setDriverPaymentStatus(status);
-      setDriverPaymentHistory(status.history || []);
-      trackDriverActivity('driver_subscription_payment_submitted', 'driver_payments', {
+      didSendUssd = !status.duplicate;
+      trackDriverActivity('driver_commission_payment_submitted', 'driver_payments', {
         dateKey: commissionDateKey,
         grossAmount: dailyGrossEarnings,
         commissionAmount: dailyCommissionDue,
-        subscriptionFee: dailyCommissionDue,
-        weeklyDeliveredOrderCount,
-        method: 'mongike_mobile_money',
-        network: selectedPaymentNetwork,
+        method: 'trivapesa_ussd',
+        network: detectedPaymentNetwork || selectedPaymentNetwork,
+        orderId: status.orderId || '',
       });
       setPaymentCheckoutStep('submitted');
-      setFeedback({ tone: 'success', message: 'Payment prompt imetumwa. Thibitisha kwenye simu yako.' });
-      Alert.alert('Payment prompt imetumwa', 'Thibitisha malipo kwenye simu yako. Access itafunguka automatic baada ya Mongike kuthibitisha.');
+      setFeedback(
+        status.duplicate
+          ? { tone: 'info', message: status.message || 'USSD bado inasubiri. Ingiza PIN kwenye simu sasa.' }
+          : { tone: 'success', message: status.message || 'USSD imetumwa. Thibitisha PIN kwenye simu yako.' }
+      );
     } catch (error) {
       setFeedback({
         tone: 'error',
         message:
           error instanceof FirebaseError
-            ? getFirebaseDataErrorMessage(error.code, 'Could not record the access update right now.')
-            : error instanceof Error
-              ? error.message
-              : 'Could not record the access update right now.',
+            ? getFirebaseDataErrorMessage(error.code, 'Could not start TrivaPesa payment.')
+            : getPaymentFeedbackMessage(error, copy, 'Could not start TrivaPesa payment.'),
       });
     } finally {
       setBusyAction('');
+      if (!didSendUssd) {
+        ussdInitiateLockRef.current = false;
+      } else {
+        setTimeout(() => {
+          ussdInitiateLockRef.current = false;
+        }, 20000);
+      }
     }
   };
 
@@ -2592,21 +3305,20 @@ export default function DoorDriveApp() {
     setFeedback(null);
 
     try {
-      const status = await verifyDriverAccessPayment(latestPayment?.id);
-      setDriverPaymentStatus(status);
-      setDriverPaymentHistory(status.history || []);
+      const status = await verifyDriverCommissionUssd(driverProfile?.commissionPayment?.orderId);
       setFeedback({
-        tone: status.subscription.active ? 'success' : 'info',
-        message: status.subscription.active
-          ? 'Payment imethibitishwa. DoorDrive access imefunguka.'
-          : status.subscription.pending
-            ? 'Bado pending. Hakikisha ume-approve prompt ya mobile money.'
-            : 'Payment haijakamilika bado.',
+        tone: status.settled || status.status === 'completed' || status.status === 'clear' ? 'success' : 'info',
+        message: status.settled || status.status === 'completed' || status.status === 'clear'
+          ? 'Malipo yamethibitishwa. Unaweza kuendelea kupokea oda.'
+          : status.status === 'pending'
+            ? status.message || 'Bado pending. Hakikisha ume-approve prompt ya mobile money.'
+            : status.message || 'Payment haijakamilika bado.',
       });
+      void fetchDriverCommissionStatus().catch(() => null);
     } catch (error) {
       setFeedback({
         tone: 'error',
-        message: error instanceof Error ? error.message : 'Could not verify the payment right now.',
+        message: getPaymentFeedbackMessage(error, copy, 'Could not verify the payment right now.'),
       });
     } finally {
       setPaymentRefreshing(false);
@@ -2618,23 +3330,45 @@ export default function DoorDriveApp() {
       return;
     }
 
-    if (!subscriptionActive) {
-      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before accepting orders.' });
-      return;
-    }
-
     setBusyAction('accept-order');
     setFeedback(null);
 
     try {
+      const amount = Math.max(
+        activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 0,
+        activeOrder.customerOffer ?? 0
+      );
+      const instantVerify = String(activeOrder.assignmentMode || '') === 'cargo_ws';
+      if (
+        !instantVerify &&
+        activeOrder.fareType === 'negotiated' &&
+        (!activeOrder.driverId || activeOrder.status === 'pending_assignment')
+      ) {
+        await submitDriverFare(authUser.uid, activeOrder.id, amount || activeOrder.customerOffer || 0);
+      }
       await acceptDriverOrder(authUser.uid, activeOrder.id);
+      if (instantVerify) {
+        const token = await auth.currentUser?.getIdToken().catch(() => '');
+        if (token) {
+          // Notify customer over the socket; server is idempotent if Firestore already accepted.
+          cargoOfferSocketRef.current?.send({
+            type: 'driver_accept',
+            orderId: activeOrder.id,
+            driverId: authUser.uid,
+            token,
+          });
+        }
+      }
+      void driveHapticSuccess();
       trackDriverActivity('driver_order_accepted', 'driver_order_response', {
         orderId: activeOrder.id,
         orderNumber: activeOrder.orderNumber,
         serviceLabel: activeOrder.serviceLabel,
         fareLabel: activeOrder.totalLabel || activeOrder.fareLabel,
       });
-      setFeedback({ tone: 'success', message: 'Order accepted. Navigate to the pickup point.' });
+      setInAppNavMode(true);
+      setSelectedTab('home');
+      setFeedback({ tone: 'success', message: copy.followingRoute });
     } catch (error) {
       setFeedback({
         tone: 'error',
@@ -2650,11 +3384,65 @@ export default function DoorDriveApp() {
     }
   };
 
+  const handleDriverFarePrimary = async () => {
+    if (!authUser?.uid || !activeOrder || busyAction) {
+      return;
+    }
+    if (activeOrder.fareType !== 'negotiated') {
+      await handleAcceptOrder();
+      return;
+    }
+    const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+    const draft = Math.max(minFare, driverFareDraft ?? activeOrder.customerOffer ?? minFare);
+    const customerOffer = activeOrder.customerOffer ?? 0;
+    if (cargoOffersMatch(customerOffer, draft)) {
+      await handleAcceptOrder();
+      return;
+    }
+    const used = Math.max(0, Math.round(Number(activeOrder.driverNegotiationUsed) || 0));
+    const sameResend =
+      activeOrder.lastOfferBy === 'driver' && cargoOffersMatch(activeOrder.driverOffer, draft);
+    if (sameResend) {
+      return;
+    }
+    if (used >= DRIVER_NEGOTIATION_CHANCES) {
+      if (activeOrder.lastOfferBy === 'customer') {
+        await handleAcceptOrder();
+        return;
+      }
+      setFeedback({ tone: 'error', message: 'Nafasi za kujadili zimekwisha. Kubali bei ya mteja.' });
+      return;
+    }
+
+    setBusyAction('counter-fare');
+    setFeedback(null);
+    try {
+      await submitDriverFare(authUser.uid, activeOrder.id, draft, driverOfferNote);
+      setDriverFareDraft(draft);
+      setFeedback({ tone: 'success', message: 'Bei imetumwa kwa mteja.' });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message:
+          error instanceof FirebaseError
+            ? getFirebaseDataErrorMessage(error.code, 'Could not send this fare right now.')
+            : error instanceof Error
+              ? error.message
+              : 'Could not send this fare right now.',
+      });
+    } finally {
+      setBusyAction('');
+    }
+  };
+
   useEffect(() => {
     if (!autoConfirm || !activeOrder || busyAction) {
       return;
     }
     if (activeOrder.status !== 'driver_assigned' || activeOrder.acceptedByDriverAt) {
+      return;
+    }
+    if (activeOrder.fareType === 'negotiated') {
       return;
     }
     if (autoAcceptedOrderIdRef.current === activeOrder.id) {
@@ -2669,16 +3457,28 @@ export default function DoorDriveApp() {
       return;
     }
 
-    if (!subscriptionActive) {
-      setFeedback({ tone: 'error', message: 'Renew DoorDrive access before changing order status.' });
-      return;
-    }
-
     setBusyAction('decline-order');
     setFeedback(null);
 
     try {
-      await declineDriverOrder(authUser.uid, activeOrder.id, 'Rejected from driver app');
+      const instantVerify = String(activeOrder.assignmentMode || '') === 'cargo_ws';
+      if (instantVerify) {
+        const token = await auth.currentUser?.getIdToken().catch(() => '');
+        const sent =
+          token &&
+          cargoOfferSocketRef.current?.send({
+            type: 'driver_decline',
+            orderId: activeOrder.id,
+            driverId: authUser.uid,
+            reason: 'Rejected from driver app',
+            token,
+          });
+        if (!sent) {
+          await declineDriverOrder(authUser.uid, activeOrder.id, 'Rejected from driver app');
+        }
+      } else {
+        await declineDriverOrder(authUser.uid, activeOrder.id, 'Rejected from driver app');
+      }
       trackDriverActivity('driver_order_declined', 'driver_order_response', {
         orderId: activeOrder.id,
         orderNumber: activeOrder.orderNumber,
@@ -2761,121 +3561,50 @@ export default function DoorDriveApp() {
     }
   };
 
-  const pickDocumentImage = async (
-    key: DocumentKey,
-    setter: React.Dispatch<React.SetStateAction<DriverDocumentUploads>>
-  ) => {
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        setFeedback({ tone: 'error', message: 'Ruhusu app kuchagua picha ili kuendelea na verification.' });
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.82,
-        allowsEditing: false,
-      });
-
-      if (result.canceled || !result.assets[0]) {
-        return;
-      }
-
-      const asset = result.assets[0];
-      setter((current) => ({
-        ...current,
-        [key]: {
-          uri: asset.uri,
-          fileName: asset.fileName || `${key}.jpg`,
-          mimeType: asset.mimeType || 'image/jpeg',
-        },
-      }));
-      setFeedback(null);
-    } catch {
-      setFeedback({ tone: 'error', message: 'Picha haikuweza kuchaguliwa sasa hivi. Jaribu tena.' });
-    }
-  };
-
-  const pickRegisterDocument = (key: DocumentKey) => {
-    void pickDocumentImage(key, setRegisterDocuments);
-  };
-
-  const pickProfileDocument = (key: DocumentKey) => {
-    void pickDocumentImage(key, setProfileDocuments);
-  };
-
   const handleRegisterBack = () => {
     setFeedback(null);
+    if (authMode === 'register' && registerStep === 'details') {
+      setRegisterStep('vehicle');
+      return;
+    }
+    setRegisterStep('vehicle');
     setAuthMode('signin');
   };
 
-  const handleRegisterContinue = () => {
-    const normalizedEmail = registerForm.email.trim().toLowerCase();
-    const fullName = getRegisterFullName(registerForm);
+  const handlePasswordReset = async () => {
+    const normalizedEmail = loginEmail.trim().toLowerCase();
 
+    if (resettingPassword) {
+      return;
+    }
+
+    if (!/\S+@\S+\.\S+/.test(normalizedEmail)) {
+      setFeedback({ tone: 'error', message: copy.authResetMissing });
+      return;
+    }
+
+    setResettingPassword(true);
     setFeedback(null);
 
-    if (
-      fullName.length < 2 ||
-      !/\S+@\S+\.\S+/.test(normalizedEmail) ||
-      !normalizedRegisterPhone ||
-      registerForm.password.trim().length < 6 ||
-      !registerForm.plateNumber.trim()
-    ) {
+    try {
+      await sendPasswordResetEmail(auth, normalizedEmail);
+      setFeedback({ tone: 'success', message: copy.authResetSent });
+    } catch (error) {
       setFeedback({
         tone: 'error',
-        message: 'Add your name, phone, email, password, and plate number.',
+        message:
+          error instanceof FirebaseError
+            ? getFirebasePasswordResetErrorMessage(error.code)
+            : copy.authResetMissing,
       });
-      return;
+    } finally {
+      setResettingPassword(false);
     }
-
-    if (!registerTermsAccepted) {
-      setFeedback({
-        tone: 'error',
-        message: 'Please agree to the terms to continue.',
-      });
-      return;
-    }
-
-    void handleRegister();
   };
 
   const handleProfileSetupBack = () => {
     setFeedback(null);
-
-    if (profileSetupStep === 'profile') {
-      void handleSignOut();
-      return;
-    }
-
-    setProfileSetupStep((current) => getPreviousSetupStep(current));
-  };
-
-  const handleProfileSetupContinue = () => {
-    setFeedback(null);
-
-    if (profileSetupStep === 'profile') {
-      if (!profileSetup.fullName.trim() || !normalizedSetupPhone) {
-        setFeedback({ tone: 'error', message: 'Add your full name and phone number before continuing.' });
-        return;
-      }
-
-      setProfileSetupStep((current) => getNextSetupStep(current));
-      return;
-    }
-
-    if (profileSetupStep === 'vehicle') {
-      if (!profileSetup.vehicleType || !profileSetup.vehicleColor.trim() || !profileSetup.plateNumber.trim()) {
-        setFeedback({ tone: 'error', message: 'Choose vehicle type, color, and enter the plate number before continuing.' });
-        return;
-      }
-
-      void handleCompleteProfile();
-      return;
-    }
-
-    void handleCompleteProfile();
+    void handleSignOut();
   };
 
   // ──────────────────────────────────────────────
@@ -2883,146 +3612,290 @@ export default function DoorDriveApp() {
   // ──────────────────────────────────────────────
 
   const renderAuthScreen = () => {
-    if (authMode === 'register') {
-      return (
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.authCanvas}>
-            <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <Pressable onPress={handleRegisterBack} style={({ pressed }) => [styles.authBackButton, pressed && styles.buttonPressed]}>
-                <MaterialCommunityIcons name="arrow-left" size={22} color={driveTheme.colors.ink} />
-              </Pressable>
+    const openRegister = () => {
+      setFeedback(null);
+      setRegisterTermsAccepted(false);
+      setRegisterStep('vehicle');
+      setAuthMode('register');
+    };
 
-              <Text style={styles.authPageTitle}>Register</Text>
+    const openForgot = () => {
+      setFeedback(null);
+      setAuthMode('forgot');
+    };
 
-              {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+    const authTopBar = (showBack: boolean) => (
+      <View style={styles.authScreenTopBar}>
+        {showBack ? (
+          <Pressable
+            onPress={handleRegisterBack}
+            accessibilityRole="button"
+            accessibilityLabel={copy.authBackToLogin}
+            style={({ pressed }) => [styles.authBackQuiet, pressed && styles.buttonPressed]}>
+            <MaterialCommunityIcons name="arrow-left" size={22} color="#F8FAFC" />
+          </Pressable>
+        ) : (
+          <View style={styles.authHeaderSpacer} />
+        )}
+        <View style={styles.authHeaderSpacer} />
+        <Pressable onPress={() => chooseLanguage(language === 'en' ? 'sw' : 'en')} hitSlop={8}>
+          <Text style={styles.authLanguageQuiet}>{copy.authLanguageOther}</Text>
+        </Pressable>
+      </View>
+    );
 
-              <SetupField
-                value={registerForm.firstName}
-                onChangeText={(value) => setRegisterForm((current) => ({ ...current, firstName: value, lastName: '', confirmPassword: current.password }))}
-                placeholder="Full name"
-              />
-              <SetupField
-                value={registerForm.phoneNumber}
-                onChangeText={(value) => setRegisterForm((current) => ({ ...current, phoneNumber: value }))}
-                placeholder="Phone number"
-                keyboardType="phone-pad"
-                autoCapitalize="none"
-              />
-              <SetupField
-                value={registerForm.email}
-                onChangeText={(value) => setRegisterForm((current) => ({ ...current, email: value }))}
-                placeholder="Email"
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-              <SetupField
-                value={registerForm.password}
-                onChangeText={(value) => setRegisterForm((current) => ({ ...current, password: value, confirmPassword: value }))}
-                placeholder="Password"
-                secureTextEntry
-                autoCapitalize="none"
-              />
+    const renderRegisterForm = () => (
+      <>
+        {authTopBar(true)}
+        <View style={styles.authHeroCopy}>
+          <Text style={styles.authPageTitle}>
+            {registerStep === 'vehicle' ? copy.authVehicleDetailsTitle : copy.authRegisterTitle}
+          </Text>
+        </View>
 
-              <Text style={styles.authFieldHint}>Vehicle</Text>
-              <VehicleTypePicker
-                value={registerForm.vehicleType}
-                onChange={(vehicleType) => setRegisterForm((current) => ({ ...current, vehicleType }))}
-              />
-              <SetupField
-                value={registerForm.plateNumber}
-                onChangeText={(value) => setRegisterForm((current) => ({ ...current, plateNumber: value }))}
-                placeholder="Plate number"
-                autoCapitalize="characters"
-              />
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-              <Pressable
-                onPress={() => setRegisterTermsAccepted((current) => !current)}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: registerTermsAccepted }}
-                style={({ pressed }) => [styles.authTermsRow, pressed && styles.buttonPressed]}>
-                <View style={[styles.termsCheckbox, registerTermsAccepted && styles.termsCheckboxActive]}>
-                  {registerTermsAccepted ? <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" /> : null}
-                </View>
-                <Text style={styles.authTermsText}>
-                  I agree to the{' '}
-                  <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
-                    Terms
-                  </Text>
-                  {' '}and{' '}
-                  <Text style={styles.authLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
-                    Privacy Policy
-                  </Text>
+        {registerStep === 'details' ? (
+          <>
+            <SetupField
+              value={registerForm.firstName}
+              onChangeText={(value) => setRegisterForm((current) => ({ ...current, firstName: value }))}
+              placeholder={copy.authFullName}
+              autoCapitalize="words"
+              autoComplete="name"
+              textContentType="name"
+            />
+            <View style={styles.setupPhoneRow}>
+              <View style={styles.authCountryCode}>
+                <Text style={styles.setupFlagText}>TZ</Text>
+                <Text style={styles.authDialCode}>+255</Text>
+              </View>
+              <View style={styles.setupPhoneInput}>
+                <SetupField
+                  value={registerForm.phoneNumber}
+                  onChangeText={(value) => setRegisterForm((current) => ({ ...current, phoneNumber: value }))}
+                  placeholder={copy.authPhone}
+                  keyboardType="phone-pad"
+                  autoCapitalize="none"
+                  autoComplete="tel"
+                  textContentType="telephoneNumber"
+                />
+              </View>
+            </View>
+            <SetupField
+              value={registerForm.email}
+              onChangeText={(value) => setRegisterForm((current) => ({ ...current, email: value }))}
+              placeholder={copy.authEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoComplete="email"
+              textContentType="emailAddress"
+            />
+            <SetupField
+              value={registerForm.password}
+              onChangeText={(value) => setRegisterForm((current) => ({ ...current, password: value }))}
+              placeholder={copy.authPassword}
+              secureTextEntry
+              autoCapitalize="none"
+              autoComplete="password-new"
+              textContentType="newPassword"
+            />
+            <SetupField
+              value={registerForm.confirmPassword}
+              onChangeText={(value) => setRegisterForm((current) => ({ ...current, confirmPassword: value }))}
+              placeholder={copy.authConfirmPassword}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="newPassword"
+            />
+            <SetupField
+              value={registerForm.plateNumber}
+              onChangeText={(value) => setRegisterForm((current) => ({ ...current, plateNumber: value }))}
+              placeholder={copy.authPlate}
+              autoCapitalize="characters"
+            />
+            <Pressable
+              onPress={() => setRegisterTermsAccepted((current) => !current)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: registerTermsAccepted }}
+              style={({ pressed }) => [styles.authTermsRow, pressed && styles.buttonPressed]}>
+              <View style={[styles.termsCheckbox, registerTermsAccepted && styles.termsCheckboxActive]}>
+                {registerTermsAccepted ? <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" /> : null}
+              </View>
+              <Text style={styles.authTermsText}>
+                {copy.authAgreePrefix}{' '}
+                <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
+                  {copy.authTerms}
                 </Text>
-              </Pressable>
+                {' '}{copy.authAnd}{' '}
+                <Text style={styles.authLink} onPress={() => void Linking.openURL(PRIVACY_URL)}>
+                  {copy.authPrivacy}
+                </Text>
+              </Text>
+            </Pressable>
+            <AppButton
+              label={registering ? copy.authCreating : copy.authCreateAccount}
+              onPress={() => void handleRegister()}
+              disabled={registering}
+            />
+          </>
+        ) : (
+          <>
+            <VehicleTypePicker
+              value={toPilotVehicleType(registerForm.vehicleType)}
+              onChange={(vehicleType) =>
+                setRegisterForm((current) => ({
+                  ...current,
+                  vehicleType,
+                  vehicleLabel: getVehicleTypeLabel(vehicleType),
+                }))
+              }
+            />
+            <AppButton label={copy.authContinue} onPress={() => { setFeedback(null); setRegisterStep('details'); }} />
+          </>
+        )}
 
-              <AppButton
-                label={registering ? 'Creating account...' : 'Create account'}
-                onPress={handleRegisterContinue}
-                disabled={registering}
-              />
+        {registerStep === 'details' ? (
+          <Pressable
+            onPress={handleRegisterBack}
+            style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+            <Text style={styles.loginSecondaryActionText}>{copy.authVehicleDetailsTitle}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={handleRegisterBack}
+            style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+            <Text style={styles.loginSecondaryActionMuted}>{copy.authHaveAccount}</Text>
+            <Text style={styles.loginSecondaryActionText}>{copy.authLogin}</Text>
+          </Pressable>
+        )}
+      </>
+    );
 
-              <Pressable
-                onPress={handleRegisterBack}
-                style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
-                <Text style={styles.loginSecondaryActionMuted}>Have an account?</Text>
-                <Text style={styles.loginSecondaryActionText}>Login</Text>
-              </Pressable>
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      );
-    }
+    const renderForgotForm = () => (
+      <>
+        {authTopBar(true)}
+        <View style={styles.authHeroCopy}>
+          <Text style={styles.authPageTitle}>{copy.authForgotTitle}</Text>
+        </View>
+
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+        <SetupField
+          value={loginEmail}
+          onChangeText={(value) => {
+            setLoginEmail(value);
+            if (feedback) {
+              setFeedback(null);
+            }
+          }}
+          placeholder={copy.authEmail}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          textContentType="emailAddress"
+          returnKeyType="send"
+          onSubmitEditing={() => void handlePasswordReset()}
+        />
+
+        <AppButton
+          label={resettingPassword ? copy.authSendingReset : copy.authSendReset}
+          onPress={() => void handlePasswordReset()}
+          disabled={resettingPassword}
+        />
+
+        <Pressable
+          onPress={handleRegisterBack}
+          style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+          <Text style={styles.loginSecondaryActionText}>{copy.authBackToLogin}</Text>
+        </Pressable>
+      </>
+    );
+
+    const renderLoginForm = () => (
+      <>
+        {authTopBar(false)}
+        <View style={styles.authLandingHero}>
+          <Text style={[styles.authPageTitle, styles.authLandingTitle]}>{copy.authLoginTitle}</Text>
+          <Text style={styles.authLandingSubtitle}>
+            {language === 'sw' ? 'Ingia ili upokee oda za mizigo.' : 'Sign in to receive cargo orders.'}
+          </Text>
+        </View>
+
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+        <SetupField
+          value={loginEmail}
+          onChangeText={(value) => {
+            setLoginEmail(value);
+            if (feedback) {
+              setFeedback(null);
+            }
+          }}
+          placeholder={copy.authEmail}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          textContentType="emailAddress"
+          returnKeyType="next"
+        />
+        <SetupField
+          value={loginPassword}
+          onChangeText={(value) => {
+            setLoginPassword(value);
+            if (feedback) {
+              setFeedback(null);
+            }
+          }}
+          placeholder={copy.authPassword}
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="password"
+          textContentType="password"
+          returnKeyType="done"
+          onSubmitEditing={() => void handleSignIn()}
+        />
+
+        <AppButton
+          label={signingIn ? copy.authLoggingIn : copy.authLogin}
+          onPress={() => void handleSignIn()}
+          disabled={signingIn}
+        />
+
+        <Pressable
+          onPress={openForgot}
+          style={({ pressed }) => [styles.authForgotButton, pressed && styles.buttonPressed]}>
+          <Text style={styles.authForgotButtonText}>{copy.authForgot}</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={openRegister}
+          style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+          <Text style={styles.loginSecondaryActionMuted}>{copy.authNoAccount}</Text>
+          <Text style={styles.loginSecondaryActionText}>{copy.authRegister}</Text>
+        </Pressable>
+
+        <View style={styles.authFooter}>
+          <Text style={styles.authFooterText}>
+            {copy.authLegal}{' '}
+            <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
+              {copy.authTerms}
+            </Text>
+            .
+          </Text>
+        </View>
+      </>
+    );
 
     return (
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.authCanvas}>
-          <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.authPageTitle}>Login</Text>
-
-            {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-            <SetupField
-              value={loginEmail}
-              onChangeText={setLoginEmail}
-              placeholder="Email"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <SetupField
-              value={loginPassword}
-              onChangeText={setLoginPassword}
-              placeholder="Password"
-              secureTextEntry
-              autoCapitalize="none"
-            />
-
-            <AppButton
-              label={signingIn ? 'Logging in...' : 'Login'}
-              onPress={() => void handleSignIn()}
-              disabled={signingIn}
-            />
-
-            <Pressable
-              onPress={() => {
-                setFeedback(null);
-                setRegisterStep('profile');
-                setRegisterTermsAccepted(false);
-                setAuthMode('register');
-              }}
-              style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
-              <Text style={styles.loginSecondaryActionMuted}>No account?</Text>
-              <Text style={styles.loginSecondaryActionText}>Register</Text>
-            </Pressable>
-
-            <View style={styles.authFooter}>
-              <Text style={styles.authFooterText}>
-                By continuing, you agree to the{' '}
-                <Text style={styles.authLink} onPress={() => void Linking.openURL(TERMS_URL)}>
-                  Terms
-                </Text>
-                .
-              </Text>
-            </View>
+          <ScrollView
+            style={styles.flex}
+            contentContainerStyle={styles.authScroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            {authMode === 'register' ? renderRegisterForm() : authMode === 'forgot' ? renderForgotForm() : renderLoginForm()}
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
@@ -3030,218 +3903,166 @@ export default function DoorDriveApp() {
   };
 
   // ──────────────────────────────────────────────
-  // Profile setup (unchanged)
+  // Profile setup
   // ──────────────────────────────────────────────
 
-  const renderProfileSetup = () => {
-    const renderProfileStepContent = () => {
-      if (profileSetupStep === 'profile') {
-        return (
-          <View style={styles.setupFormStack}>
-            <SetupField
-              value={profileSetup.fullName}
-              onChangeText={(value) => setProfileSetup((current) => ({ ...current, fullName: value }))}
-              placeholder="Full Name"
-            />
-            <View style={styles.setupPhoneRow}>
-              <View style={styles.setupCountryCode}>
-                <Text style={styles.setupFlagText}>TZ</Text>
-                <MaterialCommunityIcons name="menu-down" size={24} color="#7B8B8D" />
-              </View>
-              <View style={styles.setupPhoneInput}>
-                <SetupField
-                  value={profileSetup.phoneNumber}
-                  onChangeText={(value) => setProfileSetup((current) => ({ ...current, phoneNumber: value }))}
-                  placeholder="+255"
-                  keyboardType="phone-pad"
-                  autoCapitalize="none"
-                />
-              </View>
-            </View>
-          </View>
-        );
-      }
+  const persistPilotVehicle = async (vehicleType: DriverVehicleType) => {
+    const next = toPilotVehicleType(vehicleType);
+    if (!authUser?.uid) {
+      return;
+    }
+    setBusyAction('vehicle-choice');
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'drivers', authUser.uid), {
+        vehicleType: next,
+        vehicleLabel: getVehicleTypeLabel(next),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Gari halikuhifadhiwa. Jaribu tena.',
+      });
+    } finally {
+      setBusyAction('');
+    }
+  };
 
-      if (profileSetupStep === 'vehicle') {
-        return (
-          <View style={styles.setupFormStack}>
-            <View style={styles.setupVehiclePickerWrap}>
-              <Text style={styles.setupMiniLabel}>Vehicle type</Text>
-              <VehicleTypePicker
-                value={profileSetup.vehicleType}
-                onChange={(vehicleType) => setProfileSetup((current) => ({ ...current, vehicleType }))}
-              />
-            </View>
-            <View style={styles.setupVehiclePickerWrap}>
-              <Text style={styles.setupMiniLabel}>Vehicle color</Text>
-              <VehicleColorPicker
-                value={profileSetup.vehicleColor}
-                onChange={(vehicleColor) => setProfileSetup((current) => ({ ...current, vehicleColor }))}
-              />
-            </View>
-            <SetupField
-              value={profileSetup.plateNumber}
-              onChangeText={(value) => setProfileSetup((current) => ({ ...current, plateNumber: value }))}
-              placeholder="Plate number"
-              autoCapitalize="characters"
-            />
-          </View>
-        );
-      }
-
-      return (
-        <View style={styles.setupFormStack}>
-          <DocumentUploadList uploads={profileDocuments} onPick={pickProfileDocument} />
-            <View style={styles.setupNotice}>
-              <MaterialCommunityIcons name="map-marker-check-outline" size={20} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.setupNoticeText}>
-                Taarifa za dereva na gari zitatumwa kwa admin kwa verification.
-              </Text>
-            </View>
+  const renderVehicleChoiceScreen = () => (
+    <View style={styles.setupScreen}>
+      <ScrollView contentContainerStyle={styles.setupScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <View style={styles.authHeroCopy}>
+          <Text style={styles.authPageTitle}>{copy.authVehicleDetailsTitle}</Text>
         </View>
-      );
-    };
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+        <VehicleTypePicker
+          value={isCanonicalPilotVehicle(driverProfile?.vehicleType) ? String(driverProfile?.vehicleType) : ''}
+          onChange={(vehicleType) => void persistPilotVehicle(vehicleType)}
+        />
+      </ScrollView>
+    </View>
+  );
 
-    return (
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.setupScreen}>
-          <View style={styles.setupHeader}>
-            <Pressable onPress={handleProfileSetupBack} style={({ pressed }) => [styles.setupBackButton, pressed && styles.buttonPressed]}>
-              <MaterialCommunityIcons name="arrow-left" size={28} color={driveTheme.colors.ink} />
-            </Pressable>
-            <Text style={styles.setupTitle}>Account Setup</Text>
-            <View style={styles.setupHeaderSpacer} />
+  const renderProfileSetup = () => (
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.setupScreen}>
+        <View style={styles.authScreenTopBar}>
+          <Pressable onPress={handleProfileSetupBack} style={({ pressed }) => [styles.authBackQuiet, pressed && styles.buttonPressed]}>
+            <MaterialCommunityIcons name="arrow-left" size={22} color={driveTheme.colors.ink} />
+          </Pressable>
+          <Text style={styles.authTopBrandName}>{copy.authBrand}</Text>
+          <View style={styles.authHeaderSpacer} />
+        </View>
+        <ScrollView style={styles.flex} contentContainerStyle={styles.setupScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={styles.authHeroCopy}>
+            <Text style={styles.authPageTitle}>Wasifu</Text>
           </View>
-          <Text style={styles.setupIntro}>To set up your account, complete these steps:</Text>
-          <SetupProgress activeStep={profileSetupStep} />
 
           {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-          <ScrollView contentContainerStyle={styles.setupScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            {renderProfileStepContent()}
-          </ScrollView>
-
-          <View style={styles.setupFooter}>
-            <AppButton
-              label={
-                profileSetupStep === 'vehicle'
-                  ? busyAction === 'complete-profile'
-                    ? 'Saving profile...'
-                    : 'Submit profile'
-                  : 'Continue'
-              }
-              icon={profileSetupStep === 'vehicle' ? 'check' : 'arrow-right'}
-              onPress={handleProfileSetupContinue}
-              disabled={busyAction === 'complete-profile'}
-            />
+          <SetupField
+            value={profileSetup.plateNumber}
+            onChangeText={(value) => setProfileSetup((current) => ({ ...current, plateNumber: value }))}
+            placeholder={copy.authPlate}
+            autoCapitalize="characters"
+          />
+          <SetupField
+            value={profileSetup.fullName}
+            onChangeText={(value) => setProfileSetup((current) => ({ ...current, fullName: value }))}
+            placeholder={copy.authFullName}
+          />
+          <View style={styles.setupPhoneRow}>
+            <View style={styles.authCountryCode}>
+              <Text style={styles.setupFlagText}>TZ</Text>
+              <Text style={styles.authDialCode}>+255</Text>
+            </View>
+            <View style={styles.setupPhoneInput}>
+              <SetupField
+                value={profileSetup.phoneNumber}
+                onChangeText={(value) => setProfileSetup((current) => ({ ...current, phoneNumber: value }))}
+                placeholder={copy.authPhone}
+                keyboardType="phone-pad"
+                autoCapitalize="none"
+              />
+            </View>
           </View>
-        </View>
-      </KeyboardAvoidingView>
-    );
-  };
+          <AppButton
+            label={busyAction === 'complete-profile' ? copy.authSavingProfile : copy.authSubmitProfile}
+            onPress={() => void handleCompleteProfile()}
+            disabled={busyAction === 'complete-profile'}
+          />
+        </ScrollView>
+      </View>
+    </KeyboardAvoidingView>
+  );
+
+  const renderDriverBlockedScreen = () => (
+    <View style={[styles.authCanvas, styles.authQuietPage]}>
+      <Text style={styles.authPageTitle}>{copy.authBlockedTitle}</Text>
+      <Text style={styles.authHeroSubtitle}>{copy.authBlockedBody}</Text>
+      {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+      <AppButton label={copy.signOut} onPress={() => void handleSignOut()} />
+    </View>
+  );
 
   const renderVerificationStatusScreen = () => {
     const vehicleLabel = driverProfile
-      ? `${driverProfile.vehicleLabel || getVehicleTypeLabel(driverProfile.vehicleType)} • ${driverProfile.plateNumber || 'Plate pending'}`
+      ? `${getVehicleTypeLabel(driverProfile.vehicleType || driverProfile.vehicleLabel)} · ${driverProfile.plateNumber || copy.platePending}`
       : getRegisterVehicleLabel(registerForm);
 
     return (
-      <View style={styles.verificationScreen}>
-        <View style={styles.verificationCard}>
-          <View style={styles.verificationIconShell}>
-            <MaterialCommunityIcons name="shield-lock-outline" size={42} color={driveTheme.colors.primaryDark} />
-          </View>
-          <Text style={styles.verificationTitle}>Identity yako inasubiri approval</Text>
-          <Text style={styles.verificationText}>
-            Tunasubiri admin athibitishe plate number, picha ya gari, na picha ya dereva. Ukisha-approved utaweza kwenda online na kupokea oda.
-          </Text>
-
-          <View style={styles.verificationChecklist}>
-            <View style={styles.verificationCheckRow}>
-              <MaterialCommunityIcons name="check-circle" size={20} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.verificationCheckText}>Account details zimetumwa</Text>
-            </View>
-            <View style={styles.verificationCheckRow}>
-              <MaterialCommunityIcons name="check-circle" size={20} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.verificationCheckText}>Vehicle: {vehicleLabel || 'Submitted'}</Text>
-            </View>
-            <View style={styles.verificationCheckRow}>
-              <MaterialCommunityIcons name="clock-outline" size={20} color={driveTheme.colors.warning} />
-              <Text style={styles.verificationCheckText}>Admin verification inaendelea</Text>
-            </View>
-          </View>
-
-          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-          <View style={styles.verificationActions}>
-            <AppButton label="Subiri approval" icon="timer-sand" disabled />
-            <Pressable onPress={() => void handleSignOut()} style={({ pressed }) => [styles.verificationSignOut, pressed && styles.buttonPressed]}>
-              <MaterialCommunityIcons name="logout" size={18} color={driveTheme.colors.ink} />
-              <Text style={styles.verificationSignOutText}>Sign out</Text>
-            </Pressable>
-          </View>
+      <View style={[styles.authCanvas, styles.authQuietPage]}>
+        <Text style={styles.authPageTitle}>{copy.authWaitingTitle}</Text>
+        <View style={styles.waitingVehicleLine}>
+          <Text style={styles.waitingVehicleText}>{vehicleLabel || copy.authVehicle}</Text>
         </View>
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+        <AppButton label={copy.signOut} onPress={() => void handleSignOut()} />
       </View>
     );
   };
 
-  const renderAccessRenewalScreen = () => (
-    <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
-      {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+  const openBrokerageCheckout = () => {
+    setPaymentCheckoutStep(subscriptionPaymentPending ? 'submitted' : 'proof');
+    setPaymentPhoneNumber((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
+    setAccountView('payments');
+    setSelectedTab('account');
+    if (subscriptionPaymentPending) {
+      void handleRefreshPaymentStatus();
+    }
+  };
 
-      <View style={[styles.paymentDebtCard, styles.paymentDebtCardDue]}>
-        <View style={styles.paymentDebtTop}>
-          <View style={styles.paymentDebtIcon}>
-            <MaterialCommunityIcons name={subscriptionPaymentPending ? 'clock-outline' : 'cash-fast'} size={26} color="#FFFFFF" />
-          </View>
-          <View style={styles.paymentDebtCopy}>
-            <Text style={styles.paymentDebtLabel}>DoorDrive access required</Text>
-            <Text style={styles.paymentDebtAmount}>TZS {driverAccessDailyFeeTzs.toLocaleString()} / day</Text>
-            <Text style={styles.paymentDebtMeta}>
-              {subscriptionPaymentPending
-                ? 'Payment iko pending. Thibitisha prompt kwenye simu yako ili access ifunguke.'
-                : 'Access imeisha. Driver operations zimefungwa mpaka ufanye malipo.'}
-            </Text>
-          </View>
-        </View>
+  // ──────────────────────────────────────────────
+  // Access renewal (payment lock)
+  // ──────────────────────────────────────────────
 
-        <View style={styles.subscriptionCountdownCard}>
-          <View style={styles.subscriptionCountdownIcon}>
-            <MaterialCommunityIcons name="shield-lock-outline" size={22} color={driveTheme.colors.primaryDark} />
+  const renderAccessRenewalScreen = () => {
+    return (
+      <>
+        {feedback ? (
+          <View style={styles.lockFeedbackWrap}>
+            <FeedbackBanner tone={feedback.tone} message={feedback.message} />
           </View>
-          <View style={styles.subscriptionCountdownCopy}>
-            <Text style={styles.subscriptionCountdownLabel}>Blocked operations</Text>
-            <Text style={styles.subscriptionCountdownValue}>{subscriptionCountdownLabel}</Text>
-            <Text style={styles.subscriptionCountdownCaption}>Go online, accept orders, location refresh, and trip controls require active access.</Text>
-          </View>
-        </View>
-
-        <AppButton
-          label={subscriptionPaymentPending ? 'Refresh payment status' : 'Renew with Mongike'}
-          icon={subscriptionPaymentPending ? 'refresh' : 'cash-fast'}
-          onPress={() => {
-            setSelectedTab('account');
-            setAccountView('payments');
-            setPaymentCheckoutStep(subscriptionPaymentPending ? 'submitted' : 'proof');
-            if (subscriptionPaymentPending) {
+        ) : null}
+        <DailyCommissionLock
+          unpaidLabel={`TZS ${commissionSummary.unpaidTzs.toLocaleString()}`}
+          pending={commissionPaymentPending}
+          busy={busyAction === 'commission-payment' || paymentRefreshing}
+          onPay={() => {
+            if (commissionPaymentPending) {
               void handleRefreshPaymentStatus();
-            } else {
-              setPaymentPhoneNumber((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
+              return;
             }
+            setPaymentPhoneNumber((current) => current || driverProfile?.phoneNumber || '');
+            setPaymentCheckoutStep('proof');
+            setAccountView('payments');
+            setSelectedTab('account');
           }}
-          disabled={paymentRefreshing}
         />
-      </View>
-
-      <SectionCard title="Why blocked?" subtitle="DoorDrive daily access is required for driver operations.">
-        <View style={styles.stackMd}>
-          <Text style={styles.tripLine}>Mongike payment is initiated by the backend only. The API key is never sent to the app.</Text>
-          <Text style={styles.tripLine}>After confirmation, webhook updates your subscription and receipt automatically.</Text>
-          <Text style={styles.tripLine}>Active payment: Vodacom M-Pesa to {paymentRecipientPhone}. Other networks are coming soon.</Text>
-        </View>
-      </SectionCard>
-    </ScrollView>
-  );
+      </>
+    );
+  };
 
   // ──────────────────────────────────────────────
   // Home tab (navigation-first driver dashboard)
@@ -3249,18 +4070,18 @@ export default function DoorDriveApp() {
 
   const renderHomeTab = () => {
     const orderPickupPoint = activeOrder ? getOrderPickupPoint(activeOrder) : null;
-    const currentDriverPoint = getPointFromCoordinates(driverProfile?.currentLatitude, driverProfile?.currentLongitude);
+    const currentDriverPoint = resolveDriverMapPoint(driverProfile, liveMapPoint);
     const pickupPoint =
       orderPickupPoint
         ? orderPickupPoint
-        : currentDriverPoint ?? { latitude: -6.7924, longitude: 39.2083 };
+        : currentDriverPoint ?? DAR_ES_SALAAM_FALLBACK;
     const driverDropoffPoint = activeOrder ? getDriverVisibleDropoffPoint(activeOrder) : null;
     const driverDropoffLabel = activeOrder ? getDriverVisibleDropoffLabel(activeOrder) : '';
     const dropoffPoint =
       driverDropoffPoint ?? pickupPoint;
     const canRenderMap = Platform.OS !== 'web' && MapView && Marker && Polyline;
     const isOnline = Boolean(driverProfile?.isAvailable);
-    const awaitingAccept = Boolean(activeOrder && activeOrder.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt);
+    const awaitingAccept = isIncomingOffer(activeOrder);
     const todayAverage = todayCompletedCount > 0 ? Math.round(todayEarnings / todayCompletedCount) : 0;
     const allTimeDeliveredCount = driverProfile?.completedOrderCount || driverOrders.filter((order) => order.status === 'delivered').length;
     const homeAvailabilityNote = activeOrder
@@ -3269,13 +4090,9 @@ export default function DoorDriveApp() {
         ? copy.verificationReview
         : driverVerificationRejected
           ? copy.verificationRejected
-          : hasCommissionDue
-            ? subscriptionPaymentPending
-              ? copy.paymentPending
-              : copy.payToReceive
-            : isOnline
-              ? copy.ordersWillAppear
-              : copy.tapGoToReceive;
+          : isOnline
+            ? copy.ordersWillAppear
+            : copy.tapGoToReceive;
     const homeOrderStatusLabel =
       activeOrder?.status === 'driver_assigned'
         ? copy.newOrder
@@ -3289,6 +4106,7 @@ export default function DoorDriveApp() {
     const pickupDistanceKm = currentDriverPoint ? haversineDistanceKm(currentDriverPoint, pickupPoint) : null;
     const pickupEtaMin = pickupDistanceKm != null ? Math.max(1, Math.round(pickupDistanceKm / 0.35)) : null;
     const requestCustomerName = activeOrder?.customerName || activeOrder?.recipientName || '';
+    const driverFirstName = (driverProfile?.fullName || '').trim().split(/\s+/)[0];
     const mapLatitude = activeOrder ? (pickupPoint.latitude + dropoffPoint.latitude) / 2 : pickupPoint.latitude;
     const mapLongitude = activeOrder ? (pickupPoint.longitude + dropoffPoint.longitude) / 2 : pickupPoint.longitude;
     const mapLatitudeDelta = activeOrder
@@ -3300,240 +4118,434 @@ export default function DoorDriveApp() {
 
     return (
       <View style={styles.homeScreen}>
-        {awaitingAccept ? null : (
-        <View style={styles.homeTopPanel}>
-          <View style={styles.homeTopRow}>
-            <View style={[styles.homeStatusPill, isOnline ? styles.homeStatusPillOnline : styles.homeStatusPillOffline]}>
-              <View style={[styles.homeStatusDot, isOnline ? styles.homeStatusDotOnline : styles.homeStatusDotOffline]} />
-              <Text style={[styles.homeStatusPillText, isOnline ? styles.homeStatusPillTextOnline : styles.homeStatusPillTextOffline]}>
-                {isOnline ? copy.online : copy.offline}
-              </Text>
-            </View>
-            <Pressable
-              onPress={() => setSelectedTab('notifications')}
-              style={({ pressed }) => [styles.homeIconChip, pressed && styles.buttonPressed]}>
-              <MaterialCommunityIcons name="bell-outline" size={22} color="#0F172A" />
-              {unreadNotificationCount > 0 ? (
-                <View style={styles.notificationDot}>
-                  <Text style={styles.notificationDotText}>{Math.min(unreadNotificationCount, 9)}</Text>
-                </View>
-              ) : null}
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={() => setSelectedTab(activeOrder ? 'trip' : 'history')}
-            style={({ pressed }) => [styles.homeEarningsCard, pressed && styles.buttonPressed]}>
-            <View style={styles.homeEarningsHead}>
-              <Text style={styles.homeEarningsKicker}>{copy.todayEarnings}</Text>
-              <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
-            </View>
-            <Text style={styles.homeEarningsValue}>TZS {todayEarnings.toLocaleString()}</Text>
-            <View style={styles.homeEarningsStats}>
-              <View style={styles.homeEarningsStat}>
-                <Text style={styles.homeEarningsStatValue}>{todayCompletedCount}</Text>
-                <Text style={styles.homeEarningsStatLabel}>{copy.delivered}</Text>
-              </View>
-              <View style={styles.homeEarningsStatDivider} />
-              <View style={styles.homeEarningsStat}>
-                <Text style={styles.homeEarningsStatValue}>{todayActiveCount}</Text>
-                <Text style={styles.homeEarningsStatLabel}>{copy.active}</Text>
-              </View>
-              <View style={styles.homeEarningsStatDivider} />
-              <View style={styles.homeEarningsStat}>
-                <Text style={styles.homeEarningsStatValue}>TZS {todayAverage.toLocaleString()}</Text>
-                <Text style={styles.homeEarningsStatLabel}>{copy.avgPerOrder}</Text>
-              </View>
-            </View>
-            <View style={styles.homeEarningsFooter}>
-              <Text style={styles.homeEarningsFooterText}>
-                {copy.allTime} · TZS {totalEarnings.toLocaleString()}
-              </Text>
-              <Text style={styles.homeEarningsFooterMeta}>{allTimeDeliveredCount} {copy.orders}</Text>
-            </View>
-          </Pressable>
-
-          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-          {hasCommissionDue ? (
-            <Pressable
-              onPress={() => {
-                setPaymentCheckoutStep('debt');
-                setAccountView('payments');
-                setSelectedTab('account');
-              }}
-              style={({ pressed }) => [
-                styles.homeDueBanner,
-                commissionPaymentOverdue ? styles.homeDueBannerOverdue : styles.homeDueBannerPending,
-                pressed && styles.buttonPressed,
-              ]}>
-              <Text style={styles.homeDueBannerText} numberOfLines={1}>
-                {subscriptionPaymentPending ? copy.paymentPending : copy.payNow} · TZS {weeklySubscriptionFeeTzs.toLocaleString()}
-              </Text>
-              <Text style={styles.homeDueBannerMeta}>{subscriptionCountdownShortLabel}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        )}
-
         <View style={styles.homeMapWrap}>
-        {canRenderMap ? (
-          <MapView
-            provider={undefined}
-            style={styles.homeMapFill}
-            mapType="standard"
-            showsCompass={false}
-            showsTraffic={false}
-            toolbarEnabled={false}
-            showsUserLocation={false}
-            loadingEnabled
-            initialRegion={{
-              latitude: mapLatitude,
-              longitude: mapLongitude,
-              latitudeDelta: mapLatitudeDelta,
-              longitudeDelta: mapLongitudeDelta,
-            }}>
-            {currentDriverPoint ? (
-              <Marker coordinate={currentDriverPoint} title="You" pinColor="#14532D" />
-            ) : null}
-            {activeOrder ? (
-              <Marker coordinate={pickupPoint} title="Pickup" description={activeOrder.pickupLabel} pinColor="#16A34A" />
-            ) : null}
-            {activeOrder && driverDropoffPoint ? (
-              <Marker coordinate={dropoffPoint} title="Drop-off" description={driverDropoffLabel} pinColor="#2563EB" />
-            ) : null}
-            {activeOrder && driverDropoffPoint ? (
-              <Polyline coordinates={[pickupPoint, dropoffPoint]} strokeColor="#2563EB" strokeWidth={5} />
-            ) : currentDriverPoint && activeOrder ? (
-              <Polyline coordinates={[currentDriverPoint, pickupPoint]} strokeColor="#2563EB" strokeWidth={5} />
-            ) : null}
-          </MapView>
-        ) : (
-          <View style={[styles.homeMapFill, styles.homeMapFallback]}>
-            <View style={styles.homeMapGridLineA} />
-            <View style={styles.homeMapGridLineB} />
-            <View style={styles.homeMapRoutePreview} />
-            <View style={[styles.homeMapPin, styles.homeMapPinPickup]}>
-              <MaterialCommunityIcons name="map-marker" size={18} color="#FFFFFF" />
-            </View>
-            <View style={[styles.homeMapPin, styles.homeMapPinDropoff]}>
-              <MaterialCommunityIcons name="flag-checkered" size={16} color="#FFFFFF" />
-            </View>
-            <View style={styles.homeMapVehicle}>
-              <MaterialCommunityIcons name="car" size={18} color="#FFFFFF" />
-            </View>
-          </View>
-        )}
-
-        {awaitingAccept ? (
-          <Pressable
-            onPress={() => void performDeclineOrder()}
-            disabled={busyAction === 'decline-order'}
-            style={({ pressed }) => [styles.homeDeclinePill, pressed && styles.buttonPressed]}>
-            <MaterialCommunityIcons name="close" size={16} color="#FFFFFF" />
-            <Text style={styles.homeDeclinePillText}>
-              {busyAction === 'decline-order' ? copy.declining : copy.decline}
-            </Text>
-          </Pressable>
-        ) : null}
-
-        <View pointerEvents="box-none" style={styles.homeBottomOverlay}>
-          {awaitingAccept && activeOrder ? (
-            <Pressable
-              onPress={() => void handleAcceptOrder()}
-              disabled={busyAction === 'accept-order'}
-              style={({ pressed }) => [styles.homeBoltCard, busyAction === 'accept-order' && styles.buttonDisabled, pressed && styles.buttonPressed]}>
-              <Text style={styles.homeBoltStats}>
-                {pickupEtaMin != null && pickupDistanceKm != null
-                  ? `${pickupEtaMin} min  •  ${pickupDistanceKm.toFixed(1)} km`
-                  : activeOrder.totalLabel}
-              </Text>
-              <Text style={styles.homeBoltPlace} numberOfLines={2}>{activeOrder.pickupLabel}</Text>
-              {requestCustomerName ? (
-                <Text style={styles.homeBoltCustomer} numberOfLines={1}>{requestCustomerName}</Text>
+          {canRenderMap ? (
+            <MapView
+              ref={homeMapRef}
+              provider={mapsProvider}
+              style={styles.homeMapFill}
+              mapType="standard"
+              customMapStyle={DRIVE_DARK_MAP_STYLE}
+              userInterfaceStyle="dark"
+              liteMode={false}
+              showsCompass={false}
+              showsTraffic={Boolean((isOnline && !activeOrder) || inAppNavMode)}
+              showsMyLocationButton={false}
+              toolbarEnabled={false}
+              moveOnMarkerPress={false}
+              rotateEnabled={false}
+              pitchEnabled={false}
+              showsUserLocation
+              followsUserLocation={!activeOrder || inAppNavMode}
+              loadingEnabled
+              loadingBackgroundColor="#0E1626"
+              loadingIndicatorColor="#34C759"
+              onPoiClick={() => undefined}
+              initialRegion={buildMapRegion(
+                { latitude: mapLatitude, longitude: mapLongitude },
+                mapLatitudeDelta,
+                mapLongitudeDelta
+              )}>
+              {currentDriverPoint ? (
+                <Marker
+                  coordinate={currentDriverPoint}
+                  pinColor="#34C759"
+                  tappable={false}
+                  tracksViewChanges={false}
+                  title="HAUL Pilots"
+                />
               ) : null}
-              <Text style={styles.homeBoltFare}>{activeOrder.totalLabel}</Text>
-              <Text style={styles.homeBoltAcceptText}>
-                {busyAction === 'accept-order' ? copy.accepting : copy.accept}
-              </Text>
-            </Pressable>
-          ) : activeOrder ? (
-            <View style={styles.homeSheet}>
-              <View style={styles.homeSheetHandle} />
-              <Text style={styles.homeSheetKicker}>{homeOrderStatusLabel}</Text>
-              <Text style={styles.homeSheetTitle} numberOfLines={1}>{activeOrder.pickupLabel}</Text>
-              <Text style={styles.homeSheetSubtitle} numberOfLines={1}>{driverDropoffLabel}</Text>
-              <View style={styles.homeTripActions}>
-                <Pressable
-                  onPress={() => void handleOpenNavigation()}
-                  style={({ pressed }) => [styles.homeAcceptButton, styles.homeTripActionGrow, pressed && styles.buttonPressed]}>
-                  <MaterialCommunityIcons name="navigation-variant" size={18} color="#FFFFFF" />
-                  <Text style={styles.homeAcceptButtonText}>{copy.navigate}</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => void handleCallCustomer()}
-                  style={({ pressed }) => [styles.homeIconAction, pressed && styles.buttonPressed]}>
-                  <MaterialCommunityIcons name="phone" size={20} color="#14532D" />
-                </Pressable>
-                <Pressable
-                  onPress={() => setSelectedTab('trip')}
-                  style={({ pressed }) => [styles.homeIconAction, pressed && styles.buttonPressed]}>
-                  <MaterialCommunityIcons name="chevron-right" size={22} color="#14532D" />
-                </Pressable>
-              </View>
-              <Pressable
-                onPress={handleCancelActiveTrip}
-                disabled={busyAction === 'trip-cancelled'}
-                style={({ pressed }) => [styles.homeGhostButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.homeGhostButtonText}>
-                  {busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
-                </Text>
-              </Pressable>
-            </View>
-          ) : isOnline ? (
-            <View style={styles.homeIdleCard}>
-              <View style={styles.homeSearchRow}>
-                <View style={styles.homeLiveDot} />
-                <View style={styles.homeIdleCopy}>
-                  <Text style={styles.homeIdleTitle}>{copy.lookingForOrders}</Text>
-                  <Text style={styles.homeIdleSubtitle} numberOfLines={2}>{homeAvailabilityNote}</Text>
-                </View>
-              </View>
-              <Pressable
-                onPress={() => void handleToggleAvailability()}
-                disabled={busyAction === 'availability'}
-                style={({ pressed }) => [styles.homeGhostButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.homeGhostButtonText}>
-                  {busyAction === 'availability' ? copy.updating : copy.goOffline}
-                </Text>
-              </Pressable>
-            </View>
+              {activeOrder ? (
+                <Marker coordinate={pickupPoint} pinColor="#F97316" tappable={false} tracksViewChanges={false} />
+              ) : null}
+              {activeOrder && driverDropoffPoint ? (
+                <Marker coordinate={dropoffPoint} pinColor="#38BDF8" tappable={false} tracksViewChanges={false} />
+              ) : null}
+              {activeOrder && activeRoadRoute.length >= 2 ? (
+                <Polyline
+                  coordinates={activeRoadRoute}
+                  strokeColor={inAppNavMode ? '#34C759' : '#38BDF8'}
+                  strokeWidth={inAppNavMode ? 6 : 5}
+                />
+              ) : activeOrder && driverDropoffPoint ? (
+                <Polyline coordinates={[pickupPoint, dropoffPoint]} strokeColor="#38BDF8" strokeWidth={5} />
+              ) : currentDriverPoint && activeOrder ? (
+                <Polyline coordinates={[currentDriverPoint, pickupPoint]} strokeColor="#34C759" strokeWidth={5} />
+              ) : null}
+              {!activeOrder && Circle
+                ? demandZones.slice(0, 5).map((zone) => (
+                    <Circle
+                      key={zone.id}
+                      center={{ latitude: zone.latitude, longitude: zone.longitude }}
+                      radius={zone.radiusMeters}
+                      fillColor={`rgba(234, 88, 12, ${0.1 + zone.intensity * 0.24})`}
+                      strokeColor={`rgba(220, 38, 38, ${0.22 + zone.intensity * 0.35})`}
+                      strokeWidth={1.5}
+                      zIndex={1}
+                    />
+                  ))
+                : null}
+              {!activeOrder
+                ? nearbyCustomers.map((customer) => (
+                    <NearbyCustomerMarker
+                      key={customer.id}
+                      MarkerComponent={Marker}
+                      customer={customer}
+                      onPress={() => {
+                        setSelectedNearbyCustomer(customer);
+                      }}
+                    />
+                  ))
+                : null}
+            </MapView>
           ) : (
-            <View style={styles.homeOfflineDock}>
-              <View style={styles.homeGoHalo}>
-                <Pressable
-                  onPress={() => void handleToggleAvailability()}
-                  disabled={busyAction === 'availability'}
-                  style={({ pressed }) => [
-                    styles.homeGoButton,
-                    busyAction === 'availability' && styles.buttonDisabled,
-                    pressed && styles.buttonPressed,
-                  ]}>
-                  {busyAction === 'availability' ? (
-                    <ActivityIndicator color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.homeGoText}>{copy.start}</Text>
-                  )}
-                </Pressable>
-              </View>
-              <View style={styles.homeGoCopyCard}>
-                <Text style={styles.homeGoCaption}>{copy.youAreOffline}</Text>
-                <Text style={styles.homeGoHint} numberOfLines={2}>{homeAvailabilityNote}</Text>
-              </View>
+            <View style={[styles.homeMapFill, styles.homeMapFallback]}>
+              <View style={styles.homeMapGridLineA} />
+              <View style={styles.homeMapGridLineB} />
             </View>
           )}
+
+          <DriveHomeMapGradients />
+
+          {!activeOrder ? (
+            <View pointerEvents="box-none" style={styles.homeFloatingHeader}>
+              <View style={styles.boltTopBar}>
+                <PilotMapChromeButton
+                  icon="menu"
+                  accessibilityLabel={copy.menuTitle}
+                  onPress={() => setMenuOpen(true)}
+                />
+                <PilotEarningsPill
+                  value={`TZS ${todayEarnings.toLocaleString()}`}
+                  meta={copy.todayShort}
+                  commissionLabel={copy.commissionDueShort}
+                  commissionValue={`TZS ${(hasCommissionDue ? dailyCommissionDue : Math.round(todayEarnings * 0.2)).toLocaleString()}`}
+                  expandedHint={
+                    hasCommissionDue
+                      ? copy.commissionTapHint
+                      : language === 'sw'
+                        ? 'Makadirio 20% ya leo · bofya tena kuficha'
+                        : 'Est. 20% of today · tap again to hide'
+                  }
+                />
+                <PilotMapChromeButton
+                  icon="shield-check-outline"
+                  accessibilityLabel={copy.tabAlerts}
+                  onPress={() => setSelectedTab('notifications')}
+                />
+              </View>
+              {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+            </View>
+          ) : null}
+
+          {!activeOrder && !awaitingAccept && !homeSheetExpanded ? (
+            <View
+              pointerEvents="box-none"
+              style={[styles.boltGoOnlineWrap, { bottom: HOME_SHEET_PEEK + 20 }]}>
+              <View style={styles.boltMapToolsRow}>
+                <PilotMapChromeButton
+                  icon="crosshairs-gps"
+                  accessibilityLabel={copy.refreshLocation}
+                  onPress={() => {
+                    const point = resolveDriverMapPoint(driverProfile, liveMapPoint);
+                    if (point && homeMapRef.current?.animateToRegion) {
+                      homeMapRef.current.animateToRegion(buildMapRegion(point), 500);
+                    }
+                  }}
+                />
+                <View style={styles.boltMapToolsSpacer} />
+                {topDemandZone ? (
+                  <PilotMapChromeButton
+                    icon="map-marker-radius"
+                    accessibilityLabel={copy.demandNavigate}
+                    onPress={() => void handleNavigateToDemandHotspot()}
+                  />
+                ) : null}
+              </View>
+              <PilotGoOnlineButton
+                online={isOnline}
+                label={
+                  busyAction === 'availability'
+                    ? copy.updating
+                    : isOnline
+                      ? copy.goOffline
+                      : copy.goOnline
+                }
+                loading={busyAction === 'availability'}
+                onPress={() => void handleToggleAvailability()}
+              />
+            </View>
+          ) : null}
+
+          <View pointerEvents="box-none" style={styles.homeBottomOverlay}>
+            {awaitingAccept && activeOrder ? (
+              <DriveOrderCard
+                meta={
+                  activeOrder.fareType === 'negotiated' && (activeOrder.customerOffer ?? 0) > 0
+                    ? `Bei ya mteja TZS ${Math.round(activeOrder.customerOffer ?? 0).toLocaleString('en-US')}`
+                    : pickupEtaMin != null && pickupDistanceKm != null
+                      ? `${pickupEtaMin} min · ${pickupDistanceKm.toFixed(1)} km`
+                      : copy.newOrder
+                }
+                place={activeOrder.pickupLabel}
+                customer={requestCustomerName || undefined}
+                customerPhone={activeOrderContactPhone || resolveOrderContactPhone(activeOrder) || undefined}
+                phoneLabel={copy.customerPhoneLabel}
+                callLabel={copy.callCustomer}
+                onCall={() => void handleCallCustomer()}
+                fareLabel={copy.orderFareLabel}
+                fare={
+                  isInstantCargoVerify
+                    ? activeOrder.totalLabel ||
+                      `TZS ${Math.round(
+                        Math.max(
+                          activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000,
+                          activeOrder.customerOffer ?? 0
+                        )
+                      ).toLocaleString('en-US')}`
+                    : activeOrder.fareType === 'negotiated'
+                      ? `TZS ${Math.round(
+                          Math.max(
+                            activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000,
+                            driverFareDraft ?? activeOrder.customerOffer ?? 0
+                          )
+                        ).toLocaleString('en-US')}`
+                      : activeOrder.totalLabel
+                }
+                loadLabel={activeOrder.fareType === 'negotiated' ? activeOrder.cargoSizeLabel : undefined}
+                customerNote={
+                  isInstantCargoVerify
+                    ? undefined
+                    : activeOrder.fareType === 'negotiated'
+                      ? activeOrder.customerOfferNote
+                      : undefined
+                }
+                chancesUsed={isInstantCargoVerify ? undefined : fareNegotiation ? fareNegotiation.used : undefined}
+                chancesTotal={isInstantCargoVerify ? undefined : DRIVER_NEGOTIATION_CHANCES}
+                chanceHint={isInstantCargoVerify ? undefined : fareNegotiation?.chanceHint}
+                spendingChance={isInstantCargoVerify ? false : Boolean(fareNegotiation?.sendingNew)}
+                offerNote={isInstantCargoVerify ? undefined : driverOfferNote}
+                onChangeOfferNote={
+                  isInstantCargoVerify
+                    ? undefined
+                    : fareNegotiation && fareNegotiation.left > 0
+                      ? setDriverOfferNote
+                      : undefined
+                }
+                fareStepper={
+                  !isInstantCargoVerify &&
+                  activeOrder.fareType === 'negotiated' &&
+                  fareNegotiation &&
+                  fareNegotiation.left > 0
+                    ? {
+                        minusDisabled:
+                          (driverFareDraft ?? activeOrder.customerOffer ?? 0) <=
+                          (activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000),
+                        onMinus: () => {
+                          const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+                          const current = driverFareDraft ?? activeOrder.customerOffer ?? minFare;
+                          setDriverFareDraft(Math.max(minFare, current - 1000));
+                        },
+                        onPlus: () => {
+                          const minFare = activeOrder.minFare && activeOrder.minFare > 0 ? activeOrder.minFare : 5000;
+                          const current = driverFareDraft ?? activeOrder.customerOffer ?? minFare;
+                          setDriverFareDraft(current + 1000);
+                        },
+                      }
+                    : undefined
+                }
+                actionDisabled={
+                  isInstantCargoVerify
+                    ? false
+                    : Boolean(
+                        fareNegotiation?.mustWait ||
+                          (fareNegotiation?.sameResend && (fareNegotiation?.left ?? 0) > 0)
+                      )
+                }
+                actionLabel={
+                  busyAction === 'accept-order' || busyAction === 'counter-fare'
+                    ? busyAction === 'counter-fare'
+                      ? 'Inatuma...'
+                      : copy.accepting
+                    : isInstantCargoVerify
+                      ? 'Thibitisha'
+                      : fareNegotiation?.mustWait || (fareNegotiation?.sameResend && fareNegotiation.left > 0)
+                        ? 'Inasubiri mteja'
+                        : fareNegotiation && fareNegotiation.left <= 0
+                          ? 'Kubali'
+                          : activeOrder.fareType === 'negotiated' &&
+                              !cargoOffersMatch(activeOrder.customerOffer, driverFareDraft)
+                            ? 'Tuma'
+                            : activeOrder.fareType === 'negotiated'
+                              ? 'Kubali'
+                              : copy.accept
+                }
+                loading={busyAction === 'accept-order' || busyAction === 'counter-fare'}
+                onAction={() => void (isInstantCargoVerify ? handleAcceptOrder() : handleDriverFarePrimary())}
+                declineLabel={busyAction === 'decline-order' ? copy.declining : copy.decline}
+                onDecline={() => {
+                  if (busyAction === 'decline-order') return;
+                  void performDeclineOrder();
+                }}
+              />
+            ) : activeOrder ? (
+              <DriveBottomSheet variant="home">
+                <Text style={styles.homeSheetKicker}>{homeOrderStatusLabel}</Text>
+                <DriveRouteStops
+                  pickupTitle={copy.pickup}
+                  pickupLabel={activeOrder.pickupLabel}
+                  dropoffTitle={copy.dropoff}
+                  dropoffLabel={driverDropoffLabel}
+                />
+                {activeOrderContactPhone || resolveOrderContactPhone(activeOrder) ? (
+                  <Pressable
+                    onPress={() => void handleCallCustomer()}
+                    style={({ pressed }) => [styles.homeCustomerPhoneRow, pressed && styles.buttonPressed]}>
+                    <MaterialCommunityIcons name="phone-outline" size={18} color={driveTheme.colors.primaryDark} />
+                    <View style={styles.homeCustomerPhoneCopy}>
+                      <Text style={styles.homeCustomerPhoneLabel}>{copy.customerPhoneLabel}</Text>
+                      <Text style={styles.homeCustomerPhoneValue}>
+                        {activeOrderContactPhone || resolveOrderContactPhone(activeOrder)}
+                      </Text>
+                    </View>
+                    <Text style={styles.homeCustomerPhoneAction}>{copy.callCustomer}</Text>
+                  </Pressable>
+                ) : null}
+                <DrivePrimaryButton
+                  label={inAppNavMode ? copy.followingRoute : copy.navigate}
+                  icon="navigation-variant"
+                  onPress={() => void handleOpenNavigation()}
+                />
+                <Text style={styles.boltSheetHint}>{copy.followRouteHint}</Text>
+                <DriveGhostButton
+                  label={busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
+                  loading={busyAction === 'trip-cancelled'}
+                  onPress={handleCancelActiveTrip}
+                />
+              </DriveBottomSheet>
+            ) : !awaitingAccept ? (
+              <PilotSwipeDashboard
+                online={isOnline}
+                statusTitle={isOnline ? copy.lookingForOrders : copy.youAreOffline}
+                statusHint={homeAvailabilityNote}
+                onExpandedChange={setHomeSheetExpanded}
+                actionCards={[
+                  {
+                    key: 'rewards',
+                    icon: 'trophy-outline',
+                    iconColor: '#F5A623',
+                    iconBg: '#2E2410',
+                    title: copy.haulRewards,
+                    subtitle:
+                      language === 'sw'
+                        ? `${pilotStandingState.tier.label} · mfululizo ${pilotStandingState.streak}`
+                        : `${pilotStandingState.tier.label} · streak ${pilotStandingState.streak}`,
+                    onPress: () => setSelectedTab('earn'),
+                  },
+                  ...(nearbyCustomers.length > 0 || orderProbability > 0
+                    ? [
+                        {
+                          key: 'demand',
+                          icon: 'map-marker-radius' as const,
+                          iconColor: '#34C759',
+                          iconBg: '#14301F',
+                          title:
+                            nearbyCustomers.length > 0
+                              ? `${nearbyCustomers.length} ${copy.nearbyCustomers}`
+                              : copy.demandHotspotTitle,
+                          subtitle:
+                            orderProbability > 0
+                              ? copy.demandProbability(orderProbability)
+                              : copy.nearbyDemandHint,
+                          onPress: topDemandZone
+                            ? () => void handleNavigateToDemandHotspot()
+                            : undefined,
+                        },
+                      ]
+                    : []),
+                  {
+                    key: 'alerts',
+                    icon: 'bell-outline',
+                    iconColor: '#38BDF8',
+                    iconBg: '#0F2740',
+                    title: copy.tabAlerts,
+                    subtitle: unreadNotificationCount
+                      ? `${unreadNotificationCount} ${copy.alertsLive}`
+                      : copy.alertsSubtitle,
+                    onPress: () => setSelectedTab('notifications'),
+                  },
+                ]}
+                standing={pilotStandingState}
+                rewardsLabel={copy.haulRewards}
+                scoreLabel={copy.driverScore}
+                streakWord={copy.streakWord}
+                commissionLabel={
+                  language === 'sw'
+                    ? `Kamisheni ${pilotStandingState.feePercent}% · ${pilotStandingState.tier.priority}`
+                    : `Commission ${pilotStandingState.feePercent}% · ${pilotStandingState.tier.priority}`
+                }
+                deliveredToday={todayCompletedCount}
+                earningsTodayValue={`TZS ${todayEarnings.toLocaleString()}`}
+                onPressRewards={() => setSelectedTab('earn')}
+              />
+            ) : null}
+          </View>
         </View>
-        </View>
+
+        <Modal
+          visible={Boolean(selectedNearbyCustomer)}
+          transparent
+          animationType="slide"
+          onRequestClose={closeLeadMessageSheet}>
+          <Pressable style={styles.tripChatBackdrop} onPress={closeLeadMessageSheet} />
+          <View style={styles.leadMessageSheet}>
+            <View style={styles.tripChatSheetHandle} />
+            <View style={styles.tripChatHeader}>
+              <DriveIconWell icon="account-circle-outline" size={44} />
+              <View style={styles.tripChatHeaderCopy}>
+                <Text style={styles.tripChatHeaderTitle} numberOfLines={1}>
+                  {selectedNearbyCustomer?.firstName || copy.leadMessageTitle}
+                </Text>
+                <Text style={styles.tripChatHeaderSubtitle} numberOfLines={2}>
+                  {copy.leadMessageSubtitle}
+                </Text>
+              </View>
+              <Pressable
+                onPress={closeLeadMessageSheet}
+                style={({ pressed }) => [styles.tripChatCloseButton, pressed && styles.buttonPressed]}>
+                <MaterialCommunityIcons name="close" size={20} color="#0F172A" />
+              </Pressable>
+            </View>
+
+            <View style={styles.leadSimpleHintWrap}>
+              <Text style={styles.leadSimpleHint}>Bonyeza template moja kutuma mara moja.</Text>
+            </View>
+
+            <View style={styles.leadTemplateGrid}>
+              {[copy.leadQuickNearby, copy.leadQuickReady, copy.leadQuickWhere].map((template) => (
+                <Pressable
+                  key={template}
+                  onPress={() => void handleSendLeadMessage(template)}
+                  disabled={leadMessageSending}
+                  style={({ pressed }) => [
+                    styles.leadTemplateChip,
+                    leadMessageSending && styles.leadTemplateChipDisabled,
+                    pressed && !leadMessageSending && styles.buttonPressed,
+                  ]}>
+                  <MaterialCommunityIcons name="send-outline" size={14} color="#16A34A" style={styles.leadTemplateIcon} />
+                  <Text style={styles.leadTemplateText}>{template}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {leadMessageSending ? (
+              <View style={styles.leadSendingRow}>
+                <ActivityIndicator size="small" color="#16A34A" />
+                <Text style={styles.leadSendingText}>{copy.sending}…</Text>
+              </View>
+            ) : null}
+          </View>
+        </Modal>
       </View>
     );
   };
@@ -3544,248 +4556,329 @@ export default function DoorDriveApp() {
 
   const renderTripTab = () => {
     const nextAction = getNextTripAction(activeOrder?.status);
+    const awaitingAccept = isIncomingOffer(activeOrder);
     const orderPickupPoint = activeOrder ? getOrderPickupPoint(activeOrder) : null;
     const pickupPoint =
       orderPickupPoint
         ? orderPickupPoint
-        : {
-            latitude: -6.7924,
-            longitude: 39.2083,
-          };
+        : resolveDriverMapPoint(driverProfile, liveMapPoint) ?? DAR_ES_SALAAM_FALLBACK;
     const driverDropoffPoint = activeOrder ? getDriverVisibleDropoffPoint(activeOrder) : null;
     const driverDropoffLabel = activeOrder ? getDriverVisibleDropoffLabel(activeOrder) : '';
     const dropoffPoint = driverDropoffPoint;
     const driverPoint =
       getPointFromCoordinates(activeOrder?.driverLatitude, activeOrder?.driverLongitude) ??
-      getPointFromCoordinates(driverProfile?.currentLatitude, driverProfile?.currentLongitude);
+      resolveDriverMapPoint(driverProfile, liveMapPoint);
+    const tripNowLabel = awaitingAccept
+      ? copy.newOrder
+      : activeOrder?.status === 'driver_assigned'
+        ? copy.tripGoPickup
+        : activeOrder?.status === 'driver_at_pickup'
+          ? copy.tripCollect
+          : activeOrder?.status === 'in_transit'
+            ? copy.tripGoDropoff
+            : copy.activeDelivery;
+    const nextActionLabel =
+      nextAction?.nextStatus === 'driver_at_pickup'
+        ? copy.tripNextArrive
+        : nextAction?.nextStatus === 'in_transit'
+          ? copy.tripNextStart
+          : nextAction?.nextStatus === 'delivered'
+            ? copy.tripNextDeliver
+            : nextAction?.label ?? '';
+    const primaryBusy = awaitingAccept
+      ? busyAction === 'accept-order'
+      : nextAction
+        ? busyAction === `trip-${nextAction.nextStatus}`
+        : false;
+    const primaryLabel = awaitingAccept
+      ? primaryBusy
+        ? copy.accepting
+        : copy.accept
+      : nextAction
+        ? primaryBusy
+          ? `${nextActionLabel}...`
+          : nextActionLabel
+        : '';
+    const primaryIcon = awaitingAccept
+      ? 'check-circle-outline'
+      : nextAction?.icon ?? 'check-circle-outline';
+
+    if (!activeOrder) {
+      return (
+        <View style={styles.tripScreen}>
+          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+          <View style={styles.tripEmptyWrap}>
+            <DriveProEmptyState
+              icon="map-marker-path"
+              avatarKind="goOnline"
+              title={copy.noActiveTrip}
+              text={copy.noActiveTripHint}
+              actionLabel={copy.goOnline}
+              onAction={() => void handleToggleAvailability()}
+            />
+          </View>
+        </View>
+      );
+    }
 
     return (
-      <ScrollView contentContainerStyle={styles.tripScreenContent} showsVerticalScrollIndicator={false}>
-        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+      <View style={styles.tripScreen}>
+        <View style={styles.tripMapWrap}>
+          <TripMap
+            pickupPoint={pickupPoint}
+            dropoffPoint={dropoffPoint}
+            driverPoint={driverPoint}
+            statusLabel={tripNowLabel}
+            onOpenNavigation={() => void handleOpenNavigation()}
+            MapViewComponent={MapView}
+            MarkerComponent={Marker}
+            PolylineComponent={Polyline}
+            compact
+            onRefreshLocation={() => void handleManualLocationRefresh()}
+          />
+        </View>
 
-        {!activeOrder ? (
-          <View style={styles.emptyStateLarge}>
-            <MaterialCommunityIcons name="map-marker-path" size={34} color={driveTheme.colors.primary} />
-            <Text style={styles.emptyTitle}>{copy.noActiveTrip}</Text>
-            <Text style={styles.emptyText}>{copy.noActiveTripHint}</Text>
+        <DriveBottomSheet style={styles.tripDockSheet}>
+          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+
+          <View style={styles.tripNowRow}>
+            <View style={styles.tripNowCopy}>
+              <Text style={styles.tripNowKicker}>{copy.activeDelivery}</Text>
+              <Text style={styles.tripNowTitle} numberOfLines={1}>{tripNowLabel}</Text>
+            </View>
+            <Text style={styles.tripDockFare}>{activeOrder.totalLabel}</Text>
           </View>
-        ) : (
-          <>
-            <View style={styles.tripMapStage}>
-              <TripMap
-                pickupPoint={pickupPoint}
-                dropoffPoint={dropoffPoint}
-                driverPoint={driverPoint}
-                statusLabel={getDeliveryOrderStatusLabel(activeOrder.status)}
-                onOpenNavigation={() => void handleOpenNavigation()}
-                MapViewComponent={MapView}
-                MarkerComponent={Marker}
-                PolylineComponent={Polyline}
-              />
-            </View>
 
-            <View style={styles.tripBottomSheet}>
-              <View style={styles.tripSheetHandle} />
-              <View style={styles.tripHero}>
-                <Text style={styles.heroKicker}>{copy.activeDelivery}</Text>
-                <Text style={styles.tripHeroTitle}>{activeOrder.serviceLabel}</Text>
-                <Text style={styles.tripHeroText}>{getDeliveryOrderStatusLabel(activeOrder.status)}</Text>
-                <View style={styles.tripMetricRow}>
-                  <TripMetricChip icon="pound" label={activeOrder.orderNumber} />
-                  <TripMetricChip icon="cash-multiple" label={activeOrder.totalLabel} />
-                  <TripMetricChip
-                    icon={locationPermission === 'granted' ? 'crosshairs-gps' : 'map-marker-off-outline'}
-                    label={locationPermission === 'granted' ? 'Location live' : 'Location pending'}
-                  />
-                </View>
-              </View>
+          <DriveRouteStops
+            pickupTitle={copy.pickup}
+            pickupLabel={activeOrder.pickupLabel}
+            dropoffTitle={copy.dropoff}
+            dropoffLabel={driverDropoffLabel}
+          />
 
-              <View style={styles.tripSheetCard}>
-                <Text style={styles.tripSheetTitle}>{copy.tripRoute}</Text>
-                <Text style={styles.tripSheetSubtitle}>Navigation stops for this active job.</Text>
-                <View style={styles.stackMd}>
-                  <TripStopRow tone="pickup" title={copy.pickup} label={activeOrder.pickupLabel} />
-                  <TripStopRow tone="dropoff" title={copy.dropoff} label={driverDropoffLabel} />
-                  <View style={styles.tripDivider} />
-                  <Text style={styles.tripLine}>Recipient: {activeOrder.recipientName} • {activeOrder.recipientPhone}</Text>
-                  <Text style={styles.tripLine}>Customer: {activeOrder.customerName} • {activeOrder.customerPhone || activeOrder.customerEmail}</Text>
-                  <Text style={styles.tripLine}>Created: {formatDeliveryDateTime(activeOrder.createdAt)}</Text>
-                </View>
-              </View>
+          {primaryLabel ? (
+            <DrivePrimaryButton
+              label={primaryLabel}
+              icon={primaryIcon}
+              loading={primaryBusy}
+              disabled={primaryBusy}
+              onPress={() => {
+                if (awaitingAccept) {
+                  void handleAcceptOrder();
+                  return;
+                }
+                if (nextAction) {
+                  void handleAdvanceTrip(nextAction.nextStatus);
+                }
+              }}
+            />
+          ) : null}
 
-              <View style={styles.tripSheetCard}>
-                <Text style={styles.tripSheetTitle}>{copy.customerChat}</Text>
-                <Text style={styles.tripSheetSubtitle}>
-                  Send pickup updates or ask for delivery instructions without leaving the active trip.
-                </Text>
+          <DriveTripQuickActions
+            items={[
+              {
+                icon: 'navigation-variant',
+                label: copy.navigate,
+                onPress: () => void handleOpenNavigation(),
+              },
+              {
+                icon: 'phone',
+                label: copy.callCustomer,
+                onPress: () => void handleCallCustomer(),
+              },
+              {
+                icon: 'message-text-outline',
+                label: copy.customerChat,
+                badge: tripMessages.length || undefined,
+                onPress: () => setTripChatOpen(true),
+              },
+            ]}
+          />
+          <Pressable
+            onPress={() => void handleOpenExternalMaps()}
+            style={({ pressed }) => [{ alignSelf: 'center', paddingVertical: 8 }, pressed && styles.buttonPressed]}>
+            <Text style={{ fontFamily: driveType.semibold, fontSize: 13, color: '#94A3B8' }}>
+              {copy.openExternalMaps}
+            </Text>
+          </Pressable>
 
-                {tripMessagesLoading ? (
-                  <Text style={styles.tripHelperText}>Loading the latest conversation...</Text>
-                ) : tripMessages.length ? (
-                  <View style={styles.tripMessageThread}>
-                    {tripMessages.slice(-6).map((item) => {
-                      const isDriverMessage = item.senderRole === 'driver';
+          <DriveGhostButton
+            label={
+              awaitingAccept
+                ? busyAction === 'decline-order'
+                  ? copy.declining
+                  : copy.rejectOrder
+                : busyAction === 'trip-cancelled'
+                  ? copy.cancelling
+                  : copy.cancelTrip
+            }
+            loading={busyAction === 'decline-order' || busyAction === 'trip-cancelled'}
+            onPress={awaitingAccept ? handleDeclineOrder : handleCancelActiveTrip}
+          />
+        </DriveBottomSheet>
 
-                      return (
-                        <View
-                          key={item.id}
-                          style={[
-                            styles.tripMessageRow,
-                            isDriverMessage ? styles.tripMessageRowSelf : styles.tripMessageRowOther,
-                          ]}>
-                          <View
-                            style={[
-                              styles.tripMessageBubble,
-                              isDriverMessage ? styles.tripMessageBubbleSelf : styles.tripMessageBubbleOther,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.tripMessageSender,
-                                isDriverMessage ? styles.tripMessageSenderSelf : styles.tripMessageSenderOther,
-                              ]}>
-                              {isDriverMessage ? 'You' : item.senderName || activeOrder.customerName}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.tripMessageText,
-                                isDriverMessage ? styles.tripMessageTextSelf : styles.tripMessageTextOther,
-                              ]}>
-                              {item.message}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.tripMessageTime,
-                                isDriverMessage ? styles.tripMessageTimeSelf : styles.tripMessageTimeOther,
-                              ]}>
-                              {formatDeliveryDateTime(item.createdAt)}
-                            </Text>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-                ) : (
-                  <Text style={styles.tripHelperText}>
-                    No messages yet. Send the customer a quick update when you arrive, need access details, or are close
-                    to drop-off.
+        <Modal
+          visible={tripChatOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setTripChatOpen(false)}>
+          <KeyboardAvoidingView style={styles.tripChatModalRoot} behavior="padding">
+            <Pressable style={styles.tripChatBackdrop} onPress={() => setTripChatOpen(false)} />
+            <View style={styles.tripChatSheet}>
+              <View style={styles.tripChatSheetHandle} />
+              <View style={styles.tripChatHeader}>
+                <View style={styles.tripChatHeaderCopy}>
+                  <Text style={styles.tripChatHeaderTitle}>{copy.customerChat}</Text>
+                  <Text style={styles.tripChatHeaderSubtitle} numberOfLines={1}>
+                    {activeOrder.customerName || activeOrder.recipientName || activeOrder.orderNumber}
                   </Text>
-                )}
-
-                <View style={styles.tripMessageComposer}>
-                  <TextInput
-                    value={tripMessageDraft}
-                    onChangeText={setTripMessageDraft}
-                    editable={!tripMessageSending}
-                    multiline
-                    maxLength={240}
-                    placeholder={copy.messageCustomer}
-                    placeholderTextColor="#94A3B8"
-                    style={styles.tripMessageInput}
-                    textAlignVertical="top"
-                  />
-                  <Pressable
-                    disabled={!tripMessageDraft.trim() || tripMessageSending}
-                    onPress={() => void handleSendCustomerMessage()}
-                    style={({ pressed }) => [
-                      styles.tripMessageSendButton,
-                      (!tripMessageDraft.trim() || tripMessageSending) && styles.tripMessageSendButtonDisabled,
-                      pressed && tripMessageDraft.trim() && !tripMessageSending && styles.buttonPressed,
-                    ]}>
-                    <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
-                    <Text style={styles.tripMessageSendText}>{tripMessageSending ? copy.sending : copy.send}</Text>
-                  </Pressable>
                 </View>
+                <Pressable
+                  onPress={() => setTripChatOpen(false)}
+                  style={({ pressed }) => [styles.tripChatCloseButton, pressed && styles.buttonPressed]}>
+                  <MaterialCommunityIcons name="close" size={20} color="#0F172A" />
+                </Pressable>
               </View>
 
-              <View style={styles.tripActionSheet}>
-                {activeOrder.status === 'driver_assigned' && !activeOrder.acceptedByDriverAt ? (
-                  <AppButton
-                    label={busyAction === 'accept-order' ? copy.accepting : copy.accept}
-                    icon="check-circle-outline"
-                    onPress={() => void handleAcceptOrder()}
-                    disabled={busyAction === 'accept-order'}
-                  />
-                ) : null}
-                {nextAction ? (
-                  <AppButton
-                    label={busyAction === `trip-${nextAction.nextStatus}` ? `${nextAction.label}...` : nextAction.label}
-                    icon={nextAction.icon}
-                    onPress={() => void handleAdvanceTrip(nextAction.nextStatus)}
-                    disabled={busyAction === `trip-${nextAction.nextStatus}`}
-                  />
-                ) : null}
-                <View style={styles.tripActionGrid}>
-                  <AppButton
-                    label={copy.openNavigation}
-                    icon="navigation-variant-outline"
-                    variant="secondary"
-                    onPress={() => void handleOpenNavigation()}
-                  />
-                  <AppButton
-                    label={copy.callCustomer}
-                    icon="phone-outline"
-                    variant="secondary"
-                    onPress={() => void handleCallCustomer()}
-                  />
+              {tripMessagesLoading ? (
+                <View style={styles.tripChatEmpty}>
+                  <ActivityIndicator color={driveTheme.colors.ink} />
                 </View>
-                <View style={styles.tripActionGrid}>
-                  <AppButton
-                    label={busyAction === 'location-refresh' ? copy.updating : copy.refreshLocation}
-                    icon="crosshairs-gps"
-                    variant="secondary"
-                    onPress={() => void handleManualLocationRefresh()}
-                    disabled={busyAction === 'location-refresh'}
-                  />
-                  {activeOrder.status === 'driver_assigned' ? (
-                    <AppButton
-                      label={busyAction === 'decline-order' ? copy.declining : copy.rejectOrder}
-                      icon="close-circle-outline"
-                      variant="dark"
-                      onPress={handleDeclineOrder}
-                      disabled={busyAction === 'decline-order'}
-                    />
-                  ) : (
-                    <AppButton
-                      label={busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
-                      icon="close-circle-outline"
-                      variant="dark"
-                      onPress={handleCancelActiveTrip}
-                      disabled={busyAction === 'trip-cancelled'}
-                    />
-                  )}
+              ) : tripMessages.length ? (
+                <ScrollView
+                  style={styles.tripChatThread}
+                  contentContainerStyle={styles.tripChatThreadContent}
+                  keyboardShouldPersistTaps="handled">
+                  {tripMessages.map((item) => {
+                    const isDriverMessage = item.senderRole === 'driver';
+                    return (
+                      <View
+                        key={item.id}
+                        style={[
+                          styles.tripMessageRow,
+                          isDriverMessage ? styles.tripMessageRowSelf : styles.tripMessageRowOther,
+                        ]}>
+                        <View
+                          style={[
+                            styles.tripMessageBubble,
+                            isDriverMessage ? styles.tripMessageBubbleSelf : styles.tripMessageBubbleOther,
+                          ]}>
+                          <Text
+                            style={[
+                              styles.tripMessageSender,
+                              isDriverMessage ? styles.tripMessageSenderSelf : styles.tripMessageSenderOther,
+                            ]}>
+                            {isDriverMessage ? copy.tripChatYou : item.senderName || activeOrder.customerName}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.tripMessageText,
+                              isDriverMessage ? styles.tripMessageTextSelf : styles.tripMessageTextOther,
+                            ]}>
+                            {item.message}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <View style={styles.tripChatEmpty}>
+                  <MaterialCommunityIcons name="message-text-outline" size={28} color={driveTheme.colors.ink} />
+                  <Text style={styles.tripHelperText}>{copy.tripNoMessages}</Text>
                 </View>
+              )}
+
+              <View style={styles.tripMessageComposer}>
+                <TextInput
+                  value={tripMessageDraft}
+                  onChangeText={setTripMessageDraft}
+                  editable={!tripMessageSending}
+                  multiline
+                  maxLength={240}
+                  placeholder={copy.messageCustomer}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.tripMessageInput}
+                  textAlignVertical="top"
+                />
+                <Pressable
+                  disabled={!tripMessageDraft.trim() || tripMessageSending}
+                  onPress={() => void handleSendCustomerMessage()}
+                  style={({ pressed }) => [
+                    styles.tripMessageSendButton,
+                    (!tripMessageDraft.trim() || tripMessageSending) && styles.tripMessageSendButtonDisabled,
+                    pressed && tripMessageDraft.trim() && !tripMessageSending && styles.buttonPressed,
+                  ]}>
+                  <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
+                  <Text style={styles.tripMessageSendText}>{tripMessageSending ? copy.sending : copy.send}</Text>
+                </Pressable>
               </View>
             </View>
-          </>
-        )}
-      </ScrollView>
+          </KeyboardAvoidingView>
+        </Modal>
+      </View>
     );
   };
+
+  // ──────────────────────────────────────────────
+  // Earn / Rewards tab (Bolt layout + Agents streak)
+  // ──────────────────────────────────────────────
+
+  const renderEarnTab = () => (
+    <BoltRewardsScreen
+      standing={pilotStandingState}
+      title={copy.rewardsTitle}
+      startingLevelLabel={copy.startingLevel}
+      unlockLabel={copy.unlockTier}
+      howItWorksLabel={copy.howItWorks}
+      benefitsTitle={copy.yourBenefits}
+      streakWord={copy.streakWord}
+      lang={language === 'sw' ? 'sw' : 'en'}
+      onBack={() => setSelectedTab('home')}
+    />
+  );
 
   // ──────────────────────────────────────────────
   // History tab
   // ──────────────────────────────────────────────
 
-  const renderHistoryTab = () => (
-    <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
-      {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+  const handleOpenNotification = (item: DriverNotification) => {
+    if (item.action === 'trip') {
+      setSelectedTab('trip');
+      return;
+    }
+    if (item.action === 'chat') {
+      setTripChatOpen(true);
+      setSelectedTab('trip');
+      return;
+    }
+    if (item.action === 'payments') {
+      setPaymentCheckoutStep(subscriptionPaymentPending ? 'submitted' : 'proof');
+      setAccountView('payments');
+      setSelectedTab('account');
+      return;
+    }
+    if (item.action === 'account') {
+      setAccountView('overview');
+      setSelectedTab('account');
+      return;
+    }
+    if (item.action === 'location') {
+      void handleManualLocationRefresh();
+    }
+  };
 
-      <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>{copy.historyTitle}</Text>
-        <Text style={styles.pageSubtitle}>{copy.historySubtitle}</Text>
-      </View>
+  const renderHistoryTab = () => {
+    return (
+      <ScrollView style={[styles.flex, styles.studioScreen]} contentContainerStyle={styles.ridesContent} showsVerticalScrollIndicator={false}>
+        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-      <View style={styles.metricTileRow}>
-        <MetricTile icon="check-decagram-outline" value={String(driverOrders.filter((order) => order.status === 'delivered').length)} label={copy.delivered} />
-        <MetricTile icon="truck-delivery-outline" value={String(driverOrders.filter((order) => isActiveOrderStatus(order.status)).length)} label={copy.active} />
-        <MetricTile icon="cash-multiple" value={`TZS ${totalEarnings.toLocaleString()}`} label={copy.earnings} />
-      </View>
+        <Text style={styles.ridesTitle}>{copy.ridesTitle}</Text>
 
-      {pendingCustomerRatingOrder ? (
-        <SectionCard
-          title={copy.rateCustomer}
-          subtitle={`${pendingCustomerRatingOrder.orderNumber}`}>
-          <View style={styles.customerRatingCard}>
+        {pendingCustomerRatingOrder ? (
+          <View style={styles.studioCard}>
+            <Text style={styles.studioCardTitle}>{copy.rateCustomer}</Text>
+            <Text style={styles.studioCardMeta}>{pendingCustomerRatingOrder.orderNumber}</Text>
             <View style={styles.ratingStarRow}>
               {[1, 2, 3, 4, 5].map((rating) => (
                 <Pressable
@@ -3805,129 +4898,136 @@ export default function DoorDriveApp() {
               onChangeText={setCustomerRatingComment}
               multiline
               maxLength={180}
-              placeholder="Optional note about the customer"
+              placeholder={copy.optionalNote}
               placeholderTextColor="#94A3B8"
               style={styles.customerRatingInput}
               textAlignVertical="top"
             />
-            <AppButton
-              label={customerRatingSaving ? copy.savingRating : copy.saveRating}
-              icon="star-check-outline"
+            <Pressable
               onPress={() => void handleRateCustomer()}
               disabled={customerRatingSaving}
-            />
+              style={({ pressed }) => [styles.studioPrimaryButton, customerRatingSaving && styles.buttonDisabled, pressed && styles.buttonPressed]}>
+              <Text style={styles.studioPrimaryButtonText}>
+                {customerRatingSaving ? copy.savingRating : copy.saveRating}
+              </Text>
+            </Pressable>
           </View>
-        </SectionCard>
-      ) : null}
+        ) : null}
 
-      <SectionCard title={copy.tripRecords} subtitle={copy.historySubtitle}>
-        <View style={styles.stackMd}>
-          {driverOrdersLoading ? <ActivityIndicator color={driveTheme.colors.primary} /> : null}
+        {driverOrdersLoading ? <ActivityIndicator color={driveTheme.colors.ink} /> : null}
 
-          {!driverOrdersLoading && !driverOrders.length ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>{copy.noHistory}</Text>
-              <Text style={styles.emptyText}>{copy.noHistoryHint}</Text>
-            </View>
-          ) : null}
+        <DriveSegmentedControl
+          value={historySection}
+          options={[
+            { value: 'trips', label: copy.historyTabTrips },
+            { value: 'payments', label: copy.historyTabPayments },
+          ]}
+          onChange={setHistorySection}
+        />
 
-          {driverOrders.map((order) => (
-            <View key={order.id} style={styles.historyRow}>
-              <View style={styles.historyCopy}>
-                <Text style={styles.historyTitle}>{order.serviceLabel}</Text>
-                <Text style={styles.historyMeta}>{order.pickupLabel} to {getDriverVisibleDropoffLabel(order)}</Text>
-                <Text style={styles.historyMeta}>{order.orderNumber} • {formatDeliveryDateTime(order.createdAt)}</Text>
-              </View>
-              <View style={styles.historyTrailing}>
-                <Text style={styles.historyAmount}>{order.totalLabel}</Text>
-                <Text style={styles.historyStatus}>{getDeliveryOrderStatusLabel(order.status)}</Text>
-              </View>
-            </View>
-          ))}
-        </View>
-      </SectionCard>
-    </ScrollView>
-  );
+        {historySection === 'payments' ? (
+          !driverPaymentHistory.length ? (
+            <DriveProEmptyState icon="cash-multiple" avatarKind="payment" title={copy.payNoActivity} text={copy.noHistoryHint} />
+          ) : (
+            driverPaymentHistory.map((payment) => {
+              const statusLabel = payment.status === 'completed'
+                ? copy.payStatusPaid
+                : payment.status === 'pending' || payment.status === 'creating'
+                  ? copy.payStatusPending
+                  : copy.payStatusFailed;
+              const tone: 'done' | 'warn' | 'muted' =
+                payment.status === 'completed' ? 'done' : payment.status === 'pending' || payment.status === 'creating' ? 'warn' : 'muted';
+              return (
+                <BoltRideRow
+                  key={payment.id || payment.orderId}
+                  when={
+                    payment.completedAt || payment.createdAt
+                      ? formatDeliveryDateTime(payment.completedAt || payment.createdAt)
+                      : ''
+                  }
+                  place={paymentNetworkLabel(payment.network)}
+                  status={statusLabel}
+                  statusTone={tone}
+                  fare={`TZS ${Number(payment.amount || driverAccessDailyFeeTzs).toLocaleString()}`}
+                />
+              );
+            })
+          )
+        ) : !driverOrdersLoading && !driverOrders.length ? (
+          <DriveProEmptyState icon="history" avatarKind="emptyTrips" title={copy.noHistory} text={copy.noHistoryHint} />
+        ) : (
+          driverOrders.map((order) => {
+            const active = isActiveOrderStatus(order.status);
+            const cancelled = String(order.status || '').includes('cancel');
+            const statusTone: 'done' | 'warn' | 'muted' = order.status === 'delivered' ? 'done' : cancelled ? 'warn' : active ? 'warn' : 'muted';
+            const statusLabel =
+              order.status === 'delivered'
+                ? copy.rideFinished
+                : cancelled
+                  ? copy.rideCancelled
+                  : getDriverOrderStatusCopy(order.status, copy);
+            return (
+              <BoltRideRow
+                key={order.id}
+                when={formatDeliveryDateTime(order.deliveredAt || order.createdAt)}
+                place={order.pickupLabel || getDriverVisibleDropoffLabel(order) || order.orderNumber}
+                status={statusLabel}
+                statusTone={statusTone}
+                fare={order.totalLabel || 'TZS 0'}
+                onPress={
+                  active
+                    ? () => {
+                        setSelectedTab('trip');
+                      }
+                    : undefined
+                }
+              />
+            );
+          })
+        )}
+      </ScrollView>
+    );
+  };
 
-  // ──────────────────────────────────────────────
-  // Notifications tab
-  // ──────────────────────────────────────────────
 
   const renderNotificationsTab = () => (
-    <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
+    <ScrollView style={[styles.flex, styles.studioScreen]} contentContainerStyle={styles.studioContent} showsVerticalScrollIndicator={false}>
       {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-      <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>{copy.alertsTitle}</Text>
-        <Text style={styles.pageSubtitle}>
-          {notificationItems.length ? `${notificationItems.length} ${copy.alertsLive}` : copy.alertsClear}
-        </Text>
-      </View>
+      <DriveScreenHeader
+        title={copy.alertsTitle}
+        subtitle={unreadNotificationCount ? `${unreadNotificationCount} ${copy.alertsLive}` : copy.alertsSubtitle}
+      />
 
-      <SectionCard title={copy.alertsTitle} subtitle={copy.alertsSubtitle}>
-        <View style={styles.stackMd}>
-          {!notificationItems.length ? (
-            <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="bell-outline" size={28} color={driveTheme.colors.primary} />
-              <Text style={styles.emptyTitle}>{copy.noAlerts}</Text>
-              <Text style={styles.emptyText}>{copy.noAlertsHint}</Text>
-            </View>
-          ) : null}
-
-          {notificationItems.map((item) => (
-            <View key={item.id} style={styles.notificationRow}>
-              <View
-                style={[
-                  styles.notificationIconWrap,
-                  item.tone === 'warning'
-                    ? styles.notificationIconWarning
-                    : item.tone === 'success'
-                      ? styles.notificationIconSuccess
-                      : styles.notificationIconInfo,
-                ]}>
-                <MaterialCommunityIcons
-                  name={item.icon}
-                  size={22}
-                  color={
-                    item.tone === 'warning'
-                      ? driveTheme.colors.warning
-                      : item.tone === 'success'
-                        ? driveTheme.colors.primaryDark
-                        : driveTheme.colors.info
-                  }
-                />
-              </View>
-              <View style={styles.notificationCopy}>
-                <Text style={styles.notificationTitle}>{item.title}</Text>
-                <Text style={styles.notificationMessage}>{item.message}</Text>
-                <Text style={styles.notificationTime}>{item.time}</Text>
-              </View>
-            </View>
-          ))}
-        </View>
-      </SectionCard>
-
-      {locationPermission === 'denied' ? (
-        <AppButton
-          label={busyAction === 'location-refresh' ? 'Refreshing location...' : 'Try location again'}
-          icon="crosshairs-gps"
-          variant="secondary"
-          onPress={() => void handleManualLocationRefresh()}
-          disabled={busyAction === 'location-refresh'}
-        />
-      ) : null}
-
-      {showPaymentNotice ? (
-        <AppButton
-          label={subscriptionPaymentPending ? 'Access pending' : 'Open access'}
-          icon="cash-fast"
-          onPress={() => {
-            setPaymentCheckoutStep('debt');
-            setAccountView('payments');
-            setSelectedTab('account');
-          }}
-        />
-      ) : null}
+      {!notificationItems.length ? (
+        <DriveProEmptyState icon="bell-outline" avatarKind="notifications" title={copy.noAlerts} text={copy.noAlertsHint} />
+      ) : (
+        notificationItems.map((item) => (
+          <DriveNotificationRow
+            key={item.id}
+            icon={item.icon}
+            iconColor={
+              item.tone === 'warning'
+                ? driveTheme.colors.warning
+                : item.tone === 'success'
+                  ? driveTheme.colors.primaryDark
+                  : driveTheme.colors.info
+            }
+            iconBg={
+              item.tone === 'warning'
+                ? driveTheme.colors.warningSoft
+                : item.tone === 'success'
+                  ? driveTheme.colors.primarySoft
+                  : driveTheme.colors.infoSoft
+            }
+            title={item.title}
+            body={item.message}
+            time={item.time}
+            unread={item.unread}
+            onPress={() => handleOpenNotification(item)}
+          />
+        ))
+      )}
     </ScrollView>
   );
 
@@ -3936,295 +5036,123 @@ export default function DoorDriveApp() {
   // ──────────────────────────────────────────────
 
   const renderPaymentAccountPage = () => {
-    const paymentStatusLabel = subscriptionPaymentPending
-      ? 'Pending'
-      : hasCommissionDue
-        ? 'Pay now'
-        : subscriptionActive
-          ? 'Active'
-          : 'Expired';
-    const paymentStatusIcon: IconName = subscriptionPaymentPending
-      ? 'clock-outline'
-      : hasCommissionDue
-        ? 'clock-alert-outline'
-        : subscriptionActive
-          ? 'check-circle-outline'
-          : 'cash-fast';
-    const paymentStatusColor = commissionPaymentOverdue ? '#92400E' : hasCommissionDue ? driveTheme.colors.info : driveTheme.colors.primaryDark;
+    const showCheckout = hasCommissionDue && !commissionPaymentPending;
+    const showPending = hasCommissionDue && commissionPaymentPending;
+    const amountDue = Math.max(0, Math.round(dailyCommissionDue || 0));
+
     return (
-      <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.fintechPayScreen} contentContainerStyle={styles.fintechPayContent} showsVerticalScrollIndicator={false}>
         {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-        <View style={styles.paymentPageTopbar}>
+        <View style={styles.fintechTopbar}>
           <Pressable
             onPress={() => setAccountView('overview')}
-            style={({ pressed }) => [styles.paymentBackButton, pressed && styles.buttonPressed]}>
-            <MaterialCommunityIcons name="chevron-left" size={24} color={driveTheme.colors.ink} />
+            style={({ pressed }) => [styles.fintechBack, pressed && styles.buttonPressed]}>
+            <MaterialCommunityIcons name="chevron-left" size={26} color="#0B1220" />
           </Pressable>
-          <View style={styles.paymentPageTitleWrap}>
-            <Text style={styles.paymentPageKicker}>Driver account</Text>
-            <Text style={styles.paymentPageTitle}>Mongike payments</Text>
-          </View>
+          <Text style={styles.fintechNavTitle}>{copy.payScreenTitle}</Text>
+          <View style={styles.fintechBackSpacer} />
         </View>
 
-        <View style={[styles.paymentDebtCard, commissionPaymentOverdue && styles.paymentDebtCardDue]}>
-          <View style={styles.paymentDebtTop}>
-            <View style={styles.paymentDebtIcon}>
-              <MaterialCommunityIcons name={hasCommissionDue ? 'cash-clock' : 'shield-check-outline'} size={24} color="#FFFFFF" />
-            </View>
-            <View style={styles.paymentDebtCopy}>
-              <Text style={styles.paymentDebtLabel}>DoorDrive access</Text>
-              <Text style={styles.paymentDebtAmount}>TZS {driverAccessDailyFeeTzs.toLocaleString()} / day</Text>
-              <Text style={styles.paymentDebtMeta}>
-                {hasCommissionDue
-                  ? subscriptionPaymentPending
-                    ? 'Malipo yako yako pending. Access itafunguka automatic yakikamilika.'
-                    : 'Access imeisha. Hautaweza kupokea au ku-manage oda mpaka ulipe.'
-                  : subscriptionActive
-                    ? 'Driver access is active for dispatch operations.'
-                    : 'Renew daily access to continue.'}
-              </Text>
-            </View>
-            <View style={styles.paymentStatusPill}>
-              <MaterialCommunityIcons name={paymentStatusIcon} size={15} color={paymentStatusColor} />
-              <Text style={[styles.paymentStatusText, { color: paymentStatusColor }]}>{paymentStatusLabel}</Text>
-            </View>
-          </View>
+        <Text style={styles.fintechHeroPeriod}>Unadaiwa</Text>
+        <Text style={styles.fintechHeroAmount}>TZS {amountDue.toLocaleString()}</Text>
+        <Text style={styles.fintechHeroCaption}>
+          {amountDue > 0 ? 'Lipa ili uendelee kupokea oda.' : 'Hakuna deni kwa sasa.'}
+        </Text>
 
-          <View style={styles.subscriptionCountdownCard}>
-            <View style={styles.subscriptionCountdownIcon}>
-              <MaterialCommunityIcons name="timer-sand" size={22} color={driveTheme.colors.primaryDark} />
-            </View>
-            <View style={styles.subscriptionCountdownCopy}>
-              <Text style={styles.subscriptionCountdownLabel}>Access status</Text>
-              <Text style={styles.subscriptionCountdownValue}>{subscriptionCountdownLabel}</Text>
-              <Text style={styles.subscriptionCountdownCaption}>{subscriptionCountdownCaption}</Text>
-            </View>
-          </View>
-
-          <View style={styles.subscriptionFeatureList}>
-            <View style={styles.subscriptionFeatureRow}>
-              <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Secure Mongike mobile money prompt from backend</Text>
-            </View>
-            <View style={styles.subscriptionFeatureRow}>
-              <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Vodacom M-Pesa is active now; other networks are coming soon</Text>
-            </View>
-            <View style={styles.subscriptionFeatureRow}>
-              <MaterialCommunityIcons name="check-circle" size={18} color={driveTheme.colors.primaryDark} />
-              <Text style={styles.subscriptionFeatureText}>Receipts and expiry update automatically after webhook confirmation</Text>
-            </View>
-          </View>
-
-          {hasCommissionDue ? (
-            <AppButton
-              label={subscriptionPaymentPending ? 'View pending payment' : paymentCheckoutStep === 'debt' ? 'Renew with Mongike' : paymentCheckoutStep === 'submitted' ? 'View status' : 'Continue'}
-              icon="cash-fast"
-              onPress={handleStartPaymentCheckout}
-            />
-          ) : (
-            <View style={styles.paymentClearState}>
-              <MaterialCommunityIcons name="check-decagram-outline" size={24} color={driveTheme.colors.primaryDark} />
-              <View style={styles.paymentClearCopy}>
-                <Text style={styles.paymentClearTitle}>Account iko clear</Text>
-                <Text style={styles.paymentClearText}>
-                  {subscriptionActive
-                    ? 'Driver access iko active na unaweza kupokea oda.'
-                    : 'Renew access ikiwa expiry imefika.'}
-                </Text>
-              </View>
-            </View>
-          )}
-        </View>
-
-        {paymentCheckoutStep === 'proof' && hasCommissionDue ? (
-          <View style={styles.paymentCheckoutPanel}>
-            <View style={styles.paymentChosenNetwork}>
-              <View style={[styles.paymentProviderIcon, { backgroundColor: selectedNetworkMeta?.color || '#16A34A' }]}>
-                {selectedNetworkMeta?.logoUrl ? (
-                  <Image source={{ uri: selectedNetworkMeta.logoUrl }} style={styles.paymentProviderLogo} resizeMode="contain" />
-                ) : (
-                  <MaterialCommunityIcons name="cellphone-check" size={20} color="#FFFFFF" />
-                )}
-              </View>
-              <View style={styles.paymentChosenCopy}>
-                <Text style={styles.paymentCheckoutTitle}>Vodacom M-Pesa</Text>
-                <Text style={styles.paymentChosenMeta}>Active now • TZS {driverAccessDailyFeeTzs.toLocaleString()} daily DoorDrive access</Text>
-              </View>
-            </View>
-
-            <View style={styles.paymentProviderGrid}>
-              {paymentNetworks.map((network) => {
-                const selected = selectedPaymentNetwork === network.key;
-                return (
-                  <Pressable
-                    key={network.key}
-                    disabled={!network.enabled}
-                    onPress={() => {
-                      if (network.enabled) {
-                        setSelectedPaymentNetwork(network.key as DriverPaymentNetworkKey);
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.paymentProviderCard,
-                      selected && styles.paymentMethodChipActive,
-                      !network.enabled && styles.paymentProviderCardDisabled,
-                      pressed && network.enabled && styles.buttonPressed,
-                    ]}>
-                    <View style={[styles.paymentProviderIcon, { backgroundColor: network.color }]}>
-                      {network.logoUrl ? (
-                        <Image source={{ uri: network.logoUrl }} style={styles.paymentProviderLogo} resizeMode="contain" />
-                      ) : (
-                        <MaterialCommunityIcons name="cellphone" size={18} color="#FFFFFF" />
-                      )}
-                    </View>
-                    <Text style={[styles.paymentProviderName, selected && styles.paymentMethodTextActive]}>{network.label}</Text>
-                    <Text style={styles.paymentChosenMeta}>{network.provider}</Text>
-                    <View style={[styles.paymentNetworkBadge, network.enabled ? styles.paymentNetworkBadgeActive : styles.paymentNetworkBadgeMuted]}>
-                      <Text style={[styles.paymentNetworkBadgeText, network.enabled && styles.paymentNetworkBadgeTextActive]}>
-                        {network.enabled ? 'Active' : 'Coming soon'}
-                      </Text>
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <View style={styles.manualPaymentNumberCard}>
-              <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Mpokeaji / receiver</Text>
-                <Text style={styles.paymentReferenceValue}>Vodacom M-Pesa</Text>
-              </View>
-              <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Namba ya kupokea</Text>
-                <Text selectable style={styles.manualPaymentNumber}>{paymentRecipientPhone}</Text>
-              </View>
-              <Text style={styles.paymentSafetyNote}>
-                Kwa sasa malipo yanafanya kazi kwa Vodacom M-Pesa pekee. Mitandao mingine itaongezwa baadaye.
-              </Text>
-            </View>
-
-            <Text style={styles.paymentPushText}>
-              Mongike itatuma payment prompt kwenye namba yako ya Vodacom. Thibitisha prompt hiyo ili access ifunguke automatic.
-            </Text>
-
-            <View style={styles.paymentInputGroup}>
-              <Text style={styles.paymentInputLabel}>Namba ya mobile money</Text>
-              <TextInput
-                value={paymentPhoneNumber}
-                onChangeText={setPaymentPhoneNumber}
-                keyboardType="phone-pad"
-                placeholder={driverProfile?.phoneNumber || '07XX XXX XXX'}
-                placeholderTextColor="#94A3B8"
-                style={styles.paymentInput}
+        {showPending ? (
+          <View style={styles.fintechWaitingCard}>
+            <View style={[styles.fintechLogoTile, paymentNetworkTileStyle(selectedPaymentNetwork), styles.fintechWaitingLogo]}>
+              <Image
+                source={selectedNetworkLogo}
+                style={styles.fintechLogoImage}
+                resizeMode="contain"
               />
             </View>
-
-            <AppButton
-              label={busyAction === 'commission-payment' ? 'Sending prompt...' : `Pay TZS ${driverAccessDailyFeeTzs.toLocaleString()}`}
-              icon="send-check-outline"
-              onPress={() => void handleInitiateMongikePayment()}
+            <Text style={styles.fintechWaitingTitle}>{subscriptionActive ? copy.payConfirmedTitle : copy.payApproveTitle}</Text>
+            <Text style={styles.fintechWaitingText}>{copy.payApproveBody}</Text>
+            {latestPayment?.receiptNumber || latestPayment?.orderId ? (
+              <Text style={styles.fintechReference}>{latestPayment?.receiptNumber || latestPayment?.orderId}</Text>
+            ) : null}
+            <Pressable
+              onPress={() => void handleInitiateMongikePayment(true)}
               disabled={busyAction === 'commission-payment'}
-            />
-          </View>
-        ) : null}
-
-        {paymentCheckoutStep === 'submitted' && hasCommissionDue ? (
-          <View style={styles.paymentCheckoutPanel}>
-            <View style={styles.paymentPushIcon}>
-              <MaterialCommunityIcons
-                name={subscriptionPaymentPending ? 'clock-outline' : subscriptionActive ? 'check-circle-outline' : 'clipboard-clock-outline'}
-                size={30}
-                color={driveTheme.colors.primaryDark}
-              />
-            </View>
-            <Text style={styles.paymentPushTitle}>{subscriptionActive ? 'Payment confirmed' : 'Payment pending'}</Text>
-            <Text style={styles.paymentPushText}>
-              {subscriptionActive
-                ? 'Mongike imethibitisha malipo. Receipt na expiry ziko hapa chini.'
-                : 'Thibitisha prompt kwenye simu yako. Webhook ikifika, access itafunguka automatic.'}
-            </Text>
-            <View style={styles.paymentReferenceBox}>
-              <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Order ID</Text>
-                <Text style={styles.paymentReferenceValue}>{latestPayment?.orderId || latestPayment?.id || 'Pending'}</Text>
-              </View>
-              <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Receipt</Text>
-                <Text style={styles.paymentReferenceValue}>{latestPayment?.receiptNumber || latestPayment?.gatewayRef || 'Waiting for confirmation'}</Text>
-              </View>
-              <View style={styles.paymentReferenceItem}>
-                <Text style={styles.paymentReferenceLabel}>Expires</Text>
-                <Text style={styles.paymentReferenceValue}>
-                  {subscriptionActive ? formatDeliveryDateTime(subscriptionPaidUntilMillis) : latestPayment?.expiresAt ? formatDeliveryDateTime(latestPayment.expiresAt) : 'Pending'}
-                </Text>
-              </View>
-            </View>
-            <AppButton
-              label={paymentRefreshing ? 'Checking...' : 'Refresh payment status'}
-              icon="refresh"
-              variant="secondary"
+              style={({ pressed }) => [styles.fintechPrimaryButton, pressed && styles.buttonPressed, busyAction === 'commission-payment' && styles.fintechButtonDisabled]}>
+              <Text style={styles.fintechPrimaryButtonText}>
+                {busyAction === 'commission-payment'
+                  ? '...'
+                  : `Jaribu tena · TZS ${dailyCommissionDue.toLocaleString()}`}
+              </Text>
+            </Pressable>
+            <Pressable
               onPress={() => void handleRefreshPaymentStatus()}
               disabled={paymentRefreshing}
-            />
-            {!subscriptionPaymentPending && !subscriptionActive ? (
-              <AppButton
-                label="Try payment again"
-                icon="cash-fast"
-                onPress={() => setPaymentCheckoutStep('proof')}
-              />
-            ) : null}
+              style={({ pressed }) => [styles.fintechSecondaryButton, pressed && styles.buttonPressed, paymentRefreshing && styles.fintechButtonDisabled]}>
+              <Text style={styles.fintechSecondaryButtonText}>{paymentRefreshing ? '...' : copy.payRefresh}</Text>
+            </Pressable>
           </View>
         ) : null}
 
-        <View style={styles.paymentCheckoutPanel}>
-          <View style={styles.paymentFormHeader}>
-            <View style={styles.paymentFormIcon}>
-              <MaterialCommunityIcons name="receipt-text-outline" size={20} color={driveTheme.colors.primaryDark} />
-            </View>
-            <View style={styles.paymentFormHeaderCopy}>
-              <Text style={styles.paymentFormTitle}>Payment history & receipts</Text>
-              <Text style={styles.paymentFormSubtitle}>Latest Mongike access payments for this driver account.</Text>
-            </View>
+        {showCheckout ? (
+          <View style={styles.fintechCheckout}>
+            <Text style={styles.fintechSectionLabel}>{copy.payWith}</Text>
+            {paymentNetworks.map((network) => {
+              const selected = selectedPaymentNetwork === network.key;
+              return (
+                <Pressable
+                  key={network.key}
+                  disabled={network.enabled === false}
+                  onPress={() => {
+                    if (network.enabled !== false) {
+                      setSelectedPaymentNetwork(network.key as DriverPaymentNetworkKey);
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.fintechMethodRow,
+                    selected && styles.fintechMethodRowSelected,
+                    pressed && network.enabled !== false && styles.buttonPressed,
+                  ]}>
+                  <View style={[styles.fintechLogoTile, paymentNetworkTileStyle(network.key)]}>
+                    <Image source={paymentNetworkLogo(network.key)} style={styles.fintechLogoImage} resizeMode="contain" />
+                  </View>
+                  <View style={styles.fintechMethodCopy}>
+                    <Text style={styles.fintechMethodName}>{network.label}</Text>
+                    <Text style={styles.fintechMethodProvider}>{network.provider}</Text>
+                  </View>
+                  <View style={[styles.fintechRadio, selected && styles.fintechRadioOn]}>
+                    {selected ? <View style={styles.fintechRadioDot} /> : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+
+            <Text style={styles.fintechSectionLabel}>{copy.payPhone}</Text>
+            <TextInput
+              value={paymentPhoneNumber}
+              onChangeText={setPaymentPhoneNumber}
+              keyboardType="phone-pad"
+              placeholder={driverProfile?.phoneNumber || '07XX XXX XXX'}
+              placeholderTextColor="#94A3B8"
+              style={styles.fintechInput}
+            />
+
+            <Pressable
+              onPress={() => void handleInitiateMongikePayment()}
+              disabled={busyAction === 'commission-payment'}
+              style={({ pressed }) => [
+                styles.fintechPrimaryButton,
+                pressed && styles.buttonPressed,
+                busyAction === 'commission-payment' && styles.fintechButtonDisabled,
+              ]}>
+              <Text style={styles.fintechPrimaryButtonText}>
+                {busyAction === 'commission-payment'
+                  ? '...'
+                  : `Lipa · TZS ${dailyCommissionDue.toLocaleString()}`}
+              </Text>
+            </Pressable>
+            <Text style={styles.fintechFootnote}>{copy.payConfirmPin}</Text>
           </View>
-
-          {paymentRefreshing ? <ActivityIndicator color={driveTheme.colors.primary} /> : null}
-
-          {!driverPaymentHistory.length ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>No payments yet</Text>
-              <Text style={styles.emptyText}>Your daily access receipts will appear here after the first Mongike payment.</Text>
-            </View>
-          ) : null}
-
-          {driverPaymentHistory.map((payment) => (
-            <View key={payment.id || payment.orderId} style={styles.paymentOrderRow}>
-              <View style={styles.paymentOrderIcon}>
-                <MaterialCommunityIcons
-                  name={payment.status === 'completed' ? 'check-circle-outline' : payment.status === 'failed' ? 'alert-circle-outline' : 'clock-outline'}
-                  size={18}
-                  color={driveTheme.colors.primaryDark}
-                />
-              </View>
-              <View style={styles.paymentOrderCopy}>
-                <Text style={styles.paymentOrderTitle}>
-                  TZS {Number(payment.amount || driverAccessDailyFeeTzs).toLocaleString()} • {payment.status}
-                </Text>
-                <Text style={styles.paymentOrderMeta}>
-                  {payment.receiptNumber || payment.gatewayRef || payment.orderId}
-                </Text>
-                <Text style={styles.paymentOrderMeta}>
-                  {payment.completedAt ? `Paid ${formatDeliveryDateTime(payment.completedAt)}` : payment.createdAt ? `Started ${formatDeliveryDateTime(payment.createdAt)}` : 'Pending'}
-                </Text>
-              </View>
-              <View style={styles.paymentOrderAmounts}>
-                <Text style={styles.paymentOrderGross}>{payment.network || 'Mongike'}</Text>
-                <Text style={styles.paymentOrderCommission}>{payment.subscriptionPaidUntil ? formatDeliveryDateTime(payment.subscriptionPaidUntil) : ''}</Text>
-              </View>
-            </View>
-          ))}
-        </View>
+        ) : null}
       </ScrollView>
     );
   };
@@ -4234,222 +5162,76 @@ export default function DoorDriveApp() {
       return renderPaymentAccountPage();
     }
 
-    const driverName = driverProfile?.fullName || authUser?.displayName || 'DoorDrive driver';
-    const driverInitials = driverName
-      .split(' ')
-      .map((part) => part[0])
-      .join('')
-      .slice(0, 2)
-      .toUpperCase();
-    const vehicleLine = `${driverProfile?.vehicleLabel || getVehicleTypeLabel(driverProfile?.vehicleType)} • ${driverProfile?.plateNumber || 'Plate pending'}`;
-    const paymentStatusLabel = subscriptionPaymentPending
-      ? 'Pending'
-      : hasCommissionDue
-          ? 'Pay now'
-        : 'Free';
-    const paymentStatusIcon: IconName = subscriptionPaymentPending
-      ? 'clock-outline'
-      : hasCommissionDue
-          ? 'clock-alert-outline'
-        : subscriptionActive
-          ? 'check-circle-outline'
-          : 'cash-fast';
-    const paymentStatusColor = commissionPaymentOverdue ? '#92400E' : hasCommissionDue ? driveTheme.colors.info : driveTheme.colors.primaryDark;
-
     return (
-      <ScrollView contentContainerStyle={styles.dashboardContent} showsVerticalScrollIndicator={false}>
-        {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
-
-        <View style={styles.accountHeaderCard}>
-          <View style={styles.accountAvatar}>
-            <Text style={styles.accountAvatarText}>{driverInitials || 'DD'}</Text>
+      <View style={styles.flex}>
+        {feedback ? (
+          <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+            <FeedbackBanner tone={feedback.tone} message={feedback.message} />
           </View>
-          <View style={styles.accountHeaderCopy}>
-            <Text style={styles.accountHeaderKicker}>{copy.driverAccount}</Text>
-            <Text style={styles.accountHeaderName}>{driverName}</Text>
-            <Text style={styles.accountHeaderMeta}>{vehicleLine}</Text>
-          </View>
-          <View style={[styles.accountStatusBadge, driverProfile?.isAvailable ? styles.accountStatusOnline : styles.accountStatusOffline]}>
-            <MaterialCommunityIcons
-              name={driverProfile?.isAvailable ? 'check-circle-outline' : 'pause-circle-outline'}
-              size={15}
-              color={driverProfile?.isAvailable ? driveTheme.colors.primaryDark : driveTheme.colors.subtext}
-            />
-            <Text style={[styles.accountStatusText, driverProfile?.isAvailable && styles.accountStatusTextOnline]}>
-              {driverProfile?.isAvailable ? copy.online : copy.offline}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.accountQuickGrid}>
-          <View style={styles.accountQuickItem}>
-            <MaterialCommunityIcons name="history" size={18} color={driveTheme.colors.info} />
-            <Text numberOfLines={1} style={styles.accountQuickValue}>{driverOrders.length}</Text>
-            <Text style={styles.accountQuickLabel}>{copy.jobs}</Text>
-          </View>
-          <View style={styles.accountQuickItem}>
-            <MaterialCommunityIcons name="access-point" size={18} color={driveTheme.colors.primaryDark} />
-            <Text numberOfLines={1} style={styles.accountQuickValue}>{driverProfile?.isAvailable ? copy.online : copy.offline}</Text>
-            <Text style={styles.accountQuickLabel}>Dispatch</Text>
-          </View>
-          <View style={styles.accountQuickItem}>
-            <MaterialCommunityIcons name="cash-multiple" size={18} color={driveTheme.colors.warning} />
-            <Text numberOfLines={1} style={styles.accountQuickValue}>TZS {totalEarnings.toLocaleString()}</Text>
-            <Text style={styles.accountQuickLabel}>{copy.earnings}</Text>
-          </View>
-        </View>
-
-        <SectionCard title={copy.profile} subtitle={copy.settingsSubtitle}>
-          <View style={styles.accountInfoList}>
-            <View style={styles.accountInfoRow}>
-              <MaterialCommunityIcons name="cellphone" size={20} color={driveTheme.colors.primaryDark} />
-              <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>{copy.phoneNumber}</Text>
-                <Text style={styles.accountInfoValue}>{driverProfile?.phoneNumber || copy.notSet}</Text>
-              </View>
-            </View>
-            <View style={styles.accountInfoRow}>
-              <MaterialCommunityIcons name="car" size={20} color={driveTheme.colors.primaryDark} />
-              <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>{copy.vehicle}</Text>
-                <Text style={styles.accountInfoValue}>{driverProfile?.vehicleLabel || getVehicleTypeLabel(driverProfile?.vehicleType)}</Text>
-              </View>
-            </View>
-            <View style={styles.accountInfoRow}>
-              <MaterialCommunityIcons name="card-account-details-outline" size={20} color={driveTheme.colors.primaryDark} />
-              <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>{copy.plateNumber}</Text>
-                <Text style={styles.accountInfoValue}>{driverProfile?.plateNumber || copy.notSet}</Text>
-              </View>
-            </View>
-            <View style={styles.accountInfoRow}>
-              <MaterialCommunityIcons name="map-marker-outline" size={20} color={locationPermission === 'granted' ? driveTheme.colors.primaryDark : driveTheme.colors.warning} />
-              <View style={styles.accountInfoCopy}>
-                <Text style={styles.accountInfoLabel}>{copy.liveLocation}</Text>
-                <Text style={styles.accountInfoValue}>{locationPermission === 'granted' ? copy.locationActive : copy.locationNeedsAccess}</Text>
-              </View>
-            </View>
-          </View>
-        </SectionCard>
-
-        <SectionCard title={copy.settings} subtitle={copy.settingsSubtitle}>
-          <View style={styles.stackMd}>
-            <Text style={styles.settingLabel}>{copy.language}</Text>
-            <View style={styles.languageRow}>
-              <Pressable
-                onPress={() => setLanguage('en')}
-                style={({ pressed }) => [styles.languageChip, language === 'en' && styles.languageChipActive, pressed && styles.buttonPressed]}>
-                <Text style={[styles.languageChipText, language === 'en' && styles.languageChipTextActive]}>{copy.languageEnglish}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setLanguage('sw')}
-                style={({ pressed }) => [styles.languageChip, language === 'sw' && styles.languageChipActive, pressed && styles.buttonPressed]}>
-                <Text style={[styles.languageChipText, language === 'sw' && styles.languageChipTextActive]}>{copy.languageSwahili}</Text>
-              </Pressable>
-            </View>
-            <View style={styles.settingToggleRow}>
-              <View style={styles.settingToggleCopy}>
-                <Text style={styles.settingToggleTitle}>{copy.autoConfirm}</Text>
-                <Text style={styles.settingToggleHint}>{copy.autoConfirmHint}</Text>
-              </View>
-              <Switch
-                value={autoConfirm}
-                onValueChange={setAutoConfirm}
-                trackColor={{ false: '#E2E8F0', true: '#86EFAC' }}
-                thumbColor={autoConfirm ? '#16A34A' : '#F8FAFC'}
-              />
-            </View>
-          </View>
-        </SectionCard>
-
-        <SectionCard title="Driver access" subtitle="DoorDrive is free to use for dispatch work.">
-          <View style={styles.stackMd}>
-            <View style={styles.paymentSummaryBand}>
-              <View style={styles.paymentSummaryMain}>
-                <Text style={styles.paymentHeroLabel}>DoorDrive access</Text>
-                <Text style={styles.paymentHeroAmount}>Free</Text>
-                <Text style={styles.paymentSummaryCaption}>
-                  {hasCommissionDue
-                    ? subscriptionPaymentPending
-                      ? 'Payment pending. Approve prompt to unlock access.'
-                      : 'Access imeisha. Lipa ili kupokea na ku-manage oda.'
-                    : 'You can go online and receive orders without a daily fee.'}
-                </Text>
-              </View>
-              <View style={styles.paymentStatusPill}>
-                <MaterialCommunityIcons name={paymentStatusIcon} size={15} color={paymentStatusColor} />
-                <Text style={[styles.paymentStatusText, { color: paymentStatusColor }]}>{paymentStatusLabel}</Text>
-              </View>
-            </View>
-
-            <View style={styles.subscriptionCountdownCard}>
-              <View style={styles.subscriptionCountdownIcon}>
-                <MaterialCommunityIcons name="timer-sand" size={22} color={driveTheme.colors.primaryDark} />
-              </View>
-              <View style={styles.subscriptionCountdownCopy}>
-                <Text style={styles.subscriptionCountdownLabel}>Access status</Text>
-                <Text style={styles.subscriptionCountdownValue}>{subscriptionCountdownLabel}</Text>
-                <Text style={styles.subscriptionCountdownCaption}>{subscriptionCountdownCaption}</Text>
-              </View>
-            </View>
-
-            {hasCommissionDue ? (
-              <AppButton
-                label="Open access"
-                icon="cash-fast"
-                onPress={() => {
-                  setPaymentCheckoutStep('debt');
-                  setAccountView('payments');
-                }}
-              />
-            ) : null}
-          </View>
-        </SectionCard>
-
-        <SectionCard title="Account controls" subtitle={availabilityLabel}>
-          <View style={styles.stackMd}>
-            <View style={styles.accountHealthRow}>
-              <View style={styles.accountHealthItem}>
-                <Text style={styles.disciplineValue}>{driverCanReceiveDispatch ? 'Ready' : 'Hold'}</Text>
-                <Text style={styles.disciplineLabel}>Verification</Text>
-              </View>
-              <View style={styles.accountHealthItem}>
-                <Text style={styles.disciplineValue}>{hasCommissionDue ? 'Due' : 'Clear'}</Text>
-                <Text style={styles.disciplineLabel}>Access</Text>
-              </View>
-              <View style={styles.accountHealthItem}>
-                <Text style={styles.disciplineValue}>{driverProfile?.isAvailable ? 'Online' : 'Off'}</Text>
-                <Text style={styles.disciplineLabel}>Dispatch</Text>
-              </View>
-            </View>
-            <Text style={styles.tripLine}>{locationLabel}</Text>
-            {driverProfile?.lastLocationUpdatedAt ? (
-              <Text style={styles.tripLine}>Last location write: {formatDeliveryDateTime(driverProfile.lastLocationUpdatedAt)}</Text>
-            ) : null}
-            <AppButton
-              label={busyAction === 'availability' ? copy.updating : driverProfile?.isAvailable ? copy.goOfflineLong : copy.goOnline}
-              icon={driverProfile?.isAvailable ? 'pause-circle-outline' : 'check-circle-outline'}
-              variant="secondary"
-              onPress={() => void handleToggleAvailability()}
-              disabled={!!activeOrder || busyAction === 'availability' || (!driverProfile?.isAvailable && !driverCanReceiveDispatch)}
-            />
-            <AppButton
-              label={busyAction === 'location-refresh' ? 'Refreshing location...' : 'Refresh live location'}
-              icon="crosshairs-gps"
-              variant="secondary"
-              onPress={() => void handleManualLocationRefresh()}
-              disabled={busyAction === 'location-refresh' || !subscriptionActive}
-            />
-            <AppButton
-              label={busyAction === 'sign-out' ? copy.signingOut : copy.signOut}
-              icon="logout"
-              variant="dark"
-              onPress={() => void handleSignOut()}
-              disabled={busyAction === 'sign-out'}
-            />
-          </View>
-        </SectionCard>
-      </ScrollView>
+        ) : null}
+        <PilotHelpScreen
+          title={copy.helpTitle}
+          subtitle={copy.helpSubtitle}
+          tipsTitle={copy.helpTipsTitle}
+          tips={[copy.helpTipOnline, copy.helpTipRoute, copy.helpTipCommission]}
+          rows={[
+            {
+              key: 'call',
+              icon: 'phone-outline',
+              iconColor: '#34C759',
+              iconBg: '#14301F',
+              title: copy.helpCall,
+              subtitle: copy.helpCallHint,
+              onPress: () => void openSupportCall(),
+            },
+            {
+              key: 'whatsapp',
+              icon: 'whatsapp',
+              iconColor: '#22C55E',
+              iconBg: '#14301F',
+              title: copy.helpWhatsApp,
+              subtitle: copy.helpWhatsAppHint,
+              onPress: () => void openSupportWhatsApp(),
+            },
+            {
+              key: 'alerts',
+              icon: 'bell-outline',
+              iconColor: '#38BDF8',
+              iconBg: '#0F2740',
+              title: copy.helpAlerts,
+              subtitle: copy.helpAlertsHint,
+              onPress: () => setSelectedTab('notifications'),
+            },
+            {
+              key: 'rewards',
+              icon: 'trophy-outline',
+              iconColor: '#F5A623',
+              iconBg: '#2E2410',
+              title: copy.helpRewards,
+              subtitle: copy.helpRewardsHint,
+              onPress: () => setSelectedTab('earn'),
+            },
+            {
+              key: 'terms',
+              icon: 'file-document-outline',
+              iconColor: '#94A3B8',
+              iconBg: '#1C222B',
+              title: copy.helpTerms,
+              subtitle: TERMS_URL.replace('https://', ''),
+              onPress: () => void Linking.openURL(TERMS_URL),
+            },
+            {
+              key: 'privacy',
+              icon: 'shield-lock-outline',
+              iconColor: '#94A3B8',
+              iconBg: '#1C222B',
+              title: copy.helpPrivacy,
+              subtitle: PRIVACY_URL.replace('https://', ''),
+              onPress: () => void Linking.openURL(PRIVACY_URL),
+            },
+          ]}
+        />
+      </View>
     );
   };
 
@@ -4463,8 +5245,8 @@ export default function DoorDriveApp() {
         setFeedback({
           tone: 'error',
           message: isFatal
-            ? 'A fatal app error was caught. Restart DoorDrive if the screen becomes unstable.'
-            : 'A background app error was caught while DoorDrive kept running.',
+            ? 'A fatal app error was caught. Restart HAUL Pilots if the screen becomes unstable.'
+            : 'A background app error was caught while HAUL Pilots kept running.',
         });
         try {
           // call previous if available
@@ -4479,27 +5261,33 @@ export default function DoorDriveApp() {
     }
   }
 
-  if (showStartupSplash || authInitializing) {
-    const progressWidth = splashProgress.interpolate({
-      inputRange: [0, 1],
-      outputRange: ['16%', '100%'],
-    });
-
+  if (!pilotIntroReady) {
     return (
       <ErrorBoundary>
-        <View style={styles.splashScreen}>
-          <StatusBar style="light" backgroundColor={driveTheme.colors.primary} />
-          <View style={styles.splashCenter}>
-            <Image source={appLogoImage} style={styles.splashLogo} resizeMode="contain" />
-            <Text style={styles.splashTagline}>
-              {authInitializing && !showStartupSplash ? 'Connecting...' : 'Drive. Deliver. Earn.'}
-            </Text>
-          </View>
-          <View style={styles.splashFooter}>
-            <View style={styles.splashProgressTrack}>
-              <Animated.View style={[styles.splashProgressFill, { width: progressWidth }]} />
-            </View>
-          </View>
+        <View style={{ flex: 1, backgroundColor: '#FFE500' }} />
+      </ErrorBoundary>
+    );
+  }
+
+  if (!pilotIntroDone) {
+    return (
+      <ErrorBoundary>
+        <PilotIntro
+          onFinished={() => {
+            void markPilotIntroSeen();
+            setPilotIntroDone(true);
+            setShowStartupSplash(false);
+          }}
+        />
+      </ErrorBoundary>
+    );
+  }
+
+  if (authInitializing) {
+    return (
+      <ErrorBoundary>
+        <View style={{ flex: 1, backgroundColor: '#FFE500', alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ fontFamily: driveType.bold, color: '#111827', fontSize: 16 }}>{copy.splashConnecting}</Text>
         </View>
       </ErrorBoundary>
     );
@@ -4507,70 +5295,157 @@ export default function DoorDriveApp() {
 
   return (
     <ErrorBoundary>
-      <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
+      <SafeAreaView style={[styles.safeArea, statusBarInset ? { paddingTop: statusBarInset } : null]}>
+      <StatusBar style="light" backgroundColor={driveTheme.colors.canvas} translucent />
 	      {!authUser ? (
         renderAuthScreen()
       ) : profileLoading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={driveTheme.colors.primary} />
-          <Text style={styles.loadingText}>Loading driver profile...</Text>
+          <ActivityIndicator size="large" color={driveTheme.colors.ink} />
+          <Text style={styles.loadingText}>{copy.profileLoading}</Text>
         </View>
-      ) : registrationSubmitted && !driverProfile ? (
+      ) : driverVerificationRejected ? (
+        renderDriverBlockedScreen()
+      ) : needsVehicleChoice ? (
+        renderVehicleChoiceScreen()
+      ) : registrationSubmitted || driverVerificationPending ? (
         renderVerificationStatusScreen()
       ) : driverProfileMissing ? (
         renderProfileSetup()
-      ) : driverVerificationPending ? (
-        renderVerificationStatusScreen()
       ) : (
         <View style={styles.flex}>
+          <View style={styles.appBody}>
           {driverAccessBlocked && selectedTab !== 'account' ? renderAccessRenewalScreen() : null}
           {!driverAccessBlocked && selectedTab === 'home' ? renderHomeTab() : null}
           {!driverAccessBlocked && selectedTab === 'trip' ? renderTripTab() : null}
+          {!driverAccessBlocked && selectedTab === 'earn' ? renderEarnTab() : null}
           {!driverAccessBlocked && selectedTab === 'history' ? renderHistoryTab() : null}
           {!driverAccessBlocked && selectedTab === 'notifications' ? renderNotificationsTab() : null}
           {selectedTab === 'account' ? renderAccountTab() : null}
+          </View>
 
-          <View style={styles.bottomNav}>
+          <View style={[styles.bottomNav, androidNavInset ? { paddingBottom: androidNavInset } : null]}>
             {tabs.map((tab) => {
-              const active = selectedTab === tab.key;
+              const active = selectedTab === tab.key || (tab.key === 'home' && selectedTab === 'trip');
+              const label =
+                tab.key === 'home'
+                  ? copy.tabHome
+                  : tab.key === 'earn'
+                    ? copy.tabEarn
+                    : tab.key === 'history'
+                      ? copy.tabHistory
+                      : copy.tabAccount;
+
               return (
-                <Pressable
+                <BoltBottomNavItem
                   key={tab.key}
+                  icon={tab.icon}
+                  label={label}
+                  active={active}
+                  badge={undefined}
                   onPress={() => {
                     if (tab.key === 'account') {
                       setAccountView('overview');
                     }
+                    if (tab.key === 'home' && activeOrder && !isIncomingOffer(activeOrder)) {
+                      // Keep driver on the in-app map home (do not bounce to empty trip chrome).
+                      setSelectedTab('home');
+                      return;
+                    }
                     setSelectedTab(tab.key);
                   }}
-                  style={[styles.bottomNavItem, active && styles.bottomNavItemActive]}>
-                  <MaterialCommunityIcons
-                    name={tab.icon}
-                    size={22}
-                    color={active ? '#16A34A' : '#94A3B8'}
-                  />
-                  {tab.key === 'notifications' && unreadNotificationCount > 0 ? (
-                    <View style={styles.bottomNavBadge}>
-                      <Text style={styles.bottomNavBadgeText}>{Math.min(unreadNotificationCount, 9)}</Text>
-                    </View>
-                  ) : null}
-                  <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>
-                    {tab.key === 'home'
-                      ? copy.tabHome
-                      : tab.key === 'trip'
-                        ? copy.tabTrip
-                        : tab.key === 'history'
-                          ? copy.tabHistory
-                          : tab.key === 'notifications'
-                            ? copy.tabAlerts
-                            : copy.tabAccount}
-                  </Text>
-                </Pressable>
+                />
               );
             })}
           </View>
         </View>
       )}
+
+      <PilotOrderCancelledModal
+        visible={orderCancelledVisible}
+        title={copy.orderCancelledTitle}
+        message={copy.orderCancelledMessage}
+        closeLabel={copy.orderCancelledClose}
+        onClose={() => setOrderCancelledVisible(false)}
+      />
+
+      <PilotMenuDrawer
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        driverName={driverProfile?.fullName || authUser?.displayName || 'HAUL Pilots'}
+        vehicleLine={`${getVehicleTypeLabel(driverProfile?.vehicleType || driverProfile?.vehicleLabel)} • ${driverProfile?.plateNumber || copy.platePending}`}
+        online={Boolean(driverProfile?.isAvailable)}
+        onlineLabel={copy.online}
+        offlineLabel={copy.offline}
+        language={language}
+        onLanguageEn={() => chooseLanguage('en')}
+        onLanguageSw={() => chooseLanguage('sw')}
+        languageTitle={copy.language}
+        languageEn={copy.languageEnglish}
+        languageSw={copy.languageSwahili}
+        autoConfirm={autoConfirm}
+        onAutoConfirmChange={setAutoConfirm}
+        autoConfirmTitle={copy.autoConfirm}
+        autoConfirmHint={copy.autoConfirmHint}
+        items={[
+          {
+            key: 'access',
+            icon: 'cash-fast',
+            title: copy.menuAccess,
+            subtitle: hasCommissionDue
+              ? `TZS ${commissionSummary.unpaidTzs.toLocaleString()}`
+              : copy.accessFreeHint,
+            onPress: () => {
+              setMenuOpen(false);
+              setPaymentCheckoutStep(subscriptionPaymentPending ? 'submitted' : 'proof');
+              setPaymentPhoneNumber((currentPhone) => currentPhone || driverProfile?.phoneNumber || '');
+              setAccountView('payments');
+              setSelectedTab('account');
+            },
+          },
+          {
+            key: 'profile',
+            icon: 'card-account-details-outline',
+            title: copy.menuProfile,
+            subtitle: driverProfile?.phoneNumber || copy.notSet,
+            onPress: () => {
+              setMenuOpen(false);
+              setFeedback({
+                tone: 'info',
+                message: `${copy.phoneNumber}: ${driverProfile?.phoneNumber || copy.notSet}`,
+              });
+            },
+          },
+          {
+            key: 'location',
+            icon: 'crosshairs-gps',
+            title: copy.menuLocation,
+            subtitle:
+              locationPermission === 'granted' ? copy.locationActive : copy.locationNeedsAccess,
+            onPress: () => {
+              setMenuOpen(false);
+              void handleManualLocationRefresh();
+            },
+          },
+          {
+            key: 'alerts',
+            icon: 'bell-outline',
+            title: copy.tabAlerts,
+            subtitle: unreadNotificationCount
+              ? `${unreadNotificationCount} ${copy.alertsLive}`
+              : copy.alertsSubtitle,
+            onPress: () => {
+              setMenuOpen(false);
+              setSelectedTab('notifications');
+            },
+          },
+        ]}
+        signOutLabel={busyAction === 'sign-out' ? copy.signingOut : copy.signOut}
+        onSignOut={() => {
+          setMenuOpen(false);
+          void handleSignOut();
+        }}
+      />
       </SafeAreaView>
     </ErrorBoundary>
   );
@@ -4587,10 +5462,19 @@ const styles = StyleSheet.create({
   },
   splashSafeArea: {
     flex: 1,
-    backgroundColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.canvas,
   },
   flex: {
     flex: 1,
+    minHeight: 0,
+  },
+  appBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  lockFeedbackWrap: {
+    paddingHorizontal: driveTheme.spacing.lg,
+    paddingTop: driveTheme.spacing.sm,
   },
   splashScreen: {
     flex: 1,
@@ -4601,11 +5485,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 32,
+    gap: 18,
   },
   splashLogo: {
     width: 128,
     height: 128,
     borderRadius: 32,
+  },
+  splashArt: {
+    width: 120,
+    height: 120,
+    marginTop: 8,
+    opacity: 0.92,
   },
   splashTagline: {
     marginTop: 20,
@@ -4645,14 +5536,21 @@ const styles = StyleSheet.create({
   },
   authCanvas: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.canvas,
+  },
+  authQuietPage: {
+    paddingHorizontal: 24,
+    paddingTop: 48,
+    paddingBottom: 40,
+    gap: 16,
+    justifyContent: 'center',
   },
   authScroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
     paddingTop: 18,
     paddingBottom: 40,
-    gap: 12,
+    gap: 16,
   },
   authBackButton: {
     width: 44,
@@ -4665,24 +5563,89 @@ const styles = StyleSheet.create({
   },
   authPageTitle: {
     color: driveTheme.colors.ink,
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 26,
+    lineHeight: 32,
     fontFamily: driveType.bold,
-    marginBottom: 8,
+    textAlign: 'left',
+    letterSpacing: -0.5,
+    marginBottom: 0,
+  },
+  authLandingHero: {
+    alignItems: 'flex-start',
+    paddingTop: 12,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  authLandingLogo: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+  },
+  authWordmark: {
+    color: driveTheme.colors.ctaText,
+    fontFamily: driveType.bold,
+    fontSize: 22,
+    letterSpacing: 3,
+    backgroundColor: driveTheme.colors.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 10,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+  },
+  authPilotsLine: {
+    color: driveTheme.colors.ink,
+    fontFamily: driveType.regular,
+    fontStyle: 'italic',
+    fontSize: 18,
+    marginTop: -2,
+  },
+  waitingVehicleLine: {
+    alignSelf: 'flex-start',
+    backgroundColor: driveTheme.colors.surfaceElevated,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  waitingVehicleText: {
+    color: driveTheme.colors.ink,
+    fontFamily: driveType.semibold,
+    fontSize: 14,
+  },
+  authLandingTitle: {
+    textAlign: 'left',
+    marginTop: 4,
+    fontSize: 30,
+    lineHeight: 36,
+  },
+  authLandingSubtitle: {
+    textAlign: 'left',
+    color: driveTheme.colors.subtext,
+    fontSize: 15,
+    lineHeight: 22,
+    fontFamily: driveType.regular,
   },
   authFieldHint: {
-    color: driveTheme.colors.ink,
+    color: driveTheme.colors.subtext,
     fontSize: 13,
     lineHeight: 18,
     fontFamily: driveType.semibold,
     marginTop: 4,
   },
   authTermsRow: {
-    minHeight: 44,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
-    paddingVertical: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    borderRadius: 16,
+    backgroundColor: driveTheme.colors.surface,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
   },
   authTermsText: {
     flex: 1,
@@ -4697,7 +5660,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 42,
     paddingBottom: 28,
-    gap: 24,
+    gap: 20,
   },
   registerScroll: {
     flexGrow: 1,
@@ -4817,6 +5780,8 @@ const styles = StyleSheet.create({
   loginBrandHeader: {
     alignItems: 'center',
     gap: 10,
+    marginTop: 8,
+    marginBottom: 4,
   },
   loginLogoShell: {
     width: 58,
@@ -5001,7 +5966,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   loginSecondaryActionText: {
-    color: driveTheme.colors.primaryDark,
+    color: driveTheme.colors.primary,
     fontSize: 14,
     fontFamily: driveType.bold,
   },
@@ -5010,11 +5975,235 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: driveType.regular,
   },
+  authScreenTopBar: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  authTopBrand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  authTopLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+  },
+  authTopBrandName: {
+    color: driveTheme.colors.ink,
+    fontSize: 16,
+    fontFamily: driveType.bold,
+    letterSpacing: -0.2,
+  },
+  authBackQuiet: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: -6,
+  },
+  authLanguageQuiet: {
+    color: driveTheme.colors.subtext,
+    fontSize: 14,
+    fontFamily: driveType.semibold,
+  },
+  authHeroCopy: {
+    gap: 6,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  registerProgressTrack: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: driveTheme.colors.surfaceElevated,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  registerProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: driveTheme.colors.primary,
+  },
+  registerStepMeta: {
+    color: driveTheme.colors.subtext,
+    fontSize: 12,
+    fontFamily: driveType.semibold,
+    marginTop: 8,
+  },
+  formSection: {
+    gap: 12,
+    marginTop: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 14,
+  },
+  formSectionTitle: {
+    color: driveTheme.colors.ink,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: driveType.bold,
+  },
+  formSectionBody: {
+    gap: 10,
+  },
+  authFormCard: {
+    gap: 12,
+    marginTop: 12,
+    backgroundColor: driveTheme.colors.surface,
+    borderRadius: driveTheme.radius.xl,
+    padding: driveTheme.spacing.lg,
+    ...driveTheme.shadows.card,
+  },
+  photoStage: {
+    gap: 16,
+    marginTop: 4,
+  },
+  photoStageFrame: {
+    width: '100%',
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#F4F7F5',
+    borderWidth: 1.5,
+    borderColor: '#D7E3DB',
+    borderStyle: 'dashed',
+  },
+  photoStageFrameVehicle: {
+    aspectRatio: 4 / 3,
+  },
+  photoStageFrameFilled: {
+    borderStyle: 'solid',
+    borderColor: '#86EFAC',
+  },
+  photoStageFramePortrait: {
+    alignSelf: 'center',
+    width: '78%',
+    aspectRatio: 3 / 4,
+    borderRadius: 28,
+  },
+  photoStageImage: {
+    width: '100%',
+    height: '100%',
+  },
+  photoStageEmpty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    gap: 8,
+  },
+  photoStageIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 24,
+    backgroundColor: '#E8F8EE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  photoStageEmptyTitle: {
+    color: driveTheme.colors.ink,
+    fontSize: 17,
+    fontFamily: driveType.bold,
+    textAlign: 'center',
+  },
+  photoStageEmptyHint: {
+    color: driveTheme.colors.subtext,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: driveType.regular,
+    textAlign: 'center',
+  },
+  photoStageRetake: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15, 23, 42, 0.78)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  photoStageRetakeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: driveType.semibold,
+  },
+  photoTipList: {
+    gap: 8,
+  },
+  photoTipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  photoTipText: {
+    flex: 1,
+    color: driveTheme.colors.subtext,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: driveType.regular,
+  },
+  photoActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  authHeroSubtitle: {
+    color: driveTheme.colors.subtext,
+    fontSize: 15,
+    lineHeight: 21,
+    fontFamily: driveType.regular,
+  },
+  authLanguageButton: {
+    minHeight: 36,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  authLanguageButtonText: {
+    color: driveTheme.colors.primaryDark,
+    fontSize: 13,
+    fontFamily: driveType.bold,
+  },
+  authForgotButton: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+  },
+  authForgotButtonText: {
+    color: driveTheme.colors.subtext,
+    fontSize: 14,
+    fontFamily: driveType.semibold,
+  },
+  authDialCode: {
+    color: driveTheme.colors.ink,
+    fontSize: 14,
+    fontFamily: driveType.semibold,
+  },
+  authCountryCode: {
+    minHeight: 52,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   setupScreen: {
     flex: 1,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20,
-    paddingTop: 18,
+    paddingHorizontal: 24,
+    paddingTop: 12,
   },
   setupHeader: {
     minHeight: 48,
@@ -5035,25 +6224,25 @@ const styles = StyleSheet.create({
   },
   setupTitle: {
     color: driveTheme.colors.ink,
-    fontSize: 22,
-    fontWeight: '900',
+    fontSize: 18,
+    fontFamily: driveType.bold,
     textAlign: 'center',
   },
   setupIntro: {
     color: driveTheme.colors.subtext,
-    fontSize: 17,
-    lineHeight: 25,
-    marginTop: 18,
-    marginBottom: 20,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 14,
+    marginBottom: 12,
+    fontFamily: driveType.regular,
   },
   setupProgressRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 2,
   },
   setupStepItem: {
-    width: 74,
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
     gap: 6,
   },
@@ -5095,25 +6284,39 @@ const styles = StyleSheet.create({
   },
   setupScroll: {
     flexGrow: 1,
-    paddingBottom: 22,
+    paddingBottom: 28,
+    gap: 16,
   },
   setupFormStack: {
     gap: 14,
   },
   setupInputShell: {
-    minHeight: 54,
-    borderRadius: 16,
+    minHeight: 56,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 16,
-    justifyContent: 'center',
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surface,
+    paddingLeft: 16,
+    paddingRight: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   setupTextInput: {
+    flex: 1,
     color: driveTheme.colors.ink,
     fontSize: 16,
     fontFamily: driveType.regular,
     minHeight: 44,
+    paddingRight: 8,
+  },
+  setupPasswordToggle: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setupInputShellPlain: {
+    paddingRight: 16,
   },
   setupSelectShell: {
     flexDirection: 'row',
@@ -5127,7 +6330,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   setupSelectPlaceholder: {
-    color: '#7B8B8D',
+    color: driveTheme.colors.muted,
   },
   setupColorSwatch: {
     width: 42,
@@ -5154,8 +6357,8 @@ const styles = StyleSheet.create({
   },
   setupFlagText: {
     color: driveTheme.colors.primaryDark,
-    fontSize: 15,
-    fontWeight: '900',
+    fontSize: 13,
+    fontFamily: driveType.bold,
   },
   setupPhoneInput: {
     flex: 1,
@@ -5209,7 +6412,7 @@ const styles = StyleSheet.create({
   },
   termsPanelTitle: {
     flex: 1,
-    color: driveTheme.colors.primaryDark,
+    color: driveTheme.colors.ink,
     fontSize: 14,
     lineHeight: 19,
     fontWeight: '900',
@@ -5228,13 +6431,13 @@ const styles = StyleSheet.create({
     borderRadius: driveTheme.radius.pill,
     borderWidth: 1,
     borderColor: driveTheme.colors.line,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.surface,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
   termsAgreeRowActive: {
     borderColor: driveTheme.colors.primary,
-    backgroundColor: '#DCFCE7',
+    backgroundColor: driveTheme.colors.primarySoft,
   },
   loginTermsAgreeRow: {
     marginTop: 2,
@@ -5244,13 +6447,14 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 7,
     borderWidth: 2,
-    borderColor: driveTheme.colors.primary,
+    borderColor: driveTheme.colors.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.surfaceElevated,
   },
   termsCheckboxActive: {
-    backgroundColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.cta,
+    borderColor: driveTheme.colors.cta,
   },
   termsAgreeText: {
     flex: 1,
@@ -5261,8 +6465,8 @@ const styles = StyleSheet.create({
   },
   registerFooter: {
     borderTopWidth: 1,
-    borderTopColor: '#D8EFE0',
-    backgroundColor: '#FFFFFF',
+    borderTopColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.canvas,
     paddingHorizontal: 24,
     paddingTop: 14,
     paddingBottom: 18,
@@ -5271,13 +6475,13 @@ const styles = StyleSheet.create({
     marginHorizontal: -20,
     borderTopWidth: 1,
     borderTopColor: driveTheme.colors.line,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.canvas,
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 22,
   },
   verificationScreen: {
-    flex: 1,
+    flexGrow: 1,
     backgroundColor: '#F8FAFC',
     paddingHorizontal: 20,
     paddingVertical: 28,
@@ -5296,27 +6500,40 @@ const styles = StyleSheet.create({
     shadowRadius: 32,
     elevation: 8,
   },
-  verificationIconShell: {
-    width: 82,
-    height: 82,
-    borderRadius: 24,
-    backgroundColor: driveTheme.colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
+  verificationArt: {
+    width: 112,
+    height: 112,
     alignSelf: 'center',
+    marginBottom: 8,
+  },
+  leadMessageAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F0FDF4',
+  },
+  verificationCopy: {
+    gap: 8,
+    alignItems: 'center',
+  },
+  verificationEyebrow: {
+    color: driveTheme.colors.primaryDark,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: driveType.semibold,
   },
   verificationTitle: {
     color: driveTheme.colors.ink,
-    fontSize: 25,
-    lineHeight: 31,
-    fontWeight: '900',
+    fontSize: 24,
+    lineHeight: 30,
+    fontFamily: driveType.bold,
     textAlign: 'center',
   },
   verificationText: {
     color: driveTheme.colors.subtext,
     fontSize: 15,
-    lineHeight: 23,
-    fontWeight: '700',
+    lineHeight: 22,
+    fontFamily: driveType.regular,
     textAlign: 'center',
   },
   verificationChecklist: {
@@ -5337,7 +6554,7 @@ const styles = StyleSheet.create({
     color: driveTheme.colors.ink,
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: '800',
+    fontFamily: driveType.semibold,
   },
   verificationActions: {
     gap: 12,
@@ -5356,7 +6573,7 @@ const styles = StyleSheet.create({
   verificationSignOutText: {
     color: driveTheme.colors.ink,
     fontSize: 14,
-    fontWeight: '900',
+    fontFamily: driveType.bold,
   },
   documentList: {
     gap: 14,
@@ -5414,8 +6631,8 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
   },
   documentUploadButtonDone: {
-    backgroundColor: driveTheme.colors.primary,
-    borderColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.cta,
+    borderColor: driveTheme.colors.cta,
   },
   documentUploadText: {
     color: driveTheme.colors.ink,
@@ -5424,13 +6641,6 @@ const styles = StyleSheet.create({
   },
   documentUploadTextDone: {
     color: '#FFFFFF',
-  },
-  authScroll: {
-    flexGrow: 1,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 28,
-    gap: 18,
   },
   authHeroShell: {
     position: 'relative',
@@ -5458,9 +6668,10 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   dashboardContent: {
+    flexGrow: 1,
     paddingHorizontal: 16,
     paddingTop: 16,
-    paddingBottom: 110,
+    paddingBottom: 24,
     gap: 14,
   },
   pageHeader: {
@@ -5483,24 +6694,511 @@ const styles = StyleSheet.create({
   homeTabContent: {
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 118,
+    paddingBottom: 24,
     gap: 12,
   },
   homeScreen: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.canvas,
+  },
+  homeDashboard: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 14,
+  },
+  homeMapCard: {
+    backgroundColor: driveTheme.colors.surface,
+    borderRadius: driveTheme.radius.xl,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    overflow: 'hidden',
+    ...driveTheme.shadows.card,
+  },
+  homeMapCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  homeMapCardTitle: {
+    fontFamily: driveType.semibold,
+    color: driveTheme.colors.ink,
+    fontSize: 14,
+    letterSpacing: -0.2,
+  },
+  homeMapLiveTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: driveTheme.colors.onlineSoft,
+    borderRadius: driveTheme.radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  homeMapLiveText: {
+    fontFamily: driveType.semibold,
+    color: driveTheme.colors.primaryDark,
+    fontSize: 11,
+  },
+  homeMapCardBody: {
+    overflow: 'hidden',
+    borderTopWidth: 1,
+    borderTopColor: driveTheme.colors.line,
+  },
+  homeMapCardMap: {
+    width: '100%',
+    height: '100%',
+  },
+  homeTripCard: {
+    gap: 12,
+  },
+  homeDeclineInline: {
+    alignSelf: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  homeDeclineInlineText: {
+    fontFamily: driveType.semibold,
+    color: driveTheme.colors.danger,
+    fontSize: 14,
   },
   homeMapFill: {
     ...StyleSheet.absoluteFillObject,
   },
   homeMapWrap: {
     flex: 1,
+    backgroundColor: driveTheme.colors.canvas,
+    overflow: 'hidden',
+  },
+  homeFloatingHeader: {
+    position: 'absolute',
+    top: 10,
+    left: 14,
+    right: 14,
+    zIndex: 4,
+    gap: 10,
+  },
+  boltTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  boltGoOnlineWrap: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    zIndex: 6,
+    gap: 10,
+    alignItems: 'center',
+  },
+  boltMapToolsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  boltMapToolsSpacer: {
+    flex: 1,
+  },
+  boltSheetStatus: {
+    fontFamily: driveType.bold,
+    fontSize: 17,
+    color: driveTheme.colors.ink,
+    marginBottom: 4,
+  },
+  boltSheetHint: {
+    fontFamily: driveType.regular,
+    fontSize: 13,
+    color: driveTheme.colors.subtext,
+    marginBottom: 8,
+  },
+  ridesTitle: {
+    fontFamily: driveType.bold,
+    fontSize: 32,
+    color: driveTheme.colors.ink,
+    letterSpacing: -0.6,
+    marginBottom: 8,
+  },
+  ridesContent: {
+    flexGrow: 1,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 28,
+    backgroundColor: driveTheme.colors.canvas,
+  },
+  homeDemandChip: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
+    zIndex: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  homeDemandEmoji: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
+  homeDemandCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeDemandTitle: {
+    fontFamily: driveType.bold,
+    color: '#14532D',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  homeDemandHint: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 1,
+  },
+  nearbyPersonPin: {
+    alignItems: 'center',
+  },
+  nearbyPersonBubble: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#14532D',
+    shadowOpacity: 0.18,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  nearbyPersonEmoji: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
+  nearbyPersonStem: {
+    width: 3,
+    height: 7,
+    backgroundColor: '#16A34A',
+  },
+  nearbyPersonDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#16A34A',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    marginTop: -2,
+  },
+  leadMessageSheet: {
+    maxHeight: '72%',
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 24,
+    gap: 10,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+  leadMessageThread: {
+    maxHeight: 140,
+  },
+  leadTemplateScroll: {
+    maxHeight: 280,
+  },
+  leadTemplateGrid: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  leadTemplateChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#BBF7D0',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    gap: 8,
+  },
+  leadTemplateChipDisabled: {
+    opacity: 0.5,
+  },
+  leadTemplateIcon: {
+    flexShrink: 0,
+  },
+  leadTemplateText: {
+    fontFamily: driveType.semibold,
+    color: '#14532D',
+    fontSize: 14,
+    lineHeight: 20,
+    flex: 1,
+  },
+  leadSimpleHintWrap: {
+    borderRadius: 12,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  leadSimpleHint: {
+    fontFamily: driveType.semibold,
+    color: '#334155',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  leadSendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 6,
+  },
+  leadSendingText: {
+    fontFamily: driveType.semibold,
+    color: '#16A34A',
+    fontSize: 13,
+  },
+  leadQuickRow: {
+    gap: 8,
+  },
+  leadQuickChip: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D1FAE5',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  leadQuickChipText: {
+    fontFamily: driveType.semibold,
+    color: '#14532D',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  tripScreenContent: {
+    flexGrow: 1,
+    paddingBottom: 24,
+    gap: 0,
+  },
+  tripScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  tripEmptyWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  tripMapWrap: {
+    flex: 1,
+    minHeight: 160,
     backgroundColor: '#E7EEF0',
     overflow: 'hidden',
   },
-  tripScreenContent: {
-    paddingBottom: 110,
-    gap: 0,
+  mapCardFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  mapViewFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  mapOverlayCompact: {
+    padding: 12,
+    justifyContent: 'flex-start',
+  },
+  mapOverlayTopCompact: {
+    justifyContent: 'flex-end',
+  },
+  tripDock: {
+    flexShrink: 0,
+  },
+  tripDockSheet: {
+    flexShrink: 0,
+  },
+  tripNowRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  tripNowCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tripNowKicker: {
+    fontFamily: driveType.semibold,
+    color: driveTheme.colors.subtext,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  tripNowTitle: {
+    fontFamily: driveType.bold,
+    color: driveTheme.colors.ink,
+    fontSize: 24,
+    lineHeight: 30,
+    marginTop: 2,
+    letterSpacing: -0.6,
+  },
+  tripDockFare: {
+    fontFamily: driveType.bold,
+    color: driveTheme.colors.ink,
+    fontSize: 20,
+    lineHeight: 26,
+    letterSpacing: -0.4,
+  },
+  tripPrimaryButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  tripPrimaryButtonText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 17,
+    letterSpacing: 0.3,
+  },
+  tripQuickRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  tripQuickButton: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 16,
+    backgroundColor: '#F0FDF4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  tripQuickButtonActive: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#86EFAC',
+  },
+  tripQuickButtonText: {
+    fontFamily: driveType.semibold,
+    color: '#14532D',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  tripChatBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  tripChatBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  tripChatModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  tripChatBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  tripChatSheet: {
+    height: '72%',
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  tripChatSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E2E8F0',
+    marginBottom: 4,
+  },
+  tripChatHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  tripChatHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tripChatHeaderTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 18,
+  },
+  tripChatHeaderSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  tripChatCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripChatEmpty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  tripChatThread: {
+    flex: 1,
+  },
+  tripChatThreadContent: {
+    gap: 10,
+    paddingBottom: 8,
   },
   heroCard: {
     borderRadius: driveTheme.radius.xl,
@@ -5601,13 +7299,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   homeTopPanel: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: driveTheme.colors.canvas,
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 8,
     paddingBottom: 14,
-    gap: 12,
+    gap: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEF2F6',
+    borderBottomColor: driveTheme.colors.line,
   },
   homeTopRow: {
     flexDirection: 'row',
@@ -5615,13 +7313,25 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  homeTopIdentity: {
+    flex: 1,
+    gap: 8,
+  },
+  homeGreeting: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: -0.4,
+  },
   homeStatusPill: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   homeStatusPillOnline: {
     backgroundColor: '#DCFCE7',
@@ -5653,10 +7363,10 @@ const styles = StyleSheet.create({
   },
   homeEarningsCard: {
     backgroundColor: '#F8FAFC',
-    borderRadius: 18,
+    borderRadius: 20,
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 12,
+    paddingBottom: 14,
     borderWidth: 1,
     borderColor: '#E8EEF2',
   },
@@ -5668,15 +7378,18 @@ const styles = StyleSheet.create({
   homeEarningsKicker: {
     fontFamily: driveType.semibold,
     color: '#64748B',
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   homeEarningsValue: {
     fontFamily: driveType.bold,
-    color: '#0F172A',
-    fontSize: 30,
-    lineHeight: 36,
-    marginTop: 4,
+    color: '#14532D',
+    fontSize: 28,
+    lineHeight: 34,
+    letterSpacing: -0.6,
+    marginTop: 6,
     marginBottom: 12,
   },
   homeEarningsStats: {
@@ -5736,7 +7449,9 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E8EEF2',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -5760,11 +7475,22 @@ const styles = StyleSheet.create({
   homeDueBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 10,
     borderRadius: 16,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 12,
+  },
+  homeDueBannerIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeDueBannerCopy: {
+    flex: 1,
+    gap: 2,
   },
   homeDueBannerOverdue: {
     backgroundColor: '#FFF7ED',
@@ -5773,10 +7499,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#EFF6FF',
   },
   homeDueBannerText: {
-    flex: 1,
     fontFamily: driveType.semibold,
     color: '#0F172A',
     fontSize: 13,
+    lineHeight: 18,
   },
   homeDueBannerMeta: {
     fontFamily: driveType.semibold,
@@ -5789,8 +7515,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 3,
-    paddingHorizontal: 14,
-    paddingBottom: 92,
+    paddingHorizontal: 4,
   },
   homeDeclinePill: {
     position: 'absolute',
@@ -5800,15 +7525,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#0F172A',
-    borderRadius: 999,
-    paddingHorizontal: 14,
+    backgroundColor: driveTheme.colors.cta,
+    borderRadius: driveTheme.radius.pill,
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 6,
+    ...driveTheme.shadows.pill,
   },
   homeDeclinePillText: {
     fontFamily: driveType.semibold,
@@ -5817,16 +7538,16 @@ const styles = StyleSheet.create({
   },
   homeBoltCard: {
     backgroundColor: '#16A34A',
-    borderRadius: 28,
-    paddingHorizontal: 22,
-    paddingTop: 22,
-    paddingBottom: 20,
-    gap: 6,
+    borderRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    gap: 4,
     shadowColor: '#14532D',
-    shadowOpacity: 0.24,
-    shadowOffset: { width: 0, height: -8 },
-    shadowRadius: 20,
-    elevation: 14,
+    shadowOpacity: 0.22,
+    shadowOffset: { width: 0, height: -6 },
+    shadowRadius: 18,
+    elevation: 12,
   },
   homeBoltStats: {
     fontFamily: driveType.bold,
@@ -5850,28 +7571,141 @@ const styles = StyleSheet.create({
   homeBoltFare: {
     fontFamily: driveType.semibold,
     color: '#FFFFFF',
-    fontSize: 15,
-    marginTop: 8,
+    fontSize: 16,
+  },
+  homeBoltFareRow: {
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  homeBoltAcceptBar: {
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   homeBoltAcceptText: {
     fontFamily: driveType.bold,
     color: '#FFFFFF',
-    fontSize: 18,
-    letterSpacing: 1.2,
+    fontSize: 16,
+    letterSpacing: 0.8,
     textAlign: 'center',
-    marginTop: 16,
+    marginTop: 0,
   },
   homeSheet: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    paddingHorizontal: 20,
+    borderRadius: 24,
+    paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 16,
+    paddingBottom: 14,
     shadowColor: '#0F172A',
-    shadowOpacity: 0.16,
-    shadowOffset: { width: 0, height: -6 },
-    shadowRadius: 24,
-    elevation: 12,
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: -4 },
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  homeBrokerageCard: {
+    gap: 8,
+  },
+  homeAccessPeriodTitle: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 18,
+    lineHeight: 24,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+  },
+  homeBrokerageKicker: {
+    fontFamily: driveType.semibold,
+    color: '#6B7280',
+    fontSize: 12,
+    lineHeight: 16,
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+  },
+  homeBrokerageTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  homeBrokerageAmountWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeBrokerageAmount: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 34,
+    lineHeight: 40,
+    letterSpacing: -0.8,
+  },
+  homeBrokeragePeriod: {
+    fontFamily: driveType.semibold,
+    color: '#4B5563',
+    fontSize: 15,
+    lineHeight: 20,
+    marginTop: 4,
+  },
+  homeBrokerageLogos: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
+    maxWidth: 180,
+  },
+  homeBrokerageLogo: {
+    width: 48,
+    height: 36,
+    borderRadius: 10,
+  },
+  homeBrokerageLogoSelected: {
+    borderWidth: 2,
+    borderColor: '#0B1220',
+  },
+  homeBrokerageNetwork: {
+    fontFamily: driveType.semibold,
+    color: '#0B1220',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 10,
+  },
+  homeBrokerageCaption: {
+    fontFamily: driveType.regular,
+    color: '#111827',
+    fontSize: 16,
+    lineHeight: 24,
+    marginTop: 12,
+  },
+  homeBrokerageNote: {
+    fontFamily: driveType.semibold,
+    color: '#0B1220',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 6,
+  },
+  homeBrokerageHint: {
+    fontFamily: driveType.regular,
+    color: '#4B5563',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  homeBrokerageButton: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#0B1220',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+  },
+  homeBrokerageButtonText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 16,
+    letterSpacing: -0.2,
   },
   homeSheetHandle: {
     alignSelf: 'center',
@@ -5883,10 +7717,27 @@ const styles = StyleSheet.create({
   },
   homeSheetKicker: {
     fontFamily: driveType.semibold,
-    color: '#64748B',
-    fontSize: 12,
+    color: driveTheme.colors.subtext,
+    fontSize: 11,
     lineHeight: 16,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 4,
   },
+  homeCustomerPhoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: driveTheme.colors.primarySoft,
+    borderRadius: driveTheme.radius.md,
+    paddingHorizontal: driveTheme.spacing.md,
+    paddingVertical: 10,
+    marginBottom: driveTheme.spacing.sm,
+  },
+  homeCustomerPhoneCopy: { flex: 1 },
+  homeCustomerPhoneLabel: { fontFamily: driveType.regular, color: driveTheme.colors.subtext, fontSize: 11 },
+  homeCustomerPhoneValue: { fontFamily: driveType.semibold, color: driveTheme.colors.ink, fontSize: 14, marginTop: 1 },
+  homeCustomerPhoneAction: { fontFamily: driveType.semibold, color: driveTheme.colors.primaryDark, fontSize: 12 },
   homeFare: {
     fontFamily: driveType.bold,
     color: '#0F172A',
@@ -6003,20 +7854,28 @@ const styles = StyleSheet.create({
   },
   homeIdleCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     shadowColor: '#0F172A',
-    shadowOpacity: 0.14,
+    shadowOpacity: 0.1,
     shadowOffset: { width: 0, height: -4 },
-    shadowRadius: 20,
-    elevation: 10,
+    shadowRadius: 16,
+    elevation: 8,
   },
   homeSearchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     marginBottom: 4,
+  },
+  homeLiveDotWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   homeLiveDot: {
     width: 10,
@@ -6045,40 +7904,47 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   homeGoHalo: {
-    width: 112,
-    height: 112,
-    borderRadius: 56,
-    backgroundColor: 'rgba(22, 163, 74, 0.16)',
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    backgroundColor: 'rgba(22, 163, 74, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(22, 163, 74, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   homeGoButton: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     backgroundColor: '#16A34A',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#14532D',
-    shadowOpacity: 0.35,
-    shadowOffset: { width: 0, height: 10 },
-    shadowRadius: 18,
-    elevation: 10,
+    shadowOpacity: 0.28,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 16,
+    elevation: 8,
   },
   homeGoText: {
     fontFamily: driveType.bold,
     color: '#FFFFFF',
-    fontSize: 20,
-    letterSpacing: 0.8,
+    fontSize: 18,
+    letterSpacing: 1,
   },
   homeGoCopyCard: {
     marginTop: 12,
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
-    maxWidth: 320,
+    alignSelf: 'stretch',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 12,
+    elevation: 4,
   },
   homeGoCaption: {
     fontFamily: driveType.bold,
@@ -6399,18 +8265,39 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   authLink: {
-    color: driveTheme.colors.primaryDark,
+    color: driveTheme.colors.primary,
     fontWeight: '700',
   },
   buttonBase: {
-    minHeight: 54,
-    borderRadius: 18,
+    minHeight: 52,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
+    flexGrow: 0,
+    flexShrink: 1,
+    alignSelf: 'stretch',
+    paddingHorizontal: 12,
+  },
+  buttonCompact: {
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    minHeight: 48,
+    height: 48,
+    maxHeight: 48,
+    borderRadius: 12,
+    marginTop: 4,
+  },
+  buttonGrow: {
     flexGrow: 1,
     flexShrink: 1,
-    paddingHorizontal: 12,
+    flexBasis: 0,
+    alignSelf: 'auto',
+  },
+  buttonTextCompact: {
+    fontSize: 16,
+    fontFamily: driveType.semibold,
   },
   buttonInner: {
     flexDirection: 'row',
@@ -6420,16 +8307,18 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   buttonPrimary: {
-    backgroundColor: driveTheme.colors.primary,
-    borderColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.cta,
+    borderColor: driveTheme.colors.cta,
+    borderRadius: 28,
+    minHeight: 56,
   },
   buttonSecondary: {
-    backgroundColor: '#FFFFFF',
-    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surface,
+    borderColor: driveTheme.colors.lineStrong,
   },
   buttonDark: {
-    backgroundColor: driveTheme.colors.dark,
-    borderColor: driveTheme.colors.dark,
+    backgroundColor: driveTheme.colors.darkElevated,
+    borderColor: driveTheme.colors.lineStrong,
   },
   buttonDisabled: {
     opacity: 0.58,
@@ -6439,7 +8328,7 @@ const styles = StyleSheet.create({
   },
   buttonTextPrimary: {
     fontFamily: driveType.bold,
-    color: '#FFFFFF',
+    color: driveTheme.colors.ctaText,
     fontSize: 15,
     textAlign: 'center',
   },
@@ -6449,30 +8338,62 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
   },
-  vehiclePicker: {
+  vehicleCardList: {
+    gap: 12,
+  },
+  vehicleCard: {
+    minHeight: 92,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surface,
+    paddingHorizontal: 14,
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
+    alignItems: 'center',
+    gap: 12,
+  },
+  vehicleCardActive: {
+    borderWidth: 2,
+    borderColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.primarySoft,
+  },
+  vehicleCardArt: {
+    width: 84,
+    height: 64,
+  },
+  vehicleCardLabel: {
+    flex: 1,
+    color: driveTheme.colors.ink,
+    fontSize: 20,
+    fontFamily: driveType.bold,
+    letterSpacing: -0.3,
+  },
+  vehicleCardDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: '#D1D5DB',
   },
   vehicleChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: driveTheme.radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#CFE8D8',
+    borderColor: '#D7E3DB',
     backgroundColor: '#FFFFFF',
   },
   vehicleChipActive: {
     backgroundColor: driveTheme.colors.primarySoft,
-    borderColor: '#BBF7D0',
+    borderColor: '#111827',
   },
   vehicleChipText: {
     color: driveTheme.colors.ink,
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: driveType.semibold,
   },
   vehicleChipTextActive: {
     color: driveTheme.colors.primaryDark,
@@ -6483,14 +8404,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   colorChip: {
-    minHeight: 42,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderRadius: driveTheme.radius.pill,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#CFE8D8',
-    backgroundColor: '#FFFFFF',
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surface,
     paddingHorizontal: 12,
   },
   colorChipActive: {
@@ -6502,7 +8423,7 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 7,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: driveTheme.colors.lineStrong,
   },
   colorChipText: {
     color: driveTheme.colors.ink,
@@ -6510,27 +8431,31 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   colorChipTextActive: {
-    color: driveTheme.colors.primaryDark,
+    color: driveTheme.colors.primary,
   },
   feedbackBanner: {
-    borderRadius: 18,
+    borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
   },
   feedbackSuccess: {
-    backgroundColor: driveTheme.colors.primarySoft,
+    backgroundColor: driveTheme.colors.onlineSoft,
   },
   feedbackError: {
-    backgroundColor: '#FEE2E2',
+    backgroundColor: driveTheme.colors.dangerSoft,
   },
   feedbackInfo: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: driveTheme.colors.infoSoft,
   },
   feedbackText: {
+    flex: 1,
     color: driveTheme.colors.ink,
     fontSize: 13,
     lineHeight: 18,
-    fontWeight: '700',
+    fontFamily: driveType.semibold,
   },
   pillRow: {
     flexDirection: 'row',
@@ -6683,7 +8608,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 17,
-    backgroundColor: driveTheme.colors.dark,
+    backgroundColor: driveTheme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -6824,14 +8749,16 @@ const styles = StyleSheet.create({
   paymentProviderCard: {
     flexBasis: '47%',
     flexGrow: 1,
-    minHeight: 124,
+    minHeight: 168,
     borderRadius: 18,
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: driveTheme.colors.line,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 9,
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
   },
   paymentProviderCardDisabled: {
     opacity: 0.58,
@@ -6849,6 +8776,560 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 10,
     backgroundColor: '#FFFFFF',
+  },
+  paymentNetworkCardImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+  },
+  paymentChosenLogo: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+  },
+  paymentPendingNetworkLogo: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    alignSelf: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  paymentNetworkPreviewRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  paymentNetworkPreviewLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+  },
+  paymentProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: '#E2E8F0',
+    overflow: 'hidden',
+  },
+  paymentProgressFill: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: driveTheme.colors.primary,
+  },
+  fintechPayScreen: {
+    flex: 1,
+    backgroundColor: '#F7F8FA',
+  },
+  fintechPayContent: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 48,
+  },
+  fintechTopbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 28,
+  },
+  fintechBack: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  fintechBackSpacer: {
+    width: 40,
+  },
+  fintechNavTitle: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#0B1220',
+    fontFamily: driveType.bold,
+    fontSize: 17,
+    lineHeight: 22,
+    letterSpacing: -0.3,
+  },
+  fintechEyebrow: {
+    fontFamily: driveType.semibold,
+    color: '#6B7280',
+    fontSize: 13,
+    lineHeight: 18,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  fintechHeroAmount: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 44,
+    lineHeight: 52,
+    letterSpacing: -1.2,
+    textAlign: 'center',
+  },
+  fintechHeroPeriod: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 20,
+    lineHeight: 26,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  fintechHeroCaption: {
+    fontFamily: driveType.regular,
+    color: '#4B5563',
+    fontSize: 16,
+    lineHeight: 24,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  fintechHeroNote: {
+    fontFamily: driveType.semibold,
+    color: '#0B1220',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  fintechProgressTrack: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#E8EAED',
+    overflow: 'hidden',
+    marginTop: 20,
+  },
+  fintechProgressFill: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#0B1220',
+  },
+  fintechProgressMeta: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 28,
+  },
+  fintechStatusCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 28,
+  },
+  fintechStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#16A34A',
+    marginTop: 5,
+  },
+  fintechStatusDotWait: {
+    backgroundColor: '#2563EB',
+  },
+  fintechStatusCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  fintechStatusTitle: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  fintechStatusBody: {
+    fontFamily: driveType.regular,
+    color: '#4B5563',
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  fintechCheckout: {
+    gap: 10,
+    marginBottom: 32,
+  },
+  fintechSectionLabel: {
+    color: '#6B7280',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  fintechMethodRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1.5,
+    borderColor: '#EEF0F3',
+  },
+  fintechMethodRowSelected: {
+    borderColor: '#0B1220',
+    backgroundColor: '#FFFFFF',
+  },
+  fintechLogoTile: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fintechLogoTileMpesa: {
+    width: 52,
+    height: 52,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#ECEEF2',
+  },
+  fintechLogoTileMixx: {
+    width: 76,
+    height: 44,
+    backgroundColor: '#FFD200',
+  },
+  fintechLogoTileAirtel: {
+    width: 76,
+    height: 44,
+    backgroundColor: '#ED1C24',
+  },
+  fintechLogoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  fintechMethodCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  fintechMethodName: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  fintechMethodProvider: {
+    fontFamily: driveType.regular,
+    color: '#6B7280',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  fintechRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: '#D1D5DB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fintechRadioOn: {
+    borderColor: '#0B1220',
+  },
+  fintechRadioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#0B1220',
+  },
+  fintechInput: {
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#EEF0F3',
+    paddingHorizontal: 16,
+    color: '#0B1220',
+    fontSize: 17,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  fintechPrimaryButton: {
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: '#0B1220',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  fintechPrimaryButtonText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 16,
+    letterSpacing: -0.2,
+  },
+  fintechButtonDisabled: {
+    opacity: 0.55,
+  },
+  fintechSecondaryButton: {
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#EEF0F3',
+  },
+  fintechSecondaryButtonText: {
+    fontFamily: driveType.bold,
+    color: '#0B1220',
+    fontSize: 15,
+  },
+  fintechFootnote: {
+    fontFamily: driveType.regular,
+    color: '#6B7280',
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  fintechWaitingCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 32,
+  },
+  fintechWaitingLogo: {
+    width: 80,
+    height: 64,
+    marginBottom: 8,
+  },
+  fintechWaitingTitle: {
+    color: '#0B1220',
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: -0.4,
+  },
+  fintechWaitingText: {
+    color: '#6B7280',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '500',
+    textAlign: 'center',
+    maxWidth: 280,
+  },
+  fintechReference: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
+  fintechEmpty: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    fontWeight: '500',
+    marginBottom: 12,
+  },
+  fintechActivityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEF0F3',
+  },
+  fintechActivityLogo: {
+    width: 48,
+    height: 36,
+    borderRadius: 10,
+  },
+  fintechActivityCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  fintechActivityAmount: {
+    color: '#0B1220',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  fintechActivityMeta: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  kekaOfferCard: {
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 16,
+    gap: 14,
+  },
+  kekaOfferCardDue: {
+    borderColor: '#BBF7D0',
+  },
+  kekaOfferTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  kekaOfferCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  kekaOfferTitle: {
+    color: '#111827',
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '800',
+  },
+  kekaOfferMeta: {
+    color: '#6B7280',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  kekaPrice: {
+    color: driveTheme.colors.ink,
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '800',
+  },
+  kekaStatusChip: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: '#DCFCE7',
+  },
+  kekaStatusChipActive: {
+    backgroundColor: '#DCFCE7',
+  },
+  kekaStatusChipWait: {
+    backgroundColor: '#E0F2FE',
+  },
+  kekaStatusChipDue: {
+    backgroundColor: '#FFEDD5',
+  },
+  kekaStatusChipText: {
+    color: '#14532D',
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  kekaStatRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  kekaStatLabel: {
+    color: '#6B7280',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  kekaStatValue: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  kekaPayButton: {
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: driveTheme.colors.cta,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kekaPayButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  kekaClearRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  kekaClearText: {
+    flex: 1,
+    color: '#374151',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  kekaCheckoutCard: {
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 16,
+    gap: 12,
+  },
+  kekaSectionTitle: {
+    color: '#111827',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  kekaNetworkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  kekaNetworkRowSelected: {
+    borderColor: driveTheme.colors.primary,
+    backgroundColor: '#F0FDF4',
+  },
+  kekaNetworkLogo: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  kekaNetworkCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  kekaNetworkName: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  kekaNetworkProvider: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  kekaHint: {
+    color: '#6B7280',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  kekaPhoneInput: {
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    color: '#111827',
+    fontSize: 16,
+    fontWeight: '700',
   },
   paymentProviderName: {
     color: driveTheme.colors.ink,
@@ -7116,10 +9597,10 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   accountAvatar: {
-    width: 54,
-    height: 54,
-    borderRadius: 18,
-    backgroundColor: driveTheme.colors.primary,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#16A34A',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -7178,10 +9659,13 @@ const styles = StyleSheet.create({
   },
   accountQuickGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   accountQuickItem: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: '30%',
+    minWidth: 96,
     minHeight: 86,
     borderRadius: 18,
     backgroundColor: '#FFFFFF',
@@ -7195,10 +9679,11 @@ const styles = StyleSheet.create({
   },
   accountQuickValue: {
     color: driveTheme.colors.ink,
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '900',
     maxWidth: '100%',
+    textAlign: 'center',
   },
   accountQuickLabel: {
     color: driveTheme.colors.subtext,
@@ -7410,7 +9895,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   paymentFlowIndexTextActive: {
-    color: '#FFFFFF',
+    color: driveTheme.colors.ink,
   },
   paymentFlowCopy: {
     flex: 1,
@@ -7735,6 +10220,7 @@ const styles = StyleSheet.create({
   },
   mapCard: {
     position: 'relative',
+    overflow: 'hidden',
   },
   tripMapStage: {
     paddingHorizontal: 0,
@@ -7742,7 +10228,7 @@ const styles = StyleSheet.create({
   },
   mapView: {
     width: '100%',
-    height: 440,
+    height: 240,
     borderRadius: 0,
   },
   mapOverlay: {
@@ -7793,7 +10279,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     borderRadius: 999,
-    backgroundColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.cta,
     paddingHorizontal: 16,
     paddingVertical: 12,
     shadowColor: '#0F172A',
@@ -7814,7 +10300,7 @@ const styles = StyleSheet.create({
     backgroundColor: driveTheme.colors.canvas,
     paddingHorizontal: 18,
     paddingTop: 14,
-    paddingBottom: 110,
+    paddingBottom: 24,
     gap: 16,
   },
   tripSheetHandle: {
@@ -7927,8 +10413,8 @@ const styles = StyleSheet.create({
   },
   tripMessageInput: {
     flex: 1,
-    minHeight: 52,
-    maxHeight: 112,
+    minHeight: 44,
+    maxHeight: 88,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: '#CBD5E1',
@@ -7942,7 +10428,7 @@ const styles = StyleSheet.create({
   tripMessageSendButton: {
     minHeight: 52,
     borderRadius: 18,
-    backgroundColor: driveTheme.colors.primary,
+    backgroundColor: driveTheme.colors.cta,
     paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
@@ -7961,7 +10447,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   mapFallbackScene: {
-    height: 440,
+    height: 240,
     borderRadius: 0,
     overflow: 'hidden',
     backgroundColor: '#E8F1EC',
@@ -8190,20 +10676,14 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
   bottomNav: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 12,
     flexDirection: 'row',
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 8,
-    paddingHorizontal: 6,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.14,
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 20,
-    elevation: 12,
+    backgroundColor: driveTheme.colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: driveTheme.colors.line,
+    paddingTop: 2,
+    paddingBottom: Platform.OS === 'android' ? 8 : 8,
+    paddingHorizontal: 4,
+    ...driveTheme.shadows.card,
   },
   bottomNavItem: {
     flex: 1,
@@ -8241,5 +10721,368 @@ const styles = StyleSheet.create({
   },
   bottomNavLabelActive: {
     color: '#16A34A',
+  },
+  studioScreen: {
+    backgroundColor: driveTheme.colors.canvas,
+  },
+  studioContent: {
+    flexGrow: 1,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 28,
+    gap: 14,
+    backgroundColor: driveTheme.colors.canvas,
+  },
+  studioHeader: {
+    paddingTop: 4,
+    paddingBottom: 2,
+    gap: 4,
+  },
+  studioTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 28,
+    lineHeight: 34,
+  },
+  studioSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  studioStatRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  studioStatCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 4,
+  },
+  studioStatValue: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 16,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  studioStatLabel: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 11,
+    textAlign: 'center',
+  },
+  studioCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    gap: 8,
+  },
+  studioCardTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 16,
+  },
+  studioCardMeta: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  studioPrimaryButton: {
+    minHeight: 52,
+    borderRadius: 16,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  studioPrimaryButtonText: {
+    fontFamily: driveType.bold,
+    color: '#FFFFFF',
+    fontSize: 16,
+  },
+  studioFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  studioFilterChip: {
+    paddingHorizontal: 14,
+    minHeight: 36,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  studioFilterChipActive: {
+    backgroundColor: '#0F172A',
+  },
+  studioFilterChipText: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 13,
+  },
+  studioFilterChipTextActive: {
+    color: '#FFFFFF',
+  },
+  studioEmpty: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingVertical: 36,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  studioEmptyIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  historySectionSwitch: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 4,
+    gap: 4,
+  },
+  historySectionChip: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historySectionChipActive: {
+    backgroundColor: '#0B1220',
+  },
+  historySectionChipText: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 15,
+  },
+  historySectionChipTextActive: {
+    color: '#FFFFFF',
+  },
+  historySectionTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 16,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  historySubsectionTitle: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 13,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  historyCard: {
+    backgroundColor: driveTheme.colors.surface,
+    borderRadius: driveTheme.radius.xl,
+    padding: driveTheme.spacing.lg,
+    gap: 12,
+    ...driveTheme.shadows.card,
+  },
+  historyCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  historyCardFare: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 18,
+    flex: 1,
+  },
+  historyStatusPill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#F1F5F9',
+  },
+  historyStatusPillDone: {
+    backgroundColor: '#DCFCE7',
+  },
+  historyStatusPillLive: {
+    backgroundColor: '#DBEAFE',
+  },
+  historyStatusPillMuted: {
+    backgroundColor: '#F1F5F9',
+  },
+  historyStatusPillText: {
+    fontFamily: driveType.semibold,
+    color: '#64748B',
+    fontSize: 12,
+  },
+  historyStatusPillTextDone: {
+    color: '#14532D',
+  },
+  historyStatusPillTextLive: {
+    color: '#1D4ED8',
+  },
+  historyRoute: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  historyRouteRail: {
+    width: 14,
+    alignItems: 'center',
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  historyRouteLine: {
+    width: 2,
+    flex: 1,
+    minHeight: 16,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 3,
+  },
+  historyRouteCopy: {
+    flex: 1,
+    gap: 10,
+  },
+  historyRouteValue: {
+    fontFamily: driveType.semibold,
+    color: '#0F172A',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  historyCardMeta: {
+    fontFamily: driveType.regular,
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+  notifCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 14,
+  },
+  notifIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notifCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  notifTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  notifTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 15,
+    flex: 1,
+  },
+  notifMessage: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  notifTime: {
+    fontFamily: driveType.semibold,
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  notifUnreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#16A34A',
+  },
+  accountHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+  },
+  accountHeroCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  accountHeroName: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 20,
+    lineHeight: 26,
+  },
+  accountHeroMeta: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  accountMenuCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 14,
+  },
+  accountMenuIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountMenuCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  accountMenuTitle: {
+    fontFamily: driveType.bold,
+    color: '#0F172A',
+    fontSize: 15,
+  },
+  accountMenuHint: {
+    fontFamily: driveType.regular,
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  accountMenuValue: {
+    fontFamily: driveType.semibold,
+    fontSize: 13,
+  },
+  accountInfoRowLast: {
+    borderBottomWidth: 0,
+    paddingBottom: 0,
+  },
+  accountSignOut: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountSignOutText: {
+    fontFamily: driveType.semibold,
+    color: '#94A3B8',
+    fontSize: 15,
   },
 });

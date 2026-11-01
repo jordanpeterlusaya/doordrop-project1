@@ -37,6 +37,7 @@ import type { Carrier, CarrierDecision, CarrierRoute, CarrierShipment, CarrierTr
 import { cargoValueLabel, fireTimeMs, isIncomingOffer, money, offerStillValid, shipmentCode } from '@/lib/carrier-helpers';
 import { auth, db } from '@/lib/firebase';
 import { stopIncomingOrderAlarm } from '@/lib/incoming-order-sound';
+import { connectParcelOfferSocket } from '@/lib/parcel-offer-socket';
 import { alertForNewOffer, registerCarrierPushToken } from '@/lib/push-notifications';
 
 export type OfferBanner = {
@@ -75,6 +76,11 @@ type CarrierSessionValue = {
   offerBanner: OfferBanner | null;
   dismissOfferBanner: () => void;
   refreshCarrier: () => Promise<void>;
+  /** Instant parcel WebSocket accept/reject when the socket is live. */
+  sendParcelOfferAction: (
+    type: 'carrier_accept' | 'carrier_reject',
+    orderId: string
+  ) => Promise<boolean>;
 };
 
 const CarrierSessionContext = createContext<CarrierSessionValue | undefined>(undefined);
@@ -100,6 +106,8 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
   const bannerId = useRef<string | null>(null);
   const bucketsReady = useRef({ offered: false, owned: false });
   const sessionEpoch = useRef(0);
+  const parcelSocketRef = useRef<ReturnType<typeof connectParcelOfferSocket> | null>(null);
+  const parcelSocketTokenRef = useRef('');
 
   const isAdmin = user?.email?.toLowerCase() === ADMIN_EMAIL;
 
@@ -173,6 +181,101 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
     bannerId.current = null;
     setOfferBanner(null);
   }, []);
+
+  const sendParcelOfferAction = useCallback(
+    async (type: 'carrier_accept' | 'carrier_reject', orderId: string) => {
+      const socket = parcelSocketRef.current;
+      const token = parcelSocketTokenRef.current || (user ? await user.getIdToken() : '');
+      if (!socket || !token || !orderId) return false;
+      return socket.send({
+        type,
+        orderId,
+        token,
+        actorEmail: user?.email || '',
+      });
+    },
+    [user]
+  );
+
+  // Stay on the parcel offer WebSocket so matches arrive before Firestore snapshots.
+  useEffect(() => {
+    if (!user || !carrier?.id) {
+      parcelSocketRef.current?.close();
+      parcelSocketRef.current = null;
+      parcelSocketTokenRef.current = '';
+      return;
+    }
+
+    let closed = false;
+    let client: ReturnType<typeof connectParcelOfferSocket> | null = null;
+
+    const start = async () => {
+      try {
+        const token = await user.getIdToken();
+        if (closed) return;
+        parcelSocketTokenRef.current = token;
+        client = connectParcelOfferSocket({
+          onOpen: () => {
+            client?.send({ type: 'hello', role: 'carrier', token });
+          },
+          onEvent: (event) => {
+            if (event.type === 'offer' && event.orderId && event.shipment) {
+              const shipment = {
+                id: event.orderId,
+                ...event.shipment,
+              } as CarrierShipment;
+              if (!isIncomingOffer(shipment, carrier.id) && String(shipment.offeredCarrierId || '') !== carrier.id) {
+                return;
+              }
+              const banner = {
+                shipmentId: event.orderId,
+                code: shipmentCode(shipment),
+                origin: String(shipment.origin || ''),
+                destination: String(shipment.destination || ''),
+                routeLabel: String(shipment.routeLabel || ''),
+                weightKg: Number(shipment.weightKg) || 0,
+                parcelDescription: String(shipment.parcelDescription || ''),
+                payoutLabel: money(Number(shipment.carrierNet) || 0),
+                valueLabel: cargoValueLabel(shipment),
+                shipment,
+              };
+              bannerId.current = event.orderId;
+              knownOfferIds.current.add(`${event.orderId}:ws`);
+              setOfferBanner(banner);
+              void alertForNewOffer({
+                title: 'Oda mpya ya mzigo — Kubali sasa',
+                body: [banner.code, banner.routeLabel, banner.payoutLabel].filter(Boolean).join(' · '),
+                orderId: event.orderId,
+              });
+            }
+            if (
+              (event.type === 'offer_cleared' || event.type === 'cancelled' || event.type === 'accepted') &&
+              event.orderId &&
+              bannerId.current === event.orderId
+            ) {
+              if (event.type !== 'accepted') {
+                stopIncomingOrderAlarm('ws-offer-cleared');
+                bannerId.current = null;
+                setOfferBanner(null);
+              }
+            }
+          },
+        });
+        parcelSocketRef.current = client;
+      } catch {
+        parcelSocketRef.current = null;
+      }
+    };
+
+    void start();
+    return () => {
+      closed = true;
+      client?.close();
+      if (parcelSocketRef.current === client) {
+        parcelSocketRef.current = null;
+      }
+    };
+  }, [carrier?.id, user]);
 
   useEffect(() => {
     let rejectingRestoredUser = false;
@@ -454,6 +557,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       offerBanner,
       dismissOfferBanner,
       refreshCarrier,
+      sendParcelOfferAction,
     }),
     [
       user,
@@ -476,6 +580,7 @@ export function CarrierSessionProvider({ children }: { children: React.ReactNode
       offerBanner,
       dismissOfferBanner,
       refreshCarrier,
+      sendParcelOfferAction,
     ]
   );
 

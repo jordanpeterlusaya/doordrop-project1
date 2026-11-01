@@ -10,7 +10,13 @@ import {
   spaceNearbyVehicles,
   type MapViewportRegion,
 } from '@/components/nearby-live-vehicles';
-import { buildFrontendPricingEstimates, distanceKmFromMeters, minFareFromDistanceMeters } from '@/lib/cargo-pricing';
+import {
+  buildFrontendPricingEstimates,
+  distanceKmFromMeters,
+  minFareFromDistanceMeters,
+  roundPayableTzs,
+} from '@/lib/cargo-pricing';
+import { nyerereBridgeTollTzs, routeCrossesNyerereBridge } from '@/lib/nyerere-bridge-toll';
 import { FirebaseError } from 'firebase/app';
 import { getFirebaseDataErrorMessage } from '@/lib/auth-errors';
 import { images } from '@/lib/images';
@@ -46,6 +52,7 @@ import { fetchRoadFollowingRoute } from '@/lib/road-route';
 import { filterValidCoordinates, isValidCoordinate } from '@/lib/route-utils';
 import { getSavedPlaces as getStoredSavedPlaces, type SavedPlace } from '@/lib/saved-places';
 import {
+  cancelDeliveryOrderByUser,
   createDeliveryOrder,
   mergeDriverLivePositions,
   subscribeToDriverLocations,
@@ -57,6 +64,11 @@ import {
   type DriverRecord,
 } from '@/lib/delivery-data';
 import {
+  connectCargoOfferSocket,
+  type CargoOfferSocketClient,
+  type CargoOfferSocketDriver,
+} from '@/lib/cargo-offer-socket';
+import {
   logAsyncFailure,
   logAsyncStart,
   logAsyncSuccess,
@@ -66,13 +78,14 @@ import {
 import { tryRequire } from '@/lib/safety';
 import { isCargoServiceAvailableAt } from '@/lib/service-cities';
 import { openPhoneDialer, readablePhone } from '@/lib/phone-link';
-import { upsertUserProfile } from '@/lib/user-profile';
+import { getUserProfile } from '@/lib/user-profile';
+import { auth } from '@/lib/firebase';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useLanguage } from '@/providers/language-provider';
 import { useAppCopy } from '@/lib/app-copy';
 import { classifyLocationError, type CustomerNoticeKind } from '@/lib/network-status';
 import { formatScheduleSummary } from '@/lib/schedule-delivery';
-import { CargoOfferSearch } from '@/components/cargo-offer-search';
+import { CargoDriverVerifySheet, CargoDriversFoundPill } from '@/components/cargo-driver-verify-sheet';
 import { LocationSuggestionsList } from '@/components/location-suggestions-list';
 import { ServiceNotice } from '@/components/service-notice';
 import { typography } from '@/constants/typography';
@@ -114,8 +127,8 @@ type RoutePoint = {
 type PickupState = 'loading' | 'ready' | 'error';
 type DestinationState = 'idle' | 'searching' | 'resolved' | 'error';
 type CargoLoadType = 'small' | 'half' | 'full' | 'overload';
-type RouteSource = 'google' | 'fallback';
-type CargoSheetStep = 'choose' | 'offer';
+type RouteSource = 'google' | 'directions' | 'osrm' | 'fallback';
+type CargoSheetStep = 'choose' | 'verify';
 
 type RouteMetrics = {
   coordinates: RoutePoint[];
@@ -124,18 +137,17 @@ type RouteMetrics = {
   source: RouteSource;
 };
 
+/** Only Google Routes /routes/estimate may drive Haul fare meters. */
+function isPricableRouteSource(source: RouteSource | undefined): boolean {
+  return source === 'google';
+}
+
 type CargoVehicle = {
   key: RouteEstimateVehicleType;
   title: string;
   capacity: string;
   price: string;
   eta: string;
-};
-
-type CargoSizeOption = {
-  key: CargoLoadType;
-  label: string;
-  subtitle: string;
 };
 
 // Theme constants (fallback)
@@ -159,31 +171,64 @@ const cargoTheme = {
   },
 };
 
+const DEFAULT_CARGO_SIZE: CargoLoadType = 'small';
+
 function getCargoVehicles(language: 'en' | 'sw'): CargoVehicle[] {
   if (language === 'sw') {
     return [
+      { key: 'toyo_electric', title: 'Toyo Electric', capacity: 'Ndogo kuliko TOYO · hadi kilo 400', price: 'Toa bei', eta: '' },
       { key: 'toyo', title: 'TOYO', capacity: 'Bajaji · hadi tani 1', price: 'Toa bei', eta: '' },
       { key: 'kirikuu', title: 'Kirikuu', capacity: 'Pickup · hadi tani 1', price: 'Toa bei', eta: '' },
-      { key: 'canter', title: 'Canter', capacity: 'Lori ndogo · hadi tani 3', price: 'Toa bei', eta: '' },
     ];
   }
 
   return [
+    { key: 'toyo_electric', title: 'Toyo Electric', capacity: 'Smaller than TOYO · up to 400 kg', price: 'Offer a fare', eta: '' },
     { key: 'toyo', title: 'TOYO', capacity: 'Bajaji · up to 1 ton', price: 'Offer a fare', eta: '' },
     { key: 'kirikuu', title: 'Kirikuu', capacity: 'Pickup · up to 1 ton', price: 'Offer a fare', eta: '' },
-    { key: 'canter', title: 'Canter', capacity: 'Light truck · up to 3 tons', price: 'Offer a fare', eta: '' },
   ];
 }
 
-const cargoLoadOptions: CargoSizeOption[] = [
-  { key: 'small', label: 'Kidogo', subtitle: 'Nafasi ndogo' },
-  { key: 'half', label: 'Nusu', subtitle: 'Karibu nusu' },
-  { key: 'full', label: 'Inajaa', subtitle: 'Nafasi imejaa' },
-  { key: 'overload', label: 'Inazidi', subtitle: 'Mzigo mkubwa' },
-];
+function offeredCargoVehicleKey(value?: string | null): RouteEstimateVehicleType {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === 'toyo_electric' ||
+    normalized === 'toyo-electric' ||
+    normalized === 'toyoelectric' ||
+    normalized === 'electric_toyo'
+  ) {
+    return 'toyo_electric';
+  }
+  if (normalized === 'kirikuu') {
+    return 'kirikuu';
+  }
+  if (
+    normalized === 'toyo' ||
+    normalized === 'bajaj' ||
+    normalized === 'bajaji' ||
+    normalized === 'toyo_xl' ||
+    normalized === 'toyo-xl' ||
+    normalized === 'pickup' ||
+    normalized === 'van' ||
+    normalized === 'canter' ||
+    normalized === 'center' ||
+    normalized === 'fuso'
+  ) {
+    return 'toyo';
+  }
+  return 'toyo_electric';
+}
 
 function normalizeCargoVehicleKey(value?: string | null): RouteEstimateVehicleType {
   const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === 'toyo_electric' ||
+    normalized === 'toyo-electric' ||
+    normalized === 'toyoelectric' ||
+    normalized === 'electric_toyo'
+  ) {
+    return 'toyo_electric';
+  }
   if (normalized === 'kirikuu') {
     return 'kirikuu';
   }
@@ -208,6 +253,7 @@ const fallbackSavedPlaces: SavedPlace[] = [
 const LIVE_CARRIER_RADIUS_METERS = 12000;
 const LIVE_CARRIER_MAX_VISIBLE_COUNT = 8;
 const vehicleImages: Record<string, any> = {
+  toyo_electric: images.cargoAvatarToyoElectric,
   toyo: images.cargoAvatarToyo,
   kirikuu: images.cargoAvatarKirikuu,
   canter: images.cargoAvatarCanter,
@@ -245,6 +291,9 @@ const OFFER_STEP_TZS = 1000;
 
 function cargoVehicleBadge(value?: string | null) {
   const key = normalizeCargoVehicleKey(value);
+  if (key === 'toyo_electric') {
+    return 'Toyo Electric';
+  }
   if (key === 'kirikuu') {
     return 'Kirikuu';
   }
@@ -252,6 +301,30 @@ function cargoVehicleBadge(value?: string | null) {
     return 'Canter';
   }
   return 'TOYO';
+}
+
+function formatPickupWait(minutes: number, language: 'en' | 'sw') {
+  const safe = Math.max(0, Math.round(minutes));
+  if (safe <= 0) {
+    return language === 'sw' ? 'Sasa' : 'Now';
+  }
+  return language === 'sw' ? `~${safe} dak` : `~${safe} min`;
+}
+
+function formatTripDistanceLabel(meters: number) {
+  if (!Number.isFinite(meters) || meters <= 0) {
+    return '';
+  }
+  if (meters < 1000) {
+    return `${Math.max(1, Math.round(meters))} m`;
+  }
+  const km = meters / 1000;
+  // One decimal for Maps comparison (including ≥10 km); whole km only at ≥100 km.
+  if (km >= 100) {
+    return `${Math.round(km)} km`;
+  }
+  const rounded = Math.round(km * 10) / 10;
+  return `${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)} km`;
 }
 
 function formatDurationFromMinutes(totalMinutes: number): string {
@@ -284,22 +357,6 @@ function estimateDurationSecondsFromMeters(meters: number) {
   }
   const speedKph = meters > 30000 ? 52 : meters > 8000 ? 34 : 22;
   return Math.max(60, Math.round((meters / 1000 / speedKph) * 3600));
-}
-
-function formatCargoPickupEta(minutes: number) {
-  const safeMinutes = Math.max(0, Math.round(minutes));
-  if (safeMinutes === 0) {
-    return 'Sasa';
-  }
-  if (safeMinutes < 60) {
-    return `dak ${safeMinutes}`;
-  }
-  const hours = Math.floor(safeMinutes / 60);
-  const remaining = safeMinutes % 60;
-  if (remaining === 0) {
-    return `${hours} hr`;
-  }
-  return `${hours} hr ${remaining} dak`;
 }
 
 function measurePolylineMeters(points: RoutePoint[] | undefined) {
@@ -438,11 +495,16 @@ function isCameraOverZoomed(region: { latitudeDelta: number; longitudeDelta: num
 }
 
 function mapEstimateToRouteMetrics(estimate: RouteEstimate): RouteMetrics {
+  const distanceMeters = Number(estimate.distanceMeters) || 0;
+  const durationSeconds = Number(estimate.durationSeconds) || 0;
+  // Only treat as pricable Google Routes when meters/ETA are present.
+  // Geometry-only / zero-meter payloads must not unlock fare pricing.
+  const isPricable = distanceMeters > 0 && durationSeconds > 0;
   return {
     coordinates: estimate.coordinates.length ? estimate.coordinates : [],
-    distanceMeters: estimate.distanceMeters,
-    durationSeconds: estimate.durationSeconds,
-    source: 'google',
+    distanceMeters: isPricable ? distanceMeters : 0,
+    durationSeconds: isPricable ? durationSeconds : 0,
+    source: isPricable ? 'google' : 'fallback',
   };
 }
 
@@ -455,25 +517,24 @@ function formatRouteTravelTime(durationSeconds: number): string | null {
 
 async function buildFallbackRoute(pickupPoint: RoutePoint, dropoffPoint: RoutePoint): Promise<RouteMetrics> {
   const road = await fetchRoadFollowingRoute(pickupPoint, dropoffPoint);
-  if (road && road.coordinates.length > 2) {
+  if (road && road.coordinates.length > 2 && road.distanceMeters > 0) {
     return {
       coordinates: road.coordinates,
-      distanceMeters: Math.max(road.distanceMeters || getDistanceBetweenPoints(pickupPoint, dropoffPoint), 500),
+      distanceMeters: Math.max(Math.round(road.distanceMeters), 500),
       durationSeconds:
         road.durationSeconds > 0
           ? road.durationSeconds
-          : estimateDurationSecondsFromMeters(road.distanceMeters || getDistanceBetweenPoints(pickupPoint, dropoffPoint)),
-      source: 'google',
+          : estimateDurationSecondsFromMeters(road.distanceMeters),
+      // Map geometry only — never claim Google Routes / pricing truth.
+      source: road.source === 'osrm' ? 'osrm' : 'directions',
     };
   }
 
-  const distanceMeters = Math.max(getDistanceBetweenPoints(pickupPoint, dropoffPoint), 500);
-  const averageSpeedKph = distanceMeters > 30000 ? 52 : 28;
-  const durationSeconds = Math.max(Math.round(((distanceMeters / 1000) / averageSpeedKph) * 3600), 60);
+  // No real road route — never invent haversine km for pricing.
   return {
     coordinates: [pickupPoint, dropoffPoint],
-    distanceMeters,
-    durationSeconds,
+    distanceMeters: 0,
+    durationSeconds: 0,
     source: 'fallback',
   };
 }
@@ -636,7 +697,6 @@ export default function BookCargoScreen() {
   const pickupInputRef = useRef<TextInput | null>(null);
   const dropoffInputRef = useRef<TextInput | null>(null);
   const cargoVehicles = useMemo(() => getCargoVehicles(language), [language]);
-  const defaultVehicleKey = cargoVehicles[0]?.key ?? 'toyo';
 
   const cachedPickupLocation = hasRepeatPickup ? null : getCustomerLocationSnapshot();
   const hasCachedPickup =
@@ -693,10 +753,8 @@ export default function BookCargoScreen() {
   const [routeMetrics, setRouteMetrics] = useState<RouteMetrics | null>(null);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
   const [routeNotice, setRouteNotice] = useState<CustomerNoticeKind | null>(null);
-  const [selectedVehicle, setSelectedVehicle] = useState(normalizeCargoVehicleKey(params.vehicle) || defaultVehicleKey);
-  const [selectedCargoType, setSelectedCargoType] = useState<CargoLoadType>(
-    cargoLoadOptions.find((option) => option.label === params.cargoSize)?.key ?? 'small'
-  );
+  const [selectedVehicle, setSelectedVehicle] = useState<RouteEstimateVehicleType>(offeredCargoVehicleKey(params.vehicle));
+  const selectedCargoType: CargoLoadType = DEFAULT_CARGO_SIZE;
   const [formError, setFormError] = useState('');
   const [dropoffSuggestions, setDropoffSuggestions] = useState<LocationSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -721,7 +779,6 @@ export default function BookCargoScreen() {
   const [cargoSheetStep, setCargoSheetStep] = useState<CargoSheetStep>('choose');
   const [customerOfferInput, setCustomerOfferInput] = useState('');
   const [customerOfferNote, setCustomerOfferNote] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
   useEffect(() => {
     setCustomerOfferNote((current) => {
       const trimmed = current.trim();
@@ -733,6 +790,14 @@ export default function BookCargoScreen() {
   }, [copy.cargo.offerNoteDefault]);
   const [liveCargoOrder, setLiveCargoOrder] = useState<DeliveryOrder | null>(null);
   const [offerBusy, setOfferBusy] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyCancelBusy, setVerifyCancelBusy] = useState(false);
+  const [verifyPhase, setVerifyPhase] = useState<'connecting' | 'waiting' | 'no_driver' | 'error'>('connecting');
+  const [verifyDriversFound, setVerifyDriversFound] = useState(0);
+  const [verifyAssignedDriver, setVerifyAssignedDriver] = useState<CargoOfferSocketDriver | null>(null);
+  const [verifyNearbyDrivers, setVerifyNearbyDrivers] = useState<CargoOfferSocketDriver[]>([]);
+  const [verifyError, setVerifyError] = useState('');
+  const cargoSocketRef = useRef<CargoOfferSocketClient | null>(null);
   const mapSizeRef = useRef(mapSize);
   const mapRegionRef = useRef(mapRegion);
   const pickupPointRef = useRef<RoutePoint | null>(pickupPoint);
@@ -747,8 +812,14 @@ export default function BookCargoScreen() {
   const pullingCameraInRef = useRef(false);
 
   const handleGoBack = useCallback(() => {
-    if (cargoSheetStep === 'offer') {
+    if (cargoSheetStep === 'verify') {
+      // Pop verify → vehicle choose. Order cancel stays on the sheet Ghairi button.
+      cargoSocketRef.current?.close();
+      cargoSocketRef.current = null;
       setCargoSheetStep('choose');
+      setVerifyPhase('connecting');
+      setVerifyError('');
+      setVerifyAssignedDriver(null);
       return;
     }
     if (pickupPoint && dropoffPoint && routeMetrics && !routeEditorExpanded) {
@@ -798,15 +869,30 @@ export default function BookCargoScreen() {
   }, []);
 
   const safeSheetBottom = Math.max(insets.bottom, 12);
+  // Roomier vehicle list + CTA; still leave map visible above (~28%+).
   const chooseSheetHeight = Math.round(
-    Math.min(Math.max(560 + safeSheetBottom, screenHeight * 0.6), screenHeight * 0.7)
+    Math.min(Math.max(580 + safeSheetBottom, screenHeight * 0.60), screenHeight * 0.72)
   );
   const showVehicleSheet = !!pickupPoint && !!dropoffPoint && !!routeMetrics;
+  // Tall enough for status + vehicle + nearby + Ghairi/cancel above the home indicator.
+  const verifySheetHeight = Math.round(
+    Math.min(Math.max(480 + safeSheetBottom, screenHeight * 0.52), screenHeight * 0.64)
+  );
   const cargoLayoutStep =
-    !showVehicleSheet || routeEditorExpanded ? 'locations' : cargoSheetStep === 'offer' ? 'offer' : 'choose';
-  const targetSheetHeight = cargoLayoutStep === 'choose' ? chooseSheetHeight : 0;
+    !showVehicleSheet || routeEditorExpanded
+      ? 'locations'
+      : cargoSheetStep === 'verify'
+        ? 'verify'
+        : 'choose';
+  const targetSheetHeight =
+    cargoLayoutStep === 'choose' ? chooseSheetHeight : cargoLayoutStep === 'verify' ? verifySheetHeight : 0;
   const mapTopEdgePadding = cargoLayoutStep === 'locations' ? 200 : 120;
-  const mapBottomEdgePadding = cargoLayoutStep === 'locations' ? 56 : 88;
+  const mapBottomEdgePadding =
+    cargoLayoutStep === 'locations'
+      ? 56
+      : cargoLayoutStep === 'verify'
+        ? verifySheetHeight + 24
+        : chooseSheetHeight + 24;
   const mapSideEdgePadding = 60;
 
   const pullCameraToCorridor = useCallback((points: RoutePoint[]) => {
@@ -1219,24 +1305,25 @@ export default function BookCargoScreen() {
         const dropoff = resolvedLocation.point;
         let nextRoute: RouteMetrics;
         let nextVehicleEstimates: Partial<Record<RouteEstimateVehicleType, PricingEstimate>> = {};
-        let nextHint = 'Route ready. Select cargo size and vehicle.';
+        let nextHint = 'Route ready. Choose a vehicle.';
         try {
           setVehiclePricingLoading(true);
           const nextRouteEstimate = await fetchRouteEstimate(pickupPoint, dropoff, {
             vehicleType: selectedVehicle,
             cargoSize: selectedCargoType as RouteEstimateCargoSize,
           });
+          // Always price tuk-tuks with the local round-trip formulas + live ETA/km.
+          // Do not let a stale Cloud Function quote overwrite Toyo Electric / TOYO / Kirikuu.
           const nextPricingEstimates: Partial<Record<RouteEstimateVehicleType, PricingEstimate>> = buildFrontendPricingEstimates(
             nextRouteEstimate.distanceMeters,
             cargoVehicles.map((vehicle) => vehicle.key),
-            selectedCargoType as RouteEstimateCargoSize
+            selectedCargoType as RouteEstimateCargoSize,
+            undefined,
+            nextRouteEstimate.durationSeconds
           );
-          const selectedVehiclePricing = nextRouteEstimate.pricingEstimate;
-          if (selectedVehiclePricing) {
-            nextPricingEstimates[selectedVehicle] = selectedVehiclePricing;
-          }
+          const selectedVehiclePricing = nextPricingEstimates[selectedVehicle] ?? nextRouteEstimate.pricingEstimate;
           trackCargoActivity('cargo_pricing_ready', 'cargo_pricing', {
-            source: 'route_api',
+            source: 'route_api_local_formula',
             distanceMeters: Math.round(nextRouteEstimate.distanceMeters),
             durationSeconds: Math.round(nextRouteEstimate.durationSeconds),
             vehicleType: selectedVehicle,
@@ -1259,17 +1346,24 @@ export default function BookCargoScreen() {
           });
           setRouteEstimate(null);
           nextRoute = await buildFallbackRoute(pickupPoint, dropoff);
-          nextVehicleEstimates = buildFrontendPricingEstimates(
-            nextRoute.distanceMeters,
-            cargoVehicles.map((vehicle) => vehicle.key),
-            selectedCargoType as RouteEstimateCargoSize
-          );
-          nextHint = 'Live route lookup failed. Showing approximate distance and duration from the selected points.';
+          // Directions/OSRM/fallback geometry must never price Haul — need Routes estimate.
+          // Never promote fallback to source 'google' even if meters look real.
+          if (nextRoute.source === 'google') {
+            nextRoute = { ...nextRoute, source: 'directions', distanceMeters: 0, durationSeconds: 0 };
+          }
+          nextVehicleEstimates = {};
+          nextHint =
+            language === 'sw'
+              ? 'Imeshindikana kupata njia ya bei. Jaribu tena au chagua sehemu nyingine.'
+              : 'Could not get a priced route. Try again or pick different points.';
+          setFormError(nextHint);
           trackCargoActivity('cargo_pricing_fallback', 'cargo_pricing', {
             distanceMeters: Math.round(nextRoute.distanceMeters),
             durationSeconds: Math.round(nextRoute.durationSeconds),
             vehicleType: selectedVehicle,
             cargoSize: selectedCargoType,
+            source: nextRoute.source,
+            priced: false,
           });
         } finally {
           setVehiclePricingLoading(false);
@@ -1336,13 +1430,28 @@ export default function BookCargoScreen() {
         });
       }
     },
-    [dropoffInput, fitMapToPickupAndDropoff, pickupNeedsSelection, pickupPoint, selectedCargoType, selectedVehicle, trackCargoActivity]
+    [
+      dropoffInput,
+      fitMapToPickupAndDropoff,
+      language,
+      pickupNeedsSelection,
+      pickupPoint,
+      selectedCargoType,
+      selectedVehicle,
+      trackCargoActivity,
+    ]
   );
 
-  const pricingDistanceMeters = routeEstimate?.distanceMeters ?? routeMetrics?.distanceMeters;
+  // Price only from a successful /routes/estimate (source 'google'). Block directions|osrm|fallback.
+  const pricingDistanceMeters =
+    routeEstimate &&
+    routeEstimate.distanceMeters > 0 &&
+    isPricableRouteSource(routeMetrics?.source)
+      ? routeEstimate.distanceMeters
+      : undefined;
 
   useEffect(() => {
-    if (!pricingDistanceMeters) {
+    if (!pricingDistanceMeters || !(pricingDistanceMeters > 0)) {
       return;
     }
 
@@ -1358,12 +1467,10 @@ export default function BookCargoScreen() {
         const nextVehicleEstimates: Partial<Record<RouteEstimateVehicleType, PricingEstimate>> = buildFrontendPricingEstimates(
           pricingDistanceMeters,
           cargoVehicles.map((vehicle) => vehicle.key),
-          selectedCargoType as RouteEstimateCargoSize
+          selectedCargoType as RouteEstimateCargoSize,
+          undefined,
+          routeEstimate?.durationSeconds
         );
-
-        if (routeEstimate?.pricingEstimate?.cargoSize === selectedCargoType) {
-          nextVehicleEstimates[selectedVehicle] = routeEstimate.pricingEstimate;
-        }
 
         if (!cancelled) {
           setVehicleEstimates(nextVehicleEstimates);
@@ -1562,13 +1669,25 @@ export default function BookCargoScreen() {
       setFormError('Please select a valid drop-off location first.');
       return;
     }
+    if (
+      !isPricableRouteSource(routeMetrics.source) ||
+      !routeEstimate?.distanceMeters ||
+      !(routeEstimate.distanceMeters > 0)
+    ) {
+      setFormError(
+        language === 'sw'
+          ? 'Hakuna njia ya barabara ya bei. Jaribu tena au chagua sehemu nyingine.'
+          : 'No road route for pricing. Try again or pick different points.'
+      );
+      return;
+    }
     if (!user) {
       router.push('/login');
       return;
     }
 
-    const minFare = minFareFromDistanceMeters(routeMetrics.distanceMeters);
-    const distanceKm = distanceKmFromMeters(routeMetrics.distanceMeters);
+    const minFare = minFareFromDistanceMeters(routeEstimate.distanceMeters);
+    const distanceKm = distanceKmFromMeters(routeEstimate.distanceMeters);
     const offerAmount = parseOfferTzs(customerOfferInput);
     if (offerAmount < minFare) {
       setFormError(copy.cargo.offerTooLow.replace('{amount}', minFare.toLocaleString('en-US')));
@@ -1576,11 +1695,18 @@ export default function BookCargoScreen() {
       return;
     }
 
-    const accountPhone = readablePhone(profile?.phoneNumber) || readablePhone(user.phoneNumber);
-    const sharedPhone = accountPhone || readablePhone(contactPhone);
+    let sharedPhone =
+      readablePhone(profile?.phoneNumber) || readablePhone(user.phoneNumber) || '';
     if (!sharedPhone) {
-      setFormError(language === 'sw' ? 'Weka namba yako ya simu ili dereva akupigie.' : 'Add your phone number so the driver can call you.');
-      return;
+      try {
+        const freshProfile = await getUserProfile(user.uid);
+        sharedPhone = readablePhone(freshProfile?.phoneNumber) || '';
+        if (sharedPhone) {
+          void refreshProfile();
+        }
+      } catch {
+        // Proceed without phone — do not block the CTA.
+      }
     }
 
     const driverCounter =
@@ -1590,7 +1716,6 @@ export default function BookCargoScreen() {
     const acceptingDriver = Boolean(liveCargoOrder?.id) && driverCounter > 0 && offerAmount === driverCounter;
 
     const etaString = formatRouteTravelTime(routeMetrics.durationSeconds) || formatDistance(routeMetrics.distanceMeters);
-    const cargoLabel = cargoLoadOptions.find((option) => option.key === selectedCargoType)?.label ?? 'Half';
     const vehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
     const distanceLabel = formatDistance(routeMetrics.distanceMeters);
     const dropoffDisplay = dropoffLabel || dropoffInput;
@@ -1600,17 +1725,6 @@ export default function BookCargoScreen() {
     setFormError('');
 
     try {
-      if (!accountPhone) {
-        await upsertUserProfile({
-          uid: user.uid,
-          fullName: profile?.fullName?.trim() || user.displayName?.trim() || 'HAUL',
-          email: user.email?.trim().toLowerCase() || '',
-          phoneNumber: sharedPhone,
-          phoneVerified: false,
-        });
-        void refreshProfile();
-      }
-
       if (liveCargoOrder?.id) {
         logAsyncStart(screenScope, acceptingDriver ? 'acceptCargoDriverOffer' : 'updateCargoOffer', {
           orderId: liveCargoOrder.id,
@@ -1701,7 +1815,7 @@ export default function BookCargoScreen() {
         cargoVehicleKey: selectedVehicle,
         cargoVehicleLabel: vehicleTitle,
         cargoCapacityLabel: cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.capacity,
-        cargoSizeLabel: cargoLabel,
+        cargoSizeLabel: undefined,
         distanceLabel,
         durationLabel: etaString,
         distanceMeters: Math.round(routeMetrics.distanceMeters),
@@ -1743,7 +1857,6 @@ export default function BookCargoScreen() {
       setOfferBusy(false);
     }
   }, [
-    contactPhone,
     copy.cargo.offerNoteDefault,
     copy.cargo.offerTooLow,
     customerOfferInput,
@@ -1969,8 +2082,9 @@ export default function BookCargoScreen() {
 
   // Derived state for UI
   const showChooseStep = cargoLayoutStep === 'choose';
-  const showOfferStep = cargoLayoutStep === 'offer';
-  const showCollapsedRouteChip = false;
+  const showVerifyStep = cargoLayoutStep === 'verify';
+  // Choose step: map is route-line only — no on-map distance/ETA chips.
+  const showRouteSummary = showVehicleSheet && !routeEditorExpanded && !showChooseStep && !showVerifyStep;
   const calloutInset = useMemo(
     () =>
       cargoLayoutStep === 'locations'
@@ -2025,8 +2139,8 @@ export default function BookCargoScreen() {
         buildNearbyLiveVehicles({
           drivers: positionedCargoDrivers,
           origin: validPickupPoint,
-          selectedVehicleKey: selectedVehicle as 'toyo' | 'kirikuu' | 'canter',
-          allowedVehicleKeys: ['toyo', 'kirikuu', 'canter'],
+          selectedVehicleKey: selectedVehicle === 'kirikuu' ? 'kirikuu' : 'toyo',
+          allowedVehicleKeys: ['toyo', 'kirikuu'],
           radiusMeters: LIVE_CARRIER_RADIUS_METERS,
           maxVisible: LIVE_CARRIER_MAX_VISIBLE_COUNT,
         }),
@@ -2049,7 +2163,29 @@ export default function BookCargoScreen() {
 
     return 0;
   }, [nearbyCarrierMarkers, validPickupPoint]);
-  const pickupEtaLabel = formatCargoPickupEta(pickupEtaMinutes);
+  const pickupEtaLabel = formatPickupWait(pickupEtaMinutes, language);
+  const tripDistanceMeters = useMemo(() => {
+    // Trip km label: only Google Routes meters. Never Directions/OSRM/polyline/haversine.
+    if (routeMetrics?.source === 'google' && routeMetrics.distanceMeters > 0) {
+      return routeMetrics.distanceMeters;
+    }
+    return 0;
+  }, [routeMetrics?.distanceMeters, routeMetrics?.source]);
+  const tripDistanceLabel =
+    tripDistanceMeters > 0 ? formatTripDistanceLabel(tripDistanceMeters) || '—' : '—';
+  const bridgeOnRoute = useMemo(
+    () =>
+      routeCrossesNyerereBridge(
+        routePoints.length >= 2
+          ? routePoints
+          : validPickupPoint && validDropoffPoint
+            ? [validPickupPoint, validDropoffPoint]
+            : [],
+        { pickup: pickupLabel, dropoff: dropoffLabel || dropoffInput }
+      ),
+    [dropoffInput, dropoffLabel, pickupLabel, routePoints, validDropoffPoint, validPickupPoint]
+  );
+  const selectedToll = bridgeOnRoute ? nyerereBridgeTollTzs(selectedVehicle) : 0;
   const dropoffArrivalLabel = useMemo(() => {
     if (!validPickupPoint || !validDropoffPoint) {
       return undefined;
@@ -2067,6 +2203,30 @@ export default function BookCargoScreen() {
       );
     return formatArrivalClock(new Date(Date.now() + durationSeconds * 1000));
   }, [routeMetrics?.coordinates, routeMetrics?.distanceMeters, routeMetrics?.durationSeconds, validDropoffPoint, validPickupPoint]);
+  // Choose-sheet clocks: only real Routes duration — never invent pickup wait.
+  const chooseDepartureLabel = formatArrivalClock(new Date());
+  const chooseArrivalLabel = useMemo(() => {
+    const durationSeconds = routeMetrics?.durationSeconds ?? 0;
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+      return undefined;
+    }
+    return formatArrivalClock(new Date(Date.now() + durationSeconds * 1000));
+  }, [routeMetrics?.durationSeconds]);
+  const tripTravelLabel = formatRouteTravelTime(routeMetrics?.durationSeconds ?? 0) || '';
+  const chooseTimingSummary = useMemo(() => {
+    const hasGoogleDistance = tripDistanceLabel && tripDistanceLabel !== '—';
+    const distancePart = hasGoogleDistance
+      ? language === 'sw'
+        ? `Umbali ${tripDistanceLabel}`
+        : `Distance ${tripDistanceLabel}`
+      : '';
+    const safariPart = tripTravelLabel
+      ? language === 'sw'
+        ? `Safari ${tripTravelLabel}`
+        : `Trip ${tripTravelLabel}`
+      : '';
+    return [distancePart, safariPart].filter(Boolean).join(' · ');
+  }, [language, tripDistanceLabel, tripTravelLabel]);
 
   const projectMapCallouts = useCallback((region?: MapViewportRegion) => {
     const viewport = region ?? mapRegionRef.current;
@@ -2122,11 +2282,12 @@ export default function BookCargoScreen() {
   useEffect(() => {
     projectMapCallouts();
   }, [projectMapCallouts, routeMetrics?.distanceMeters, showVehicleSheet, validDropoffPoint, validPickupPoint]);
-  // Compute quotes for vehicles
+  // Compute quotes for vehicles (payable nearest-100 TZS)
   const vehicleQuotes = useMemo(() => {
     const quotes: Record<string, number> = {};
     for (const vehicle of cargoVehicles) {
-      quotes[vehicle.key] = vehicleEstimates[vehicle.key]?.estimatedPrice ?? 0;
+      const raw = vehicleEstimates[vehicle.key]?.estimatedPrice ?? 0;
+      quotes[vehicle.key] = raw > 0 ? roundPayableTzs(raw) : 0;
     }
     return quotes;
   }, [vehicleEstimates]);
@@ -2173,14 +2334,16 @@ export default function BookCargoScreen() {
   );
 
   useEffect(() => {
-    if (cargoSheetStep !== 'offer') {
+    if (cargoSheetStep !== 'choose') {
       return;
     }
-    const current = parseOfferTzs(customerOfferInput);
-    if (current < routeMinFare) {
-      setCustomerOfferInput(String(routeMinFare));
+    const quoted = vehicleQuotes[selectedVehicle] || 0;
+    const toll = bridgeOnRoute ? nyerereBridgeTollTzs(selectedVehicle) : 0;
+    const listedFare = roundPayableTzs(Math.max(routeMinFare, quoted) + toll);
+    if (listedFare > 0) {
+      setCustomerOfferInput(String(listedFare));
     }
-  }, [cargoSheetStep, customerOfferInput, routeMinFare]);
+  }, [bridgeOnRoute, cargoSheetStep, routeMinFare, selectedVehicle, vehicleQuotes]);
 
   useEffect(() => {
     const orderId = liveCargoOrder?.id;
@@ -2202,26 +2365,18 @@ export default function BookCargoScreen() {
   }, [liveCargoOrder?.id]);
 
   useEffect(() => {
-    if (!liveCargoOrder?.id || liveCargoOrder.negotiationStatus !== 'confirmed') {
+    if (!liveCargoOrder?.id) {
       return;
     }
-    router.replace({
-      pathname: '/track-order',
-      params: {
-        orderId: liveCargoOrder.id,
-      },
-    });
-  }, [liveCargoOrder?.id, liveCargoOrder?.negotiationStatus, router]);
-
-  const handleCargoSizeSelect = useCallback((cargoType: CargoLoadType) => {
-    setSelectedCargoType(cargoType);
-    trackCargoActivity('cargo_size_selected', 'cargo_size', {
-      cargoSize: cargoType,
-      vehicleType: selectedVehicle,
-      hasRoute: Boolean(routeMetrics),
-      distanceMeters: routeMetrics ? Math.round(routeMetrics.distanceMeters) : undefined,
-    });
-  }, [routeMetrics, selectedVehicle, trackCargoActivity]);
+    if (liveCargoOrder.negotiationStatus === 'confirmed' || liveCargoOrder.acceptedByDriverAt) {
+      router.replace({
+        pathname: '/track-order',
+        params: {
+          orderId: liveCargoOrder.id,
+        },
+      });
+    }
+  }, [liveCargoOrder?.acceptedByDriverAt, liveCargoOrder?.id, liveCargoOrder?.negotiationStatus, router]);
 
   const handleVehicleSelect = useCallback((vehicleKey: RouteEstimateVehicleType) => {
     const vehicle = cargoVehicles.find((item) => item.key === vehicleKey);
@@ -2237,28 +2392,353 @@ export default function BookCargoScreen() {
     });
   }, [nearbyCarrierMarkers, routeMetrics, selectedCargoType, trackCargoActivity, vehicleQuotes]);
 
-  const handleChooseVehicle = useCallback(() => {
-    setFormError('');
-    const current = parseOfferTzs(customerOfferInput);
-    if (current < routeMinFare) {
-      setCustomerOfferInput(String(routeMinFare));
+  const closeCargoSocket = useCallback(() => {
+    cargoSocketRef.current?.close();
+    cargoSocketRef.current = null;
+  }, []);
+
+  const startCargoVerifySocket = useCallback(
+    (orderId: string, userId: string) => {
+      closeCargoSocket();
+      setVerifyPhase('connecting');
+      setVerifyError('');
+      try {
+        const client = connectCargoOfferSocket({
+          onOpen: () => {
+            void (async () => {
+              const token = await auth.currentUser?.getIdToken().catch(() => '');
+              if (!token) {
+                setVerifyPhase('error');
+                setVerifyError(copy.cargo.verifyConnectionError);
+                return;
+              }
+              client.send({ type: 'hello', role: 'customer', userId, token });
+              client.send({ type: 'customer_request', orderId, userId, token });
+            })();
+          },
+          onEvent: (event) => {
+            if (event.type === 'assigned') {
+              const found = Math.max(
+                Number(event.nearbyCount || 0),
+                Array.isArray(event.nearbyDrivers) ? event.nearbyDrivers.length : 0,
+                event.driver ? 1 : 0
+              );
+              setVerifyAssignedDriver(event.driver || null);
+              setVerifyNearbyDrivers(Array.isArray(event.nearbyDrivers) ? event.nearbyDrivers : []);
+              setVerifyDriversFound(found);
+              // Zero candidates must never show "waiting to confirm" / nearby copy.
+              setVerifyPhase(found >= 1 ? 'waiting' : 'no_driver');
+              setVerifyError('');
+              return;
+            }
+            if (event.type === 'no_driver' || event.type === 'declined') {
+              setVerifyAssignedDriver(null);
+              setVerifyNearbyDrivers([]);
+              setVerifyDriversFound(0);
+              setVerifyPhase('no_driver');
+              return;
+            }
+            if (event.type === 'accepted') {
+              closeCargoSocket();
+              router.replace({
+                pathname: '/track-order',
+                params: { orderId },
+              });
+              return;
+            }
+            if (event.type === 'cancelled') {
+              closeCargoSocket();
+              setLiveCargoOrder(null);
+              setCargoSheetStep('choose');
+              setVerifyPhase('connecting');
+              return;
+            }
+            if (event.type === 'error') {
+              const raw = String(event.message || '');
+              const looksDev =
+                /websocket|ws url|ws is|EXPO_PUBLIC_CARGO|ensure ws|cargo-offer-ws/i.test(raw);
+              setVerifyPhase('error');
+              setVerifyError(looksDev || !raw ? copy.cargo.verifyConnectionError : raw);
+            }
+          },
+          onError: () => {
+            setVerifyPhase('error');
+            setVerifyError(copy.cargo.verifyConnectionError);
+          },
+        });
+        cargoSocketRef.current = client;
+      } catch (error) {
+        setVerifyPhase('error');
+        const raw = error instanceof Error ? error.message : '';
+        const looksDev =
+          /websocket|ws url|EXPO_PUBLIC_CARGO|Missing cargo offer/i.test(raw);
+        setVerifyError(looksDev || !raw ? copy.cargo.verifyConnectionError : raw);
+      }
+    },
+    [closeCargoSocket, copy.cargo.verifyConnectionError, router]
+  );
+
+  useEffect(() => {
+    return () => {
+      closeCargoSocket();
+    };
+  }, [closeCargoSocket]);
+
+  const handleCancelVerify = useCallback(async () => {
+    if (verifyCancelBusy) {
+      return;
     }
-    if (liveCargoOrder?.id && liveCargoOrder.negotiationStatus !== 'confirmed') {
-      const vehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
-      void updateCargoNegotiation(liveCargoOrder.id, {
-        cargoVehicleKey: selectedVehicle,
-        cargoVehicleLabel: vehicleTitle,
-        serviceLabel: vehicleTitle,
+    setVerifyCancelBusy(true);
+    setVerifyError('');
+    try {
+      const orderId = liveCargoOrder?.id;
+      const userId = user?.uid;
+      if (orderId && userId) {
+        const token = await auth.currentUser?.getIdToken().catch(() => '');
+        const sent =
+          token &&
+          cargoSocketRef.current?.send({
+            type: 'customer_cancel',
+            orderId,
+            userId,
+            token,
+          });
+        if (!sent) {
+          await cancelDeliveryOrderByUser(orderId, language === 'sw' ? 'Mteja ameghairi' : 'Customer cancelled');
+        }
+      }
+      closeCargoSocket();
+      setLiveCargoOrder(null);
+      setVerifyAssignedDriver(null);
+      setVerifyNearbyDrivers([]);
+      setVerifyDriversFound(0);
+      setVerifyPhase('connecting');
+      setCargoSheetStep('choose');
+      trackCargoActivity('cargo_verify_cancelled', 'cargo_checkout', {
+        vehicleType: selectedVehicle,
+        orderId: orderId || undefined,
       });
+    } catch (error) {
+      setVerifyError(
+        error instanceof Error
+          ? error.message
+          : language === 'sw'
+            ? 'Imeshindikana kughairi.'
+            : 'Could not cancel.'
+      );
+    } finally {
+      setVerifyCancelBusy(false);
     }
-    setCargoSheetStep('offer');
-    trackCargoActivity('cargo_carrier_confirmed', 'cargo_vehicle', {
-      vehicleType: selectedVehicle,
-      cargoSize: selectedCargoType,
-      minFare: routeMinFare,
-      distanceKm: routeDistanceKm,
-    });
-  }, [customerOfferInput, liveCargoOrder, routeDistanceKm, routeMinFare, selectedCargoType, selectedVehicle, trackCargoActivity]);
+  }, [
+    closeCargoSocket,
+    language,
+    liveCargoOrder?.id,
+    selectedVehicle,
+    trackCargoActivity,
+    user?.uid,
+    verifyCancelBusy,
+  ]);
+
+  const handleChooseVehicle = useCallback(async () => {
+    if (verifyBusy || offerBusy) {
+      return;
+    }
+    setFormError('');
+
+    if (!pickupPoint || !dropoffPoint || !routeMetrics) {
+      setFormError(language === 'sw' ? 'Weka pickup na drop-off kwanza.' : 'Set pickup and drop-off first.');
+      return;
+    }
+    if (
+      !isPricableRouteSource(routeMetrics.source) ||
+      !routeEstimate?.distanceMeters ||
+      !(routeEstimate.distanceMeters > 0)
+    ) {
+      setFormError(
+        language === 'sw'
+          ? 'Hakuna njia ya barabara ya bei. Jaribu tena au chagua sehemu nyingine.'
+          : 'No road route for pricing. Try again or pick different points.'
+      );
+      return;
+    }
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    const quoted = vehicleQuotes[selectedVehicle] || 0;
+    const toll = bridgeOnRoute ? nyerereBridgeTollTzs(selectedVehicle) : 0;
+    const listedFare = roundPayableTzs(Math.max(routeMinFare, quoted) + toll);
+    setCustomerOfferInput(String(listedFare));
+
+    let sharedPhone =
+      readablePhone(profile?.phoneNumber) || readablePhone(user.phoneNumber) || '';
+    if (!sharedPhone) {
+      try {
+        const freshProfile = await getUserProfile(user.uid);
+        sharedPhone = readablePhone(freshProfile?.phoneNumber) || '';
+        if (sharedPhone) {
+          void refreshProfile();
+        }
+      } catch {
+        // Proceed without phone — do not block the CTA.
+      }
+    }
+
+    const vehicleTitle = cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.title ?? 'Carrier';
+    const distanceKm = distanceKmFromMeters(routeMetrics.distanceMeters);
+    const etaString = formatRouteTravelTime(routeMetrics.durationSeconds) || formatDistance(routeMetrics.distanceMeters);
+    const distanceLabel = formatDistance(routeMetrics.distanceMeters);
+    const fareLabel = formatTzs(listedFare);
+    const dropoffDisplay = dropoffLabel || dropoffInput;
+    const scheduleLabel =
+      timingMode === 'later' && scheduleDate && scheduleTime
+        ? formatScheduleSummary(scheduleDate, scheduleTime, language)
+        : language === 'sw'
+          ? 'Sasa'
+          : 'Dispatch now';
+    const customerName = profile?.fullName?.trim() || user.displayName?.trim() || 'DoorDrop Customer';
+
+    setVerifyBusy(true);
+    setOfferBusy(true);
+    try {
+      const [readablePickup, readableDropoff] = await Promise.all([
+        ensureReadablePlaceLabel(pickupPoint, pickupLabel),
+        ensureReadablePlaceLabel(dropoffPoint, dropoffDisplay),
+      ]);
+
+      let order = liveCargoOrder;
+      if (order?.id && order.negotiationStatus !== 'confirmed' && !order.acceptedByDriverAt) {
+        await updateCargoNegotiation(order.id, {
+          customerOffer: listedFare,
+          lastOfferBy: 'customer',
+          customerOfferNote: copy.cargo.offerNoteDefault,
+          fareLabel,
+          totalLabel: fareLabel,
+          cargoVehicleKey: selectedVehicle,
+          cargoVehicleLabel: vehicleTitle,
+          serviceLabel: vehicleTitle,
+          customerPhone: sharedPhone,
+          recipientPhone: sharedPhone,
+          negotiationStatus: 'open',
+          assignmentMode: 'cargo_ws',
+          cargoDispatch: 'instant',
+        });
+      } else {
+        order = await createDeliveryOrder({
+          userId: user.uid,
+          customerName,
+          customerEmail: user.email?.trim().toLowerCase() || '',
+          customerPhone: sharedPhone,
+          flow: 'cargo',
+          serviceLabel: vehicleTitle,
+          pickupLabel: readablePickup,
+          dropoffLabel: readableDropoff,
+          pickupLatitude: pickupPoint.latitude,
+          pickupLongitude: pickupPoint.longitude,
+          dropoffLatitude: dropoffPoint.latitude,
+          dropoffLongitude: dropoffPoint.longitude,
+          etaLabel: etaString,
+          fareLabel,
+          totalLabel: fareLabel,
+          fareType: 'negotiated',
+          customerOffer: listedFare,
+          minFare: routeMinFare,
+          distanceKm,
+          lastOfferBy: 'customer',
+          negotiationStatus: 'open',
+          driverNegotiationUsed: 0,
+          customerOfferNote: copy.cargo.offerNoteDefault,
+          routeLabel: `${readablePickup} → ${readableDropoff}`,
+          timingMode,
+          scheduleDate,
+          scheduleTime,
+          scheduleLabel,
+          recipientName: customerName,
+          recipientPhone: sharedPhone,
+          cargoVehicleKey: selectedVehicle,
+          cargoVehicleLabel: vehicleTitle,
+          cargoCapacityLabel: cargoVehicles.find((vehicle) => vehicle.key === selectedVehicle)?.capacity,
+          cargoSizeLabel: undefined,
+          distanceLabel,
+          durationLabel: etaString,
+          distanceMeters: Math.round(routeMetrics.distanceMeters),
+          durationSeconds: Math.round(routeMetrics.durationSeconds),
+          requestedDriverId: String(params.requestedDriverId || ''),
+          requestedDriverName: String(params.requestedDriverName || ''),
+          assignmentMode: 'cargo_ws',
+          cargoDispatch: 'instant',
+        });
+        setLiveCargoOrder(order);
+      }
+
+      const orderId = order?.id || liveCargoOrder?.id;
+      if (!orderId) {
+        throw new Error(language === 'sw' ? 'Imeshindikana kuunda oda.' : 'Could not create order.');
+      }
+
+      setVerifyAssignedDriver(null);
+      setVerifyNearbyDrivers([]);
+      setVerifyDriversFound(
+        nearbyCarrierMarkers.filter((marker) => marker.vehicleKey === selectedVehicle).length
+      );
+      setVerifyPhase('connecting');
+      setCargoSheetStep('verify');
+      startCargoVerifySocket(orderId, user.uid);
+
+      trackCargoActivity('cargo_carrier_confirmed', 'cargo_vehicle', {
+        vehicleType: selectedVehicle,
+        cargoSize: selectedCargoType,
+        minFare: routeMinFare,
+        distanceKm: routeDistanceKm,
+        customerOffer: listedFare,
+        orderId,
+      });
+    } catch (error) {
+      const message =
+        error instanceof FirebaseError
+          ? getFirebaseDataErrorMessage(error.code, 'Could not start driver verify.')
+          : error instanceof Error
+            ? error.message
+            : 'Could not start driver verify.';
+      setFormError(message);
+      setCargoSheetStep('choose');
+    } finally {
+      setVerifyBusy(false);
+      setOfferBusy(false);
+    }
+  }, [
+    bridgeOnRoute,
+    copy.cargo.offerNoteDefault,
+    dropoffInput,
+    dropoffLabel,
+    dropoffPoint,
+    language,
+    liveCargoOrder,
+    nearbyCarrierMarkers,
+    offerBusy,
+    params.requestedDriverId,
+    params.requestedDriverName,
+    pickupLabel,
+    pickupPoint,
+    profile?.fullName,
+    profile?.phoneNumber,
+    refreshProfile,
+    routeDistanceKm,
+    routeMetrics,
+    routeMinFare,
+    router,
+    scheduleDate,
+    scheduleTime,
+    selectedCargoType,
+    selectedVehicle,
+    startCargoVerifySocket,
+    timingMode,
+    trackCargoActivity,
+    user,
+    vehicleQuotes,
+    verifyBusy,
+  ]);
 
   useEffect(() => {
     LayoutAnimation.configureNext({
@@ -2410,202 +2890,6 @@ export default function BookCargoScreen() {
     );
   }
 
-  if (cargoLayoutStep === 'offer') {
-    return (
-      <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.offerScreen}>
-        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.offerScreenInner}>
-          <View style={styles.offerScreenHeader}>
-            <TouchableOpacity accessibilityRole="button" style={styles.chromeButton} onPress={handleGoBack}>
-              <MaterialCommunityIcons name="arrow-left" size={22} color={cargoTheme.colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={styles.offerScreenBody}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.offerScreenContent}>
-            <Text style={styles.offerScreenTitle}>
-              {driverPriceWaiting ? copy.cargo.driverPriceTitle : copy.cargo.offerTitle}
-            </Text>
-            <Text style={styles.offerHint}>
-              {driverPriceWaiting ? copy.cargo.driverPriceHint : copy.cargo.offerHint}
-            </Text>
-
-            {driverPriceWaiting ? (
-              <View style={styles.driverPriceCard}>
-                <Text style={styles.driverPriceCurrency}>TZS</Text>
-                <Text style={styles.driverPriceAmount}>{liveDriverOffer.toLocaleString('en-US')}</Text>
-                {liveDriverName || liveDriverVehicle ? (
-                  <Text style={styles.driverPriceMeta}>
-                    {[liveDriverName, liveDriverVehicle].filter(Boolean).join(' · ')}
-                  </Text>
-                ) : null}
-                {driverOfferNote ? <Text style={styles.driverPriceNote}>“{driverOfferNote}”</Text> : null}
-              </View>
-            ) : null}
-
-            {hasLiveDriver ? (
-              <Text style={styles.chanceLine}>
-                {driverChancesLeft > 0
-                  ? copy.cargo.driverChances.replace('{left}', String(driverChancesLeft))
-                  : copy.cargo.driverChancesNone}
-              </Text>
-            ) : null}
-
-            {driverPriceWaiting ? <Text style={styles.yourFareLabel}>{copy.cargo.yourFare}</Text> : null}
-
-            <View style={styles.offerStepperRow}>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel="Minus"
-                style={[styles.offerStepButton, currentOfferAmount <= routeMinFare && styles.offerStepButtonDisabled]}
-                disabled={currentOfferAmount <= routeMinFare}
-                onPress={() => bumpOffer(-OFFER_STEP_TZS)}>
-                <Text style={styles.offerStepButtonText}>−</Text>
-              </TouchableOpacity>
-              <View style={styles.offerAmountWrap}>
-                <Text style={styles.offerCurrency}>TZS</Text>
-                <TextInput
-                  value={formatOfferInput(customerOfferInput || String(routeMinFare))}
-                  onChangeText={(value) => {
-                    setFormError('');
-                    const next = parseOfferTzs(value);
-                    setCustomerOfferInput(String(next || ''));
-                  }}
-                  placeholder={routeMinFare.toLocaleString('en-US')}
-                  placeholderTextColor="#D1D5DB"
-                  keyboardType="number-pad"
-                  style={styles.offerInput}
-                  returnKeyType="done"
-                  onSubmitEditing={() => void handleOfferPrimary()}
-                />
-              </View>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel="Plus"
-                style={styles.offerStepButton}
-                onPress={() => bumpOffer(OFFER_STEP_TZS)}>
-                <Text style={styles.offerStepButtonText}>+</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.offerUnderline} />
-
-            <View style={styles.offerNoteChips}>
-              {['Bei yangu.', 'Niko tayari.', 'Tuongee.'].map((line) => {
-                const active = customerOfferNote === line;
-                return (
-                  <TouchableOpacity
-                    key={line}
-                    accessibilityRole="button"
-                    style={[styles.offerNoteChip, active && styles.offerNoteChipActive]}
-                    onPress={() => setCustomerOfferNote(line)}>
-                    <Text style={[styles.offerNoteChipText, active && styles.offerNoteChipTextActive]}>{line}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {profileLoading || readablePhone(profile?.phoneNumber) || readablePhone(user?.phoneNumber) ? null : (
-              <TextInput
-                value={contactPhone}
-                onChangeText={(value) => {
-                  setFormError('');
-                  setContactPhone(value);
-                }}
-                keyboardType="phone-pad"
-                placeholder={language === 'sw' ? 'Namba yako ya simu' : 'Your phone number'}
-                placeholderTextColor="#9CA3AF"
-                style={styles.offerPhone}
-              />
-            )}
-
-            {readablePhone(liveCargoOrder?.driverPhone) ? (
-              <TouchableOpacity
-                accessibilityRole="button"
-                style={styles.offerCallRow}
-                onPress={() => {
-                  void openPhoneDialer(liveCargoOrder?.driverPhone).catch(() => {
-                    setFormError(language === 'sw' ? 'Imeshindikana kufungua simu.' : 'Could not open the phone app.');
-                  });
-                }}>
-                <Text style={styles.offerCallNumber}>{readablePhone(liveCargoOrder?.driverPhone)}</Text>
-                <Text style={styles.offerCallAction}>{language === 'sw' ? 'Piga' : 'Call'}</Text>
-              </TouchableOpacity>
-            ) : null}
-
-            <View style={styles.paymentRow}>
-              <MaterialCommunityIcons name="cash" size={22} color={cargoTheme.colors.ink} />
-              <Text style={styles.paymentRowLabel}>{copy.cargo.cash}</Text>
-            </View>
-
-            <View style={styles.travelWithDriverBanner} accessibilityRole="text">
-              <MaterialCommunityIcons name="account-supervisor" size={22} color={cargoTheme.colors.ink} />
-              <View style={styles.travelWithDriverCopy}>
-                <Text style={styles.travelWithDriverTitle}>{copy.cargo.travelWithDriverTitle}</Text>
-                <Text style={styles.travelWithDriverText}>{copy.cargo.travelWithDriverText}</Text>
-              </View>
-            </View>
-
-            {!hasLiveDriver && liveCargoOrder ? (
-              <CargoOfferSearch
-                label={copy.cargo.lookingDriver}
-                hint={copy.cargo.searchHint}
-                vehicleKey={selectedVehicle}
-                vehicleLabel={activeVehicleTitle}
-              />
-            ) : hasLiveDriver && !driverPriceWaiting ? (
-              <View style={styles.offerDriverCard}>
-                <View style={styles.offerDriverAvatar}>
-                  <MaterialCommunityIcons name="account" size={26} color={cargoTheme.colors.ink} />
-                </View>
-                <View style={styles.offerDriverCopy}>
-                  <Text style={styles.offerDriverName}>{liveDriverName || liveDriverVehicle}</Text>
-                  <Text style={styles.offerDriverVehicle}>{liveDriverVehicle}</Text>
-                  {liveDriverOffer > 0 ? (
-                    <Text style={styles.offerDriverFare}>
-                      {copy.cargo.driverOffer.replace('{amount}', liveDriverOffer.toLocaleString('en-US'))}
-                    </Text>
-                  ) : null}
-                </View>
-              </View>
-            ) : null}
-          </ScrollView>
-
-          <View style={[styles.offerScreenFooter, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
-            {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-            {hasLiveDriver && offerDirty ? (
-              <TouchableOpacity
-                accessibilityRole="button"
-                style={[styles.offerSecondaryButton, (offerBusy || currentOfferAmount < routeMinFare) && styles.primaryButtonDisabled]}
-                disabled={offerBusy || currentOfferAmount < routeMinFare}
-                onPress={() => void handleOfferPrimary()}>
-                <Text style={styles.offerSecondaryButtonText}>
-                  {offerBusy ? copy.confirm.creating : copy.cargo.sendPrice}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-            <PrimaryButton
-              label={
-                driverPriceWaiting
-                  ? copy.cargo.acceptThisFare.replace('{amount}', liveDriverOffer.toLocaleString('en-US'))
-                  : hasLiveDriver
-                    ? copy.confirm.confirm
-                    : offerPrimaryLabel
-              }
-              onPress={() => void (hasLiveDriver ? handleConfirmCargoOffer() : handleOfferPrimary())}
-              style={styles.ctaButton}
-              disabled={hasLiveDriver ? offerBusy || !liveCargoOrder?.id : offerPrimaryDisabled}
-            />
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
@@ -2664,6 +2948,10 @@ export default function BookCargoScreen() {
                 coordinate={validPickupPoint}
                 anchor={{ x: 0.5, y: 0.5 }}
                 tracksViewChanges
+                draggable={mapSelectionTarget === 'pickup'}
+                onDragEnd={(event) => {
+                  void handleMapPress(event);
+                }}
                 zIndex={8}>
                 <CargoBullseyePin kind="pickup" />
               </Marker>
@@ -2674,24 +2962,30 @@ export default function BookCargoScreen() {
                 coordinate={validDropoffPoint}
                 anchor={{ x: 0.5, y: 0.5 }}
                 tracksViewChanges
+                draggable={mapSelectionTarget === 'dropoff'}
+                onDragEnd={(event) => {
+                  void handleMapPress(event);
+                }}
                 zIndex={9}>
                 <CargoBullseyePin kind="dropoff" />
               </Marker>
             ) : null}
-            <NearbyLiveVehicleMarkers
-              vehicles={nearbyCarrierMarkers}
-              Marker={Marker}
-              MarkerAnimated={MarkerAnimated}
-              AnimatedRegion={AnimatedRegion}
-              pinStyle="silhouette"
-            />
+            {!showChooseStep ? (
+              <NearbyLiveVehicleMarkers
+                vehicles={nearbyCarrierMarkers}
+                Marker={Marker}
+                MarkerAnimated={MarkerAnimated}
+                AnimatedRegion={AnimatedRegion}
+                pinStyle="silhouette"
+              />
+            ) : null}
             <MapRouteLine
               Polyline={Polyline}
               coordinates={routePoints}
               fallback={routeMetrics?.source === 'fallback'}
             />
           </NativeMapView>
-          {pickupCallout ? (
+          {!showChooseStep && pickupCallout ? (
             <View
               pointerEvents="none"
               style={[
@@ -2712,7 +3006,7 @@ export default function BookCargoScreen() {
               />
             </View>
           ) : null}
-          {dropoffCallout && dropoffArrivalLabel ? (
+          {!showChooseStep && dropoffCallout && dropoffArrivalLabel ? (
             <View
               pointerEvents="none"
               style={[
@@ -2889,22 +3183,42 @@ export default function BookCargoScreen() {
               </View>
             ) : null}
           </View>
-        ) : showCollapsedRouteChip ? (
-          <View style={styles.locationChipRow}>
-            <TouchableOpacity activeOpacity={0.9} style={styles.locationChip} onPress={() => reopenRouteEditor('pickup')}>
-              <View style={styles.pickupDot} />
-              <Text numberOfLines={1} style={styles.locationChipText}>
+        ) : showVerifyStep ? (
+          <View style={styles.verifyPillWrap} pointerEvents="box-none">
+            <CargoDriversFoundPill
+              count={verifyDriversFound}
+              label={
+                verifyPhase === 'no_driver' || verifyDriversFound <= 0
+                  ? copy.cargo.verifyDriversNone
+                  : verifyDriversFound === 1
+                    ? copy.cargo.verifyDriversOne
+                    : copy.cargo.verifyDriversFound
+              }
+            />
+          </View>
+        ) : showRouteSummary ? (
+          <View style={styles.routeSummaryStack}>
+            <TouchableOpacity activeOpacity={0.9} style={styles.routeSummaryBar} onPress={() => reopenRouteEditor('dropoff')}>
+              <Text numberOfLines={1} style={styles.routeSummaryText}>
                 {formatCompactLocationLabel(pickupLabel, copy.cargo.pickup)}
               </Text>
-              <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
-            </TouchableOpacity>
-            <TouchableOpacity activeOpacity={0.9} style={styles.locationChip} onPress={() => reopenRouteEditor('dropoff')}>
-              <View style={styles.dropoffSquare} />
-              <Text numberOfLines={1} style={styles.locationChipText}>
+              <MaterialCommunityIcons name="arrow-right" size={16} color="#111827" />
+              <Text numberOfLines={1} style={styles.routeSummaryText}>
                 {formatCompactLocationLabel(dropoffLabel || dropoffInput, copy.cargo.dropoff)}
               </Text>
-              <MaterialCommunityIcons name="chevron-right" size={18} color="#94A3B8" />
             </TouchableOpacity>
+            <View style={styles.routeFactRow}>
+              <View style={styles.routeFactChip}>
+                <Text style={styles.routeFactKicker}>ETA</Text>
+                <Text style={styles.routeFactValue}>
+                  {formatRouteTravelTime(routeMetrics?.durationSeconds ?? 0) || dropoffArrivalLabel || '—'}
+                </Text>
+              </View>
+              <View style={styles.routeFactChip}>
+                <Text style={styles.routeFactKicker}>{copy.cargo.distance}</Text>
+                <Text style={styles.routeFactValue}>{tripDistanceLabel}</Text>
+              </View>
+            </View>
           </View>
         ) : null}
       </View>
@@ -2933,33 +3247,51 @@ export default function BookCargoScreen() {
       <Animated.View
         style={[
           styles.vehicleSheet,
+          showVerifyStep && styles.vehicleSheetVerify,
           {
             height: sheetHeightAnim,
-            paddingHorizontal: targetSheetHeight > 0 ? 18 : 0,
-            paddingTop: targetSheetHeight > 0 ? 10 : 0,
+            paddingHorizontal: targetSheetHeight > 0 && !showVerifyStep ? 18 : 0,
+            paddingTop: targetSheetHeight > 0 && !showVerifyStep ? 10 : 0,
           },
         ]}>
         {targetSheetHeight > 0 ? (
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.vehicleSheetInner}>
-          <View style={styles.vehicleSheetHandle} />
+          {showChooseStep ? <View style={styles.vehicleSheetHandle} /> : null}
           {showChooseStep ? (
             <>
-              <Text style={styles.vehicleSheetTitle}>{copy.cargo.carrier}</Text>
-              <Text style={styles.sizeChipLabel}>{copy.cargo.sizeLabel}</Text>
-              <View style={styles.sizeChipRow}>
-                {cargoLoadOptions.map((option) => {
-                  const isActive = selectedCargoType === option.key;
-                  return (
-                    <TouchableOpacity
-                      key={option.key}
-                      activeOpacity={0.88}
-                      style={[styles.sizeChip, isActive && styles.sizeChipActive]}
-                      onPress={() => handleCargoSizeSelect(option.key)}>
-                      <Text style={[styles.sizeChipText, isActive && styles.sizeChipTextActive]}>{option.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {chooseArrivalLabel ? (
+                <View style={styles.sheetFacts}>
+                  <View style={styles.sheetFact}>
+                    <Text style={styles.sheetFactLabel}>
+                      {language === 'sw' ? 'Kutoka' : 'Depart'}
+                    </Text>
+                    <Text style={styles.sheetFactValue}>{chooseDepartureLabel}</Text>
+                  </View>
+                  <View style={styles.sheetFactRule} />
+                  <View style={styles.sheetFact}>
+                    <Text style={styles.sheetFactLabel}>
+                      {language === 'sw' ? 'Kufika' : 'Arrive'}
+                    </Text>
+                    <Text style={styles.sheetFactValue}>{chooseArrivalLabel}</Text>
+                  </View>
+                </View>
+              ) : null}
+              {chooseTimingSummary ? (
+                <Text style={styles.sheetTimingSummary}>{chooseTimingSummary}</Text>
+              ) : null}
+              {selectedToll > 0 ? (
+                <View style={styles.tollNotice}>
+                  <View style={styles.tollMark}>
+                    <MaterialCommunityIcons name="bridge" size={16} color="#111827" />
+                  </View>
+                  <View style={styles.tollCopy}>
+                    <Text style={styles.tollTitle}>
+                      {copy.cargo.tollIncluded.replace('{amount}', selectedToll.toLocaleString('en-US'))}
+                    </Text>
+                    <Text style={styles.tollHint}>{copy.cargo.tollNoExtra}</Text>
+                  </View>
+                </View>
+              ) : null}
 
               <ScrollView
                 style={styles.vehicleListScroll}
@@ -2968,11 +3300,11 @@ export default function BookCargoScreen() {
                 keyboardShouldPersistTaps="handled">
                 {cargoVehicles.map((vehicle) => {
                   const isActive = vehicle.key === selectedVehicle;
-                  const rangeLabel = `TZS ${routeMinFare.toLocaleString('en-US')}+`;
-                  const distanceLabel = routeMetrics ? formatDistance(routeMetrics.distanceMeters) : '';
-                  const travelLabel =
-                    routeMetrics?.source === 'google' ? formatRouteTravelTime(routeMetrics.durationSeconds) : null;
-                  const metaParts = [vehicle.capacity, travelLabel || distanceLabel].filter(Boolean);
+                  const tripEta =
+                    formatRouteTravelTime(routeMetrics?.durationSeconds ?? 0) || dropoffArrivalLabel || '';
+                  const quoted = vehicleQuotes[vehicle.key] || 0;
+                  const toll = bridgeOnRoute ? nyerereBridgeTollTzs(vehicle.key) : 0;
+                  const listedFare = roundPayableTzs((quoted > 0 ? quoted : routeMinFare) + toll);
                   return (
                     <TouchableOpacity
                       key={vehicle.key}
@@ -2984,9 +3316,11 @@ export default function BookCargoScreen() {
                       </View>
                       <View style={styles.vehicleCopy}>
                         <Text numberOfLines={1} style={styles.vehicleRowTitle}>{vehicle.title}</Text>
-                        <Text numberOfLines={1} style={styles.vehicleRowMeta}>{metaParts.join(' · ')}</Text>
+                        <Text numberOfLines={1} style={styles.vehicleRowMeta}>
+                          {tripEta ? `${tripEta} · ${vehicle.capacity}` : vehicle.capacity}
+                        </Text>
                       </View>
-                      <Text style={styles.vehicleRowPrice}>{rangeLabel}</Text>
+                      <Text style={styles.vehicleRowPrice}>{formatTzs(listedFare)}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -3001,27 +3335,72 @@ export default function BookCargoScreen() {
 
                 {formError ? <Text style={styles.formError}>{formError}</Text> : null}
                 <PrimaryButton
-                  label={copy.cargo.chooseVehicle.replace('{vehicle}', activeVehicleTitle)}
-                  onPress={handleChooseVehicle}
+                  label={
+                    verifyBusy || offerBusy
+                      ? copy.confirm.creating
+                      : copy.cargo.chooseVehicle.replace('{vehicle}', activeVehicleTitle)
+                  }
+                  onPress={() => void handleChooseVehicle()}
                   style={styles.ctaButton}
+                  disabled={verifyBusy || offerBusy}
                 />
               </View>
             </>
-          ) : (
-            <>
-              <Text style={styles.vehicleSheetTitle}>{copy.cargo.offerTitle}</Text>
-              <Text style={styles.vehicleSheetSubtitle}>{copy.cargo.offerHint}</Text>
-              {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-              <View style={[styles.vehicleSheetFooter, { paddingBottom: safeSheetBottom + 6 }]}>
-                <PrimaryButton
-                  label={offerPrimaryLabel}
-                  onPress={() => void handleOfferPrimary()}
-                  style={styles.ctaButton}
-                  disabled={offerPrimaryDisabled}
-                />
-              </View>
-            </>
-          )}
+          ) : showVerifyStep ? (
+            <CargoDriverVerifySheet
+              phase={
+                verifyPhase === 'waiting' && verifyDriversFound <= 0 ? 'no_driver' : verifyPhase
+              }
+              statusTitle={
+                verifyPhase === 'error'
+                  ? copy.cargo.verifyConnectionTitle
+                  : verifyPhase === 'no_driver' ||
+                      (verifyPhase === 'waiting' && verifyDriversFound <= 0)
+                    ? copy.cargo.verifyNoDriverTitle
+                    : verifyPhase === 'waiting' && verifyDriversFound >= 1
+                      ? copy.cargo.verifyTitle
+                      : copy.cargo.verifyConnecting
+              }
+              statusHint={
+                verifyPhase === 'error'
+                  ? copy.cargo.verifyConnectionError
+                  : verifyPhase === 'no_driver' ||
+                      (verifyPhase === 'waiting' && verifyDriversFound <= 0)
+                    ? copy.cargo.verifyNoDriverHint.replace('{vehicle}', activeVehicleTitle)
+                    : verifyPhase === 'waiting' && verifyDriversFound >= 1
+                      ? copy.cargo.verifyHint.replace('{vehicle}', activeVehicleTitle)
+                      : copy.cargo.verifyConnectingHint.replace('{vehicle}', activeVehicleTitle)
+              }
+              vehicleTitle={activeVehicleTitle}
+              vehicleImage={vehicleImages[selectedVehicle]}
+              fareLabel={formatTzs(
+                roundPayableTzs(
+                  Math.max(routeMinFare, vehicleQuotes[selectedVehicle] || 0) + selectedToll
+                )
+              )}
+              nearbyLine={
+                verifyPhase === 'waiting' && verifyDriversFound >= 1
+                  ? verifyDriversFound === 1
+                    ? copy.cargo.verifyNearbyOne
+                    : copy.cargo.verifyNearbyLine.replace('{count}', String(verifyDriversFound))
+                  : verifyPhase === 'connecting'
+                    ? copy.cargo.verifyConnectingHint.replace('{vehicle}', activeVehicleTitle)
+                    : copy.cargo.verifyDriversNone
+              }
+              nearbyPhotos={verifyNearbyDrivers.map((driver) => driver.photoURL)}
+              cancelLabel={
+                verifyCancelBusy
+                  ? language === 'sw'
+                    ? 'Inaghairi...'
+                    : 'Cancelling...'
+                  : copy.cargo.verifyCancel
+              }
+              onCancel={() => void handleCancelVerify()}
+              cancelDisabled={verifyCancelBusy}
+              bottomInset={safeSheetBottom}
+              errorText={verifyError || formError || undefined}
+            />
+          ) : null}
         </KeyboardAvoidingView>
         ) : null}
       </Animated.View>
@@ -3426,6 +3805,19 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 16,
   },
+  vehicleSheetVerify: {
+    backgroundColor: 'transparent',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  verifyPillWrap: {
+    position: 'absolute',
+    top: 12,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 20,
+  },
   vehicleSheetInner: {
     flex: 1,
   },
@@ -3435,7 +3827,135 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 999,
     backgroundColor: '#E5E7EB',
-    marginBottom: 14,
+    marginBottom: 10,
+  },
+  sheetFacts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    minHeight: 44,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+  },
+  sheetFact: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  sheetFactRule: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    backgroundColor: '#E5E7EB',
+  },
+  sheetFactLabel: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: typography.semibold,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  sheetFactValue: {
+    marginTop: 2,
+    fontSize: 15,
+    lineHeight: 19,
+    fontFamily: typography.extrabold,
+    color: '#111827',
+    letterSpacing: -0.3,
+    textAlign: 'center',
+  },
+  sheetTimingSummary: {
+    marginBottom: 10,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.semibold,
+    color: '#374151',
+    textAlign: 'center',
+  },
+  tollNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: '#FFFBEA',
+    borderWidth: 1,
+    borderColor: '#F3E7A1',
+  },
+  tollMark: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FFE500',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tollCopy: {
+    flex: 1,
+  },
+  tollTitle: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontFamily: typography.bold,
+    color: '#111827',
+  },
+  tollHint: {
+    marginTop: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: typography.body,
+    color: '#6B7280',
+  },
+  routeSummaryStack: {
+    gap: 8,
+  },
+  routeSummaryBar: {
+    minHeight: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  routeSummaryText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: typography.bold,
+    color: '#111827',
+  },
+  routeFactRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  routeFactChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+  },
+  routeFactKicker: {
+    fontSize: 11,
+    fontFamily: typography.semibold,
+    color: '#FDE68A',
+  },
+  routeFactValue: {
+    fontSize: 13,
+    fontFamily: typography.extrabold,
+    color: '#FFFFFF',
   },
   vehicleSheetTitle: {
     fontSize: 20,
@@ -3454,45 +3974,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 8,
   },
-  sizeChipLabel: {
-    fontSize: 12,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-    marginBottom: 6,
-  },
-  sizeChipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 10,
-  },
-  sizeChip: {
-    minHeight: 32,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F3F4F6',
-  },
-  sizeChipActive: {
-    backgroundColor: '#111827',
-  },
-  sizeChipText: {
-    fontSize: 13,
-    fontFamily: typography.semibold,
-    color: '#111827',
-  },
-  sizeChipTextActive: {
-    color: '#FFFFFF',
-  },
   vehicleListScroll: {
-    flexGrow: 0,
-    flexShrink: 0,
-    maxHeight: 210,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   vehicleSheetFooter: {
     flexShrink: 0,
-    paddingTop: 6,
+    marginTop: 'auto',
+    paddingTop: 4,
   },
   vehicleList: {
     paddingBottom: 4,
@@ -3500,27 +3989,32 @@ const styles = StyleSheet.create({
   vehicleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 64,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
+    gap: 10,
+    minHeight: 72,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 8,
     borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
   },
   vehicleRowActive: {
+    borderColor: '#111827',
     backgroundColor: '#FFFBEA',
   },
   vehicleAvatarWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
+    width: 56,
+    height: 56,
+    borderRadius: 14,
     backgroundColor: '#F8FAFC',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
   },
   vehicleAvatar: {
-    width: 58,
-    height: 58,
+    width: 52,
+    height: 52,
   },
   vehicleCopy: {
     flex: 1,
@@ -3540,12 +4034,13 @@ const styles = StyleSheet.create({
     color: cargoTheme.colors.subtext,
   },
   vehicleRowPrice: {
-    fontSize: 13,
+    fontSize: 15,
+    lineHeight: 18,
     fontFamily: typography.extrabold,
     color: cargoTheme.colors.ink,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     textAlign: 'right',
-    maxWidth: 128,
+    maxWidth: 118,
   },
   paymentRow: {
     flexDirection: 'row',

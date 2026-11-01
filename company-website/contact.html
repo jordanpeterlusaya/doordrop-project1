@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Contact | DoorDrop</title>
+    <meta name="description" content="Contact DoorDrop head office in Dar es Salaam. Company enquiries only." />
+    <link rel="icon" type="image/png" href="./assets/favicon-32.png" />
+    <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+    <meta name="theme-color" content="#16a34a" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Poppins:wght@700;800;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css?v=3" />
+  </head>
+  <body class="inner">
+    <header class="header">
+      <a class="logo" href="./">
+        <img src="./assets/doordrop.png" alt="" />
+        <span>DOOR <em>/</em> <b>DROP</b></span>
+      </a>
+      <nav data-nav>
+        <a href="./about.html">About</a>
+        <a href="./services.html">Services</a>
+        <a href="./coverage.html">Coverage</a>
+        <a class="is-active" href="./contact.html">Contact</a>
+      </nav>
+      <a class="book" href="./contact.html">Contact us</a>
+      <button class="burger" type="button" aria-label="Menu" data-burger>
+        <span></span><span></span><span></span>
+      </button>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <div class="wrap">
+          <p class="kicker">Contact</p>
+          <h1>Head office</h1>
+          <p class="lead">For company enquiries. This form is not used to request a delivery.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="wrap contact">
+          <div class="office">
+            <h2>Dar es Salaam</h2>
+            <p>Tanzania</p>
+            <p><a href="mailto:doordrop225@gmail.com">doordrop225@gmail.com</a></p>
+            <p><a href="tel:+255700000003">+255 700 000 003</a></p>
+          </div>
+          <form data-form novalidate>
+            <p class="form-title">Company enquiry</p>
+            <label>Name<input name="name" required /></label>
+            <label>Email<input name="email" type="email" required /></label>
+            <label>Phone<input name="phone" type="tel" required /></label>
+            <label>Message<textarea name="message" rows="4" required></textarea></label>
+            <button class="cta dark" type="submit">Send</button>
+            <p class="note" data-note></p>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap foot">
+        <div>
+          <a class="logo dark" href="./">
+            <img src="./assets/doordrop.png" alt="" />
+            <span>DOOR <em>/</em> <b>DROP</b></span>
+          </a>
+          <p>Tanzanian technology company for delivery and cargo transport.</p>
+        </div>
+        <div>
+          <a href="./about.html">About</a>
+          <a href="./services.html">Services</a>
+          <a href="./coverage.html">Coverage</a>
+          <a href="./contact.html">Contact</a>
+        </div>
+        <div>
+          <a href="../privacy.html">Privacy</a>
+          <a href="../terms/">Terms</a>
+        </div>
+      </div>
+      <div class="wrap copy">© 2026 DoorDrop</div>
+    </footer>
+    <script src="./script.js?v=3"></script>
+  </body>
+</html>

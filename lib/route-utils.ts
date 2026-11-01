@@ -36,6 +36,8 @@ export type SelectedRoute = {
   geometry: string;
   distanceMeters: number;
   durationSeconds: number;
+  /** Where geometry/meters came from — never treat Directions/OSRM as Routes for pricing. */
+  source?: 'directions' | 'osrm';
 };
 
 export function decodePolyline(encoded: string, precision = 5): RoutePoint[] {
@@ -100,6 +102,8 @@ export function selectBestOsrmRoute(routes: OsrmRouteCandidate[] | undefined) {
     return null;
   }
 
+  // Bolt-like: prefer duration-optimal practical roads over pure min-distance cuts.
+  // Tie-break: lower distance.
   return candidates.sort((left, right) => {
     if (left.durationSeconds !== right.durationSeconds) {
       return left.durationSeconds - right.durationSeconds;

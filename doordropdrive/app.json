@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "DoorDrive",
+    "name": "HAUL Pilots",
     "slug": "doordrive",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -13,24 +13,65 @@
     },
     "android": {
       "package": "com.doordrive.app",
+      "versionCode": 5,
       "permissions": [
+        "ACCESS_BACKGROUND_LOCATION",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "VIBRATE"
+        "CAMERA",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "READ_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "VIBRATE",
+        "WAKE_LOCK",
+        "POST_NOTIFICATIONS",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "USE_FULL_SCREEN_INTENT"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon2.png",
-        "backgroundColor": "#16A34A"
+        "backgroundColor": "#FFE500"
       }
     },
     "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "HAUL Pilots needs your location in the background so customers can find you and orders can reach you anywhere in Tanzania.",
+          "locationWhenInUsePermission": "HAUL Pilots needs your exact location to show where you are and send nearby orders.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HAUL Pilots needs photos of the vehicle and driver for admin verification.",
+          "cameraPermission": "HAUL Pilots needs the camera to take vehicle and driver photos.",
+          "microphonePermission": false
+        }
+      ],
       [
         "expo-splash-screen",
         {
           "image": "./assets/images/icon2.png",
           "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#16A34A"
+          "backgroundColor": "#FFE500"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "sounds": [
+            "./assets/sounds/order_alert.wav",
+            "./assets/sounds/incoming_order_alarm.wav"
+          ],
+          "enableBackgroundRemoteNotifications": true,
+          "icon": "./assets/images/icon2.png",
+          "color": "#FFE500",
+          "defaultChannel": "haul_new_orders_v1"
         }
       ]
     ],
@@ -39,11 +80,12 @@
       "android",
       "web"
     ],
-    "owner": "jordanpeter",
+    "owner": "lusayaapeters-team",
     "extra": {
       "eas": {
-        "projectId": "53e9314f-0ec8-4256-ae9c-9160f2c3aa2f"
-      }
+        "projectId": "70f6a3cb-5f9d-4894-bd72-f4d75f8e5793"
+      },
+      "apiBaseUrl": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
     }
   }
 }

@@ -15,12 +15,13 @@ import {
 } from 'react-native';
 
 import { cargoTheme } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
 import { getFirebasePasswordResetErrorMessage } from '@/lib/auth-errors';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { auth } from '@/lib/firebase';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const screenScope = 'ForgotPasswordScreen';
 
@@ -184,9 +185,10 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   button: {
-    height: 52,
-    backgroundColor: cargoTheme.colors.primary,
-    borderRadius: 16,
+    minHeight: cargoTheme.cta.minHeight,
+    backgroundColor: cargoTheme.cta.backgroundColor,
+    borderRadius: cargoTheme.cta.borderRadius,
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -194,9 +196,11 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   buttonText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 15,
+    color: cargoTheme.cta.labelColor,
+    fontFamily: typography.bold,
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    letterSpacing: cargoTheme.cta.letterSpacing,
   },
   secondaryButton: {
     height: 48,

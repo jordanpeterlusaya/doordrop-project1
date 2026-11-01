@@ -1,0 +1,31 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    function underMaxSize() {
+      return request.resource.size < 8 * 1024 * 1024;
+    }
+
+    // Customer Ninunulie screenshots → visible to admin via download URL / console
+    match /ninunulie/{userId}/{orderKey}/{fileName} {
+      allow read: if true;
+      allow create, update: if isOwner(userId) && isImage() && underMaxSize();
+      allow delete: if isOwner(userId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

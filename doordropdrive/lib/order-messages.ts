@@ -147,7 +147,7 @@ export async function sendOrderMessage(input: SendOrderMessageInput) {
       driverId: input.driverId,
       senderId: input.senderId,
       senderRole: input.senderRole,
-      senderName: input.senderName.trim() || 'DoorDrive',
+      senderName: input.senderName.trim() || 'HAUL Pilots',
       recipientId,
       recipientRole,
       message: trimmedMessage,

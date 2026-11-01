@@ -49,6 +49,10 @@ async function sendDebugWebhook(event, payload) {
     return;
   }
 
+  if (/^(routes-estimate|places-)/.test(String(event || '')) && process.env.DOORDROP_DEBUG_HOT_PATHS !== '1') {
+    return;
+  }
+
   const requestBody = {
     event,
     timestamp: new Date().toISOString(),

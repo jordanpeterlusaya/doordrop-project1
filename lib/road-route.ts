@@ -8,7 +8,7 @@ import {
 } from '@/lib/route-utils';
 
 const screenScope = 'RoadRoute';
-const REQUEST_TIMEOUT_MS = 6000;
+const REQUEST_TIMEOUT_MS = 10000;
 
 async function fetchWithTimeout(url: string, init?: RequestInit) {
   const controller = new AbortController();
@@ -22,14 +22,68 @@ async function fetchWithTimeout(url: string, init?: RequestInit) {
 }
 
 async function fetchOsrmRoute(origin: RoutePoint, destination: RoutePoint): Promise<SelectedRoute | null> {
-  const url = `https://router.project-osrm.org/route/v1/driving/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}?overview=full&geometries=polyline&alternatives=false`;
+  const url = `https://router.project-osrm.org/route/v1/driving/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}?overview=full&geometries=polyline&alternatives=true`;
   const response = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
   if (!response.ok) {
     throw new Error(`OSRM failed with ${response.status}`);
   }
 
   const payload = (await response.json()) as { routes?: { geometry?: string; distance?: number; duration?: number }[] };
-  return selectBestOsrmRoute(payload.routes);
+  const selected = selectBestOsrmRoute(payload.routes);
+  return selected ? { ...selected, source: 'osrm' } : null;
+}
+
+function selectPreferredDirectionsRoute(
+  routes:
+    | {
+        overview_polyline?: { points?: string };
+        legs?: {
+          distance?: { value?: number };
+          duration?: { value?: number };
+          duration_in_traffic?: { value?: number };
+        }[];
+      }[]
+    | undefined
+): SelectedRoute | null {
+  const candidates = (routes ?? [])
+    .map((route) => {
+      const polyline = route?.overview_polyline?.points?.trim() || '';
+      const coordinates = polyline ? decodePolyline(polyline) : [];
+      if (coordinates.length < 3) {
+        return null;
+      }
+      const distanceMeters = route?.legs?.reduce((sum, leg) => sum + (leg.distance?.value ?? 0), 0) ?? 0;
+      // Prefer live traffic duration when Directions returns it (departure_time=now).
+      const durationSeconds =
+        route?.legs?.reduce(
+          (sum, leg) => sum + (leg.duration_in_traffic?.value ?? leg.duration?.value ?? 0),
+          0
+        ) ?? 0;
+      if (!(distanceMeters > 0) || !(durationSeconds > 0)) {
+        return null;
+      }
+      return {
+        coordinates,
+        geometry: polyline,
+        distanceMeters,
+        durationSeconds,
+      };
+    })
+    .filter((route): route is SelectedRoute => route !== null);
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  // Duration-optimal (Bolt-like), not pure min-distance alley cuts.
+  candidates.sort((left, right) => {
+    if (left.durationSeconds !== right.durationSeconds) {
+      return left.durationSeconds - right.durationSeconds;
+    }
+    return left.distanceMeters - right.distanceMeters;
+  });
+
+  return candidates[0];
 }
 
 async function fetchGoogleDirectionsRoute(origin: RoutePoint, destination: RoutePoint): Promise<SelectedRoute | null> {
@@ -42,6 +96,10 @@ async function fetchGoogleDirectionsRoute(origin: RoutePoint, destination: Route
   url.searchParams.set('origin', `${origin.latitude},${origin.longitude}`);
   url.searchParams.set('destination', `${destination.latitude},${destination.longitude}`);
   url.searchParams.set('mode', 'driving');
+  url.searchParams.set('region', 'tz');
+  url.searchParams.set('language', 'en');
+  url.searchParams.set('alternatives', 'true');
+  url.searchParams.set('departure_time', 'now');
   url.searchParams.set('key', apiKey);
 
   const response = await fetchWithTimeout(url.toString(), { headers: { Accept: 'application/json' } });
@@ -51,32 +109,33 @@ async function fetchGoogleDirectionsRoute(origin: RoutePoint, destination: Route
 
   const payload = (await response.json()) as {
     status?: string;
-    routes?: { overview_polyline?: { points?: string }; legs?: { distance?: { value?: number }; duration?: { value?: number } }[] }[];
+    routes?: {
+      overview_polyline?: { points?: string };
+      legs?: {
+        distance?: { value?: number };
+        duration?: { value?: number };
+        duration_in_traffic?: { value?: number };
+      }[];
+    }[];
   };
 
-  const route = payload.routes?.[0];
-  const polyline = route?.overview_polyline?.points?.trim() || '';
-  const coordinates = polyline ? decodePolyline(polyline) : [];
-  if (coordinates.length < 3) {
-    return null;
+  if (payload.status && payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
+    throw new Error(`Google Directions status ${payload.status}`);
   }
 
-  const distanceMeters = route?.legs?.reduce((sum, leg) => sum + (leg.distance?.value ?? 0), 0) ?? 0;
-  const durationSeconds = route?.legs?.reduce((sum, leg) => sum + (leg.duration?.value ?? 0), 0) ?? 0;
-
-  return {
-    coordinates,
-    geometry: polyline,
-    distanceMeters: distanceMeters || 0,
-    durationSeconds: durationSeconds || 0,
-  };
+  const selected = selectPreferredDirectionsRoute(payload.routes);
+  return selected ? { ...selected, source: 'directions' } : null;
 }
 
+/**
+ * Road-following geometry for any region in Tanzania.
+ * Prefer Google Directions (nationwide coverage) over public OSRM.
+ */
 export async function fetchRoadFollowingRoute(
   origin: RoutePoint,
   destination: RoutePoint
 ): Promise<SelectedRoute | null> {
-  const attempts = [() => fetchOsrmRoute(origin, destination), () => fetchGoogleDirectionsRoute(origin, destination)];
+  const attempts = [() => fetchGoogleDirectionsRoute(origin, destination), () => fetchOsrmRoute(origin, destination)];
 
   for (const attempt of attempts) {
     try {
@@ -84,8 +143,10 @@ export async function fetchRoadFollowingRoute(
       if (route && route.coordinates.length > 2) {
         return route;
       }
-    } catch {
-      logWarning(screenScope, 'road geometry fallback missed');
+    } catch (error) {
+      logWarning(screenScope, 'road geometry fallback missed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

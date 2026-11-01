@@ -1,13 +1,17 @@
 const { FieldValue } = require('firebase-admin/firestore');
-
+const { cellsNear } = require('./geohash');
 const DRIVER_AUTO_ASSIGN_ONLINE_WINDOW_MS = 1000 * 60 * 15;
 const DRIVER_SEARCH_TIMEOUT_MS = 1000 * 60 * 10;
 const DRIVER_SEARCH_TIMEOUT_REASON = 'No nearby driver came online in time.';
 const DRIVER_WAITING_UPDATE_THROTTLE_MS = 1000 * 15;
-const AUTO_ASSIGN_BATCH_SIZE = 12;
-const DRIVER_AUTO_ASSIGN_QUERY_LIMIT = 120;
+const AUTO_ASSIGN_BATCH_SIZE = 80;
+const DRIVER_AUTO_ASSIGN_QUERY_LIMIT = 32;
+const DRIVER_GEOHASH_PRECISION = 6;
 const PRIORITY_DRIVER_RADIUS_METERS = 4000;
 const PRIORITY_DRIVER_SCORE_BONUS = 80;
+const USER_NOTIFICATION_PREF_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const userNotificationPrefCache = new Map();
 
 const AUTO_MATCH_SERVICES = [
   {
@@ -16,8 +20,13 @@ const AUTO_MATCH_SERVICES = [
     preferredVehicleTypes: ['bodaboda'],
   },
   {
+    key: 'toyo_electric',
+    aliases: ['toyo electric', 'electric toyo', 'toyoelectric'],
+    preferredVehicleTypes: ['toyo_electric'],
+  },
+  {
     key: 'toyo',
-    aliases: ['bajaj', 'bajaji', 'toyo', 'toyo xl', 'xl', 'three wheeler', 'cargo bajaji', 'pickup', 'van', 'truck', 'lorry', 'heavy cargo'],
+    aliases: ['bajaj', 'bajaji', 'toyo', 'toyo xl', 'three wheeler', 'cargo bajaji', 'pickup', 'van'],
     preferredVehicleTypes: ['toyo'],
   },
   {
@@ -25,11 +34,19 @@ const AUTO_MATCH_SERVICES = [
     aliases: ['kirikuu'],
     preferredVehicleTypes: ['kirikuu'],
   },
+  {
+    key: 'canter',
+    aliases: ['canter', 'center', 'fuso', 'truck', 'lorry', 'heavy cargo'],
+    preferredVehicleTypes: ['canter'],
+  },
 ];
 
 function compact(payload) {
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
 }
+
+const { sendDriverIncomingOrderPush } = require('./driver-push');
+const { isDriverCommissionLocked } = require('./driver-commission');
 
 function safeText(value, fallback = '') {
   const text = String(value ?? '').trim();
@@ -74,6 +91,29 @@ function getCustomerName(order) {
   return safeText(order.customerName || order.senderName || order.userName || order.name, 'DoorDrop Customer');
 }
 
+async function resolveCustomerPhone(db, order) {
+  const direct = safeText(order.customerPhone || order.phoneNumber || order.senderPhone);
+  if (direct) {
+    return direct;
+  }
+
+  const userId = safeText(order.userId);
+  if (!userId || userId.startsWith('manual:')) {
+    return '';
+  }
+
+  try {
+    const snapshot = await db.collection('users').doc(userId).get();
+    if (!snapshot.exists) {
+      return '';
+    }
+    const data = snapshot.data() || {};
+    return safeText(data.phoneNumber || data.phone);
+  } catch {
+    return '';
+  }
+}
+
 function normalizeVehicleKey(vehicleKey) {
   const normalized = normalize(vehicleKey);
   const aliases = {
@@ -84,77 +124,98 @@ function normalizeVehicleKey(vehicleKey) {
     motorcycle: 'bodaboda',
     motorbike: 'bodaboda',
     bike: 'bodaboda',
+    toyo_electric: 'toyo_electric',
+    'toyo-electric': 'toyo_electric',
+    toyoelectric: 'toyo_electric',
+    electric_toyo: 'toyo_electric',
     kirikuu: 'kirikuu',
     toyo: 'toyo',
     bajaj: 'toyo',
     bajaji: 'toyo',
     pickup: 'toyo',
     van: 'toyo',
-    cargo: 'toyo',
-    truck: 'toyo',
     toyo_xl: 'toyo',
     'toyo-xl': 'toyo',
+    canter: 'canter',
+    center: 'canter',
+    fuso: 'canter',
+    truck: 'canter',
   };
 
-  return aliases[normalized] || normalized || '';
+  return aliases[normalized] || '';
 }
 
 function isCanonicalDriverVehicleType(vehicleKey) {
-  return ['bodaboda', 'toyo', 'kirikuu'].includes(normalize(vehicleKey));
+  return ['bodaboda', 'toyo_electric', 'toyo', 'kirikuu', 'canter'].includes(normalizeVehicleKey(vehicleKey) || normalize(vehicleKey));
 }
 
 function getVehicleLabelForKey(vehicleKey, fallback = 'Vehicle') {
+  const key = normalizeVehicleKey(vehicleKey) || normalize(vehicleKey);
   const labels = {
-    bodaboda: 'Bodaboda / Motorcycle',
+    bodaboda: 'TOYO',
+    toyo_electric: 'Toyo Electric',
     toyo: 'TOYO',
     kirikuu: 'Kirikuu',
+    canter: 'Canter',
   };
 
-  return labels[normalizeVehicleKey(vehicleKey)] || safeText(fallback, 'Vehicle');
+  return labels[key] || safeText(fallback, 'Vehicle');
+}
+
+function getOrderVehicleKey(order) {
+  return (
+    normalizeVehicleKey(order?.cargoVehicleKey) ||
+    normalizeVehicleKey(order?.vehicleType) ||
+    normalizeVehicleKey(order?.serviceType) ||
+    ''
+  );
 }
 
 function getServiceMatchConfig(order) {
-  const cargoVehicleKey = normalize(order.cargoVehicleKey);
-  const keyMatch = {
-    motorcycle: 'bodaboda',
-    pikipiki: 'bodaboda',
-    boda: 'bodaboda',
-    bodaboda: 'bodaboda',
-    motorbike: 'bodaboda',
-    bike: 'bodaboda',
-    kirikuu: 'kirikuu',
-    bajaj: 'toyo',
-    bajaji: 'toyo',
-    toyo: 'toyo',
-    pickup: 'toyo',
-    van: 'toyo',
-    cargo: 'toyo',
-    truck: 'toyo',
-    toyo_xl: 'toyo',
-  }[cargoVehicleKey];
-
-  if (keyMatch) {
-    return AUTO_MATCH_SERVICES.find((service) => service.key === keyMatch) || AUTO_MATCH_SERVICES[0];
+  const orderKey = getOrderVehicleKey(order);
+  if (orderKey) {
+    const byKey = AUTO_MATCH_SERVICES.find((service) => service.key === orderKey);
+    if (byKey) {
+      return byKey;
+    }
   }
 
-  const text = normalize(`${getServiceLabel(order)} ${order.flow || ''} ${order.cargoVehicleKey || ''} ${order.cargoVehicleLabel || ''}`);
-  if (text.includes('toyo xl')) {
-    return AUTO_MATCH_SERVICES.find((service) => service.key === 'toyo') || AUTO_MATCH_SERVICES[0];
+  const text = normalize(
+    `${getServiceLabel(order)} ${order.flow || ''} ${order.cargoVehicleKey || ''} ${order.cargoVehicleLabel || ''}`
+  );
+  // Prefer electric before plain "toyo" so "Toyo Electric" does not collapse to fuel TOYO.
+  if (text.includes('toyo electric') || text.includes('electric toyo') || text.includes('toyoelectric')) {
+    return AUTO_MATCH_SERVICES.find((service) => service.key === 'toyo_electric') || null;
+  }
+  if (text.includes('canter') || text.includes('center') || text.includes('fuso')) {
+    return AUTO_MATCH_SERVICES.find((service) => service.key === 'canter') || null;
+  }
+  if (text.includes('kirikuu')) {
+    return AUTO_MATCH_SERVICES.find((service) => service.key === 'kirikuu') || null;
+  }
+  if (text.includes('toyo') || text.includes('bajaj')) {
+    return AUTO_MATCH_SERVICES.find((service) => service.key === 'toyo') || null;
   }
 
-  return AUTO_MATCH_SERVICES.find((service) => service.aliases.some((alias) => text.includes(alias))) || AUTO_MATCH_SERVICES[0];
+  return AUTO_MATCH_SERVICES.find((service) => service.aliases.some((alias) => text.includes(alias))) || null;
 }
 
 function driverSupportsOrder(driver, order) {
-  const service = getServiceMatchConfig(order);
-  const vehicleType = normalizeVehicleKey(driver.vehicleType);
-  const vehicleLabel = normalize(driver.vehicleLabel);
+  const orderKey = getOrderVehicleKey(order);
+  const driverKey =
+    normalizeVehicleKey(driver.vehicleType) || normalizeVehicleKey(driver.vehicleLabel);
 
-  if (isCanonicalDriverVehicleType(vehicleType)) {
-    return service.preferredVehicleTypes.includes(vehicleType);
+  // Strict class match: customer-selected vehicle must equal driver registration key.
+  if (orderKey && driverKey) {
+    return orderKey === driverKey;
   }
 
-  return service.aliases.some((alias) => vehicleLabel.includes(alias));
+  const service = getServiceMatchConfig(order);
+  if (!service || !driverKey) {
+    return false;
+  }
+
+  return service.preferredVehicleTypes.includes(driverKey);
 }
 
 function getDriverVerificationStatus(driver) {
@@ -187,6 +248,7 @@ function isDriverAutoAssignable(driver) {
     isDriverVerifiedForDispatch(driver) &&
     driver.isAvailable === true &&
     !safeText(driver.currentOrderId) &&
+    !isDriverCommissionLocked(driver) &&
     freshOnline
   );
 }
@@ -283,6 +345,12 @@ function getAutoMatchCandidates(order, drivers) {
     }))
     .filter((candidate) => candidate.match.supportsOrder)
     .sort((left, right) => {
+      const leftRequested = Boolean(order.requestedDriverId) && left.driver.id === order.requestedDriverId;
+      const rightRequested = Boolean(order.requestedDriverId) && right.driver.id === order.requestedDriverId;
+      if (leftRequested !== rightRequested) {
+        return leftRequested ? -1 : 1;
+      }
+
       if (left.match.isPriorityMatch !== right.match.isPriorityMatch) {
         return left.match.isPriorityMatch ? -1 : 1;
       }
@@ -323,7 +391,6 @@ function buildDriverAssignmentPayload(driver) {
     driverSpeedKph: driver.currentSpeedKph,
     driverAccuracyMeters: driver.currentAccuracyMeters,
     driverLocationUpdatedAt: driver.lastLocationUpdatedAt || FieldValue.serverTimestamp(),
-    acceptedByDriverAt: FieldValue.serverTimestamp(),
     assignedAt: FieldValue.serverTimestamp(),
   });
 }
@@ -334,9 +401,16 @@ async function canSendOrderNotification(db, userId) {
     return false;
   }
 
+  const cached = userNotificationPrefCache.get(userKey);
+  if (cached && Date.now() - cached.storedAt < USER_NOTIFICATION_PREF_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
   const userSnapshot = await db.collection('users').doc(userKey).get();
   const preferences = userSnapshot.data()?.notificationPreferences;
-  return preferences?.orderUpdates !== false;
+  const value = preferences?.orderUpdates !== false;
+  userNotificationPrefCache.set(userKey, { value, storedAt: Date.now() });
+  return value;
 }
 
 async function createOrderStatusNotification(db, order, status, options = {}) {
@@ -416,6 +490,9 @@ async function recordDriverSearchActivity(db, order, eventName, metadata = {}) {
 }
 
 function isImmediatePendingWithoutDriver(order) {
+  if (isOutsideParcelOrder(order)) {
+    return false;
+  }
   return order.status === 'pending_assignment' && !safeText(order.driverId) && order.timingMode !== 'later';
 }
 
@@ -430,7 +507,23 @@ function getScheduledMillis(order) {
   return Number.isFinite(millis) ? millis : 0;
 }
 
+function isOutsideParcelOrder(order) {
+  if (!order) return false;
+  if (String(order.parcelScope || '').trim().toLowerCase() === 'outside') return true;
+  return Boolean(
+    String(order.outsideDestinationCity || '').trim() ||
+      String(order.outsideDestinationLabel || '').trim() ||
+      String(order.outsideShippingMode || '').trim()
+  );
+}
+
 function isAutoAssignableOrder(order) {
+  if (isOutsideParcelOrder(order)) return false;
+  if (safeText(order.fareType) === 'negotiated') return false;
+  if (safeText(order.flow).toLowerCase() === 'ninunulie') return false;
+  if (safeText(order.serviceLabel).toLowerCase() === 'ninunulie') return false;
+  if (safeText(order.assignmentMode) === 'ops_desk') return false;
+  if (safeText(order.driverSearchStatus) === 'ops_desk') return false;
   if (order.status !== 'pending_assignment') return false;
   if (safeText(order.driverId)) return false;
 
@@ -445,6 +538,9 @@ function isAutoAssignableOrder(order) {
 }
 
 function getDriverSearchExpiryMillis(order) {
+  if (isOutsideParcelOrder(order) || safeText(order.driverSearchStatus) === 'ops_desk') {
+    return 0;
+  }
   const explicitExpiry = toMillis(order.driverSearchExpiresAt);
   if (explicitExpiry) {
     return explicitExpiry;
@@ -482,6 +578,9 @@ async function markOrderWaitingForDriver(db, order, reason = 'No online nearby d
 }
 
 async function autoCancelOrderIfDriverSearchExpired(db, order) {
+  if (isOutsideParcelOrder(order) || safeText(order.driverSearchStatus) === 'ops_desk') {
+    return false;
+  }
   if (!isImmediatePendingWithoutDriver(order) || !isDriverSearchExpired(order)) {
     return false;
   }
@@ -574,10 +673,17 @@ async function assignDriverToOrder(db, orderId, driverId, assignment = {}) {
   });
 
   if (assignedOrder && assignedDriver) {
+    const customerPhone = await resolveCustomerPhone(db, assignedOrder);
+    if (customerPhone && !safeText(assignedOrder.customerPhone)) {
+      await db.collection('orders').doc(orderId).set({ customerPhone }, { merge: true });
+      assignedOrder = { ...assignedOrder, customerPhone };
+    }
+
     await Promise.all([
       createOrderStatusNotification(db, assignedOrder, 'driver_assigned', {
         driverName: assignedDriver.fullName,
       }).catch(() => undefined),
+      sendDriverIncomingOrderPush(assignedDriver, assignedOrder).catch(() => undefined),
       recordDriverSearchActivity(db, assignedOrder, 'order_auto_assigned', {
         driverId: assignedDriver.id,
         driverName: assignedDriver.fullName || '',
@@ -587,36 +693,50 @@ async function assignDriverToOrder(db, orderId, driverId, assignment = {}) {
   }
 }
 
-async function getAllDrivers(db) {
-  const snapshot = await db.collection('drivers').get();
-  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-}
+async function getAssignableDrivers(db, order = null) {
+  const pickup = order ? getOrderPickupPoint(order) : null;
+  const cells = pickup ? cellsNear(pickup.latitude, pickup.longitude, DRIVER_GEOHASH_PRECISION).slice(0, 9) : [];
+  const driversRef = db.collection('drivers');
 
-async function getAssignableDrivers(db) {
-  const snapshot = await db
-    .collection('drivers')
-    .where('isAvailable', '==', true)
-    .limit(DRIVER_AUTO_ASSIGN_QUERY_LIMIT)
-    .get();
+  const snapshot = cells.length
+    ? await driversRef
+      .where('isAvailable', '==', true)
+      .where('geohash', 'in', cells)
+      .limit(DRIVER_AUTO_ASSIGN_QUERY_LIMIT)
+      .get()
+    : await driversRef
+      .where('isAvailable', '==', true)
+      .limit(DRIVER_AUTO_ASSIGN_QUERY_LIMIT)
+      .get();
 
-  const drivers = snapshot.docs
+  return snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
     .filter(isDriverAutoAssignable);
-  return drivers.length ? drivers : getAllDrivers(db);
 }
 
 async function getPendingOrders(db, limit = AUTO_ASSIGN_BATCH_SIZE) {
   const snapshot = await db
     .collection('orders')
     .where('status', '==', 'pending_assignment')
-    .limit(limit * 4)
+    .orderBy('createdAt', 'asc')
+    .limit(limit)
     .get();
 
   return snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
-    .filter(isAutoAssignableOrder)
-    .sort((left, right) => toMillis(left.createdAt) - toMillis(right.createdAt))
-    .slice(0, limit);
+    .filter(isAutoAssignableOrder);
+}
+
+function buildDriverLookupKey(order) {
+  const pickup = getOrderPickupPoint(order);
+  if (!pickup) {
+    return '__global__';
+  }
+
+  return cellsNear(pickup.latitude, pickup.longitude, DRIVER_GEOHASH_PRECISION)
+    .slice(0, 9)
+    .sort()
+    .join(',');
 }
 
 async function autoAssignOrder(db, order, drivers = null) {
@@ -628,7 +748,7 @@ async function autoAssignOrder(db, order, drivers = null) {
     return { status: 'cancelled' };
   }
 
-  const visibleDrivers = drivers || await getAssignableDrivers(db);
+  const visibleDrivers = drivers || await getAssignableDrivers(db, order);
   const bestMatch = await selectBestAssignableAutoMatch(db, order, visibleDrivers);
 
   if (!bestMatch) {
@@ -660,15 +780,22 @@ async function autoAssignOrderById(db, orderId) {
 }
 
 async function runAutoAssignmentQueue(db, limit = AUTO_ASSIGN_BATCH_SIZE) {
-  const [orders, drivers] = await Promise.all([
-    getPendingOrders(db, limit),
-    getAssignableDrivers(db),
-  ]);
+  const orders = await getPendingOrders(db, limit);
   const results = [];
+  const driverCache = new Map();
+
+  async function driversForOrder(order) {
+    const lookupKey = buildDriverLookupKey(order);
+    if (!driverCache.has(lookupKey)) {
+      driverCache.set(lookupKey, await getAssignableDrivers(db, order));
+    }
+    return driverCache.get(lookupKey);
+  }
 
   for (const order of orders) {
     try {
-      results.push(await autoAssignOrder(db, order, drivers));
+      const nearbyDrivers = await driversForOrder(order);
+      results.push(await autoAssignOrder(db, order, nearbyDrivers));
     } catch (error) {
       results.push({
         status: 'error',
@@ -693,21 +820,324 @@ async function maybeRunQueueForDriverChange(db, before, after) {
   const isAssignable = after ? isDriverAutoAssignable(after) : false;
   const cameOnline = isAssignable && !wasAssignable;
   const becameFree = isAssignable && before && safeText(before.currentOrderId) && !safeText(after.currentOrderId);
-  const locationRefreshed = isAssignable && before && (
-    toMillis(after.lastLocationUpdatedAt) > toMillis(before.lastLocationUpdatedAt) ||
-    toMillis(after.lastActiveAt) > toMillis(before.lastActiveAt) ||
-    toMillis(after.appOnlineUntil) > toMillis(before.appOnlineUntil)
-  );
 
-  if (!cameOnline && !becameFree && !locationRefreshed) {
+  if (!cameOnline && !becameFree) {
     return { processed: 0, reason: 'driver_not_newly_assignable' };
   }
 
-  return runAutoAssignmentQueue(db, 6);
+  return runAutoAssignmentQueue(db, 20);
+}
+
+/**
+ * Instant nearest-driver assign for HAUL cargo verify (WebSocket flow).
+ * Works for negotiated cargo offers; Toyo Electric + TOYO share the TOYO pool.
+ */
+async function instantAssignCargoOffer(db, orderId, options = {}) {
+  const orderSnapshot = await db.collection('orders').doc(orderId).get();
+  if (!orderSnapshot.exists) {
+    return { status: 'error', reason: 'order_not_found' };
+  }
+
+  const order = { id: orderSnapshot.id, ...orderSnapshot.data() };
+  if (order.status === 'cancelled') {
+    return { status: 'cancelled', orderId };
+  }
+
+  if (order.status === 'driver_assigned' && safeText(order.driverId)) {
+    const driverSnap = await db.collection('drivers').doc(order.driverId).get();
+    const driver = driverSnap.exists ? { id: driverSnap.id, ...driverSnap.data() } : null;
+    const nearby = await listNearbyCargoDrivers(db, order);
+    return {
+      status: 'already_assigned',
+      orderId,
+      driver: driver ? summarizeCargoDriver(driver, order) : null,
+      nearbyCount: Math.max(nearby.length, driver ? 1 : 0),
+      nearbyDrivers: nearby.slice(0, 8),
+    };
+  }
+
+  if (order.status !== 'pending_assignment' || safeText(order.driverId)) {
+    return { status: 'skipped', reason: 'not_pending', orderId };
+  }
+
+  const connectedDriverIds = options.connectedDriverIds instanceof Set ? options.connectedDriverIds : null;
+  let drivers = await getAssignableDrivers(db, order);
+  if (connectedDriverIds) {
+    drivers = drivers.filter((driver) => connectedDriverIds.has(driver.id));
+  }
+  const nearby = getAutoMatchCandidates(order, drivers).map((candidate) =>
+    summarizeCargoDriver(candidate.driver, order, candidate.match.distanceMeters)
+  );
+  const bestMatch = await selectBestAssignableAutoMatch(db, order, drivers);
+
+  if (!bestMatch) {
+    const declined = Boolean(options.reassigned);
+    await db.collection('orders').doc(orderId).set(
+      compact({
+        driverSearchStatus: 'waiting_for_driver',
+        driverSearchMessage: declined
+          ? 'Dereva amekataa. Hakuna dereva mwingine mtandaoni.'
+          : 'Hakuna dereva mtandaoni kwa gari hili sasa.',
+        noNearbyDriverAt: FieldValue.serverTimestamp(),
+        noNearbyDriverReason: declined ? 'Driver declined and nobody else is online.' : 'No online driver for this vehicle class.',
+        updatedAt: FieldValue.serverTimestamp(),
+      }),
+      { merge: true }
+    );
+    return { status: declined ? 'declined' : 'no_driver', orderId, nearbyCount: 0, nearbyDrivers: [], reassigned: declined };
+  }
+
+  await assignDriverToOrder(db, order.id, bestMatch.driver.id, {
+    mode: safeText(options.mode, 'cargo_ws'),
+    score: bestMatch.match.score,
+    reason: bestMatch.match.reason,
+  });
+
+  await db.collection('orders').doc(orderId).set(
+    compact({
+      assignmentMode: safeText(options.mode, 'cargo_ws'),
+      driverSearchStatus: 'waiting_verify',
+      driverSearchMessage: 'Dereva amepangiwa. Anasubiri kuthibitisha.',
+      updatedAt: FieldValue.serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  return {
+    status: 'assigned',
+    orderId,
+    driver: summarizeCargoDriver(bestMatch.driver, order, bestMatch.match.distanceMeters),
+    nearbyCount: Math.max(nearby.length, 1),
+    nearbyDrivers: nearby.slice(0, 8),
+  };
+}
+
+async function listNearbyCargoDrivers(db, order) {
+  const drivers = await getAssignableDrivers(db, order);
+  return getAutoMatchCandidates(order, drivers)
+    .map((candidate) => summarizeCargoDriver(candidate.driver, order, candidate.match.distanceMeters))
+    .slice(0, 8);
+}
+
+function summarizeCargoDriver(driver, order, distanceMeters) {
+  const etaMinutes =
+    Number.isFinite(distanceMeters) && distanceMeters >= 0
+      ? Math.max(1, Math.round(distanceMeters / 250))
+      : null;
+  return compact({
+    id: driver.id,
+    name: safeText(driver.fullName, 'Dereva'),
+    phone: safeText(driver.phoneNumber),
+    vehicleType: normalizeVehicleKey(driver.vehicleType) || driver.vehicleType,
+    vehicleLabel: safeText(driver.vehicleLabel, getVehicleLabelForKey(driver.vehicleType)),
+    plateNumber: safeText(driver.plateNumber),
+    photoURL: safeText(driver.driverPhotoURL),
+    latitude: Number(driver.currentLatitude),
+    longitude: Number(driver.currentLongitude),
+    heading: Number(driver.currentHeading),
+    distanceMeters: Number.isFinite(distanceMeters) ? Math.round(distanceMeters) : undefined,
+    etaMinutes,
+    orderId: order?.id,
+  });
+}
+
+async function releaseCargoOfferDriver(db, orderId, reason = 'Customer cancelled') {
+  const orderSnapshot = await db.collection('orders').doc(orderId).get();
+  if (!orderSnapshot.exists) {
+    return { status: 'error', reason: 'order_not_found' };
+  }
+
+  const order = { id: orderSnapshot.id, ...orderSnapshot.data() };
+  if (order.status === 'cancelled') {
+    return { status: 'cancelled', orderId, driverId: safeText(order.driverId) || null };
+  }
+
+  const driverId = safeText(order.driverId);
+  const batch = db.batch();
+  batch.set(
+    db.collection('orders').doc(orderId),
+    compact({
+      status: 'cancelled',
+      cancellationReason: safeText(reason, 'Customer cancelled'),
+      cancelledBy: 'customer',
+      cancelledAt: FieldValue.serverTimestamp(),
+      driverSearchStatus: 'cancelled',
+      driverSearchMessage: 'Mteja amesitisha.',
+      driverSearchResolvedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  if (driverId) {
+    batch.set(
+      db.collection('drivers').doc(driverId),
+      {
+        isAvailable: true,
+        currentOrderId: '',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  await batch.commit();
+  return { status: 'cancelled', orderId, driverId: driverId || null };
+}
+
+async function acceptCargoOfferViaWs(db, orderId, driverId) {
+  const orderRef = db.collection('orders').doc(orderId);
+  const driverRef = db.collection('drivers').doc(driverId);
+
+  await db.runTransaction(async (transaction) => {
+    const [orderSnap, driverSnap] = await Promise.all([transaction.get(orderRef), transaction.get(driverRef)]);
+    if (!orderSnap.exists) {
+      throw new Error('Order was not found.');
+    }
+    if (!driverSnap.exists) {
+      throw new Error('Driver was not found.');
+    }
+
+    const order = { id: orderSnap.id, ...orderSnap.data() };
+    const driver = { id: driverSnap.id, ...driverSnap.data() };
+
+    if (order.driverId !== driverId) {
+      throw new Error('This order is assigned to a different driver.');
+    }
+    if (order.status !== 'driver_assigned') {
+      throw new Error('Only newly assigned orders can be accepted.');
+    }
+    if (!isDriverVerifiedForDispatch(driver)) {
+      throw new Error('This driver account is waiting for admin verification.');
+    }
+
+    const agreedFare =
+      typeof order.customerOffer === 'number' && order.customerOffer > 0
+        ? order.customerOffer
+        : undefined;
+    const agreedFareLabel =
+      typeof agreedFare === 'number' ? `TZS ${Math.round(agreedFare).toLocaleString('en-US')}` : undefined;
+
+    transaction.set(
+      orderRef,
+      compact({
+        acceptedByDriverAt: FieldValue.serverTimestamp(),
+        status: 'driver_assigned',
+        negotiationStatus: 'confirmed',
+        customerOffer: agreedFare,
+        driverOffer: agreedFare,
+        lastOfferBy: 'driver',
+        fareConfirmedAt: FieldValue.serverTimestamp(),
+        fareLabel: agreedFareLabel || order.fareLabel,
+        totalLabel: agreedFareLabel || order.totalLabel,
+        driverName: driver.fullName || order.driverName,
+        driverPhone: driver.phoneNumber || order.driverPhone,
+        driverVehicleLabel: driver.vehicleLabel || order.driverVehicleLabel,
+        driverPlateNumber: driver.plateNumber || order.driverPlateNumber,
+        driverSearchStatus: 'accepted',
+        driverSearchMessage: 'Dereva amethibitisha.',
+        updatedAt: FieldValue.serverTimestamp(),
+      }),
+      { merge: true }
+    );
+
+    transaction.set(
+      driverRef,
+      {
+        isAvailable: false,
+        currentOrderId: orderId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+
+  return { status: 'accepted', orderId, driverId };
+}
+
+async function declineCargoOfferViaWs(db, orderId, driverId, reason = 'Driver declined', options = {}) {
+  const orderSnapshot = await db.collection('orders').doc(orderId).get();
+  if (!orderSnapshot.exists) {
+    return { status: 'error', reason: 'order_not_found' };
+  }
+
+  const order = { id: orderSnapshot.id, ...orderSnapshot.data() };
+  if (order.driverId !== driverId) {
+    return { status: 'error', reason: 'wrong_driver' };
+  }
+
+  await db.runTransaction(async (transaction) => {
+    const orderRef = db.collection('orders').doc(orderId);
+    const driverRef = db.collection('drivers').doc(driverId);
+    const [orderSnap, driverSnap] = await Promise.all([transaction.get(orderRef), transaction.get(driverRef)]);
+    if (!orderSnap.exists) {
+      throw new Error('Order was not found.');
+    }
+
+    const current = { id: orderSnap.id, ...orderSnap.data() };
+    if (current.driverId !== driverId || current.status !== 'driver_assigned') {
+      throw new Error('Order is not waiting for this driver.');
+    }
+
+    transaction.set(
+      orderRef,
+      compact({
+        status: 'pending_assignment',
+        driverSearchStatus: 'waiting_for_driver',
+        driverSearchMessage: 'Dereva amekataa.',
+        driverSearchStartedAt: FieldValue.serverTimestamp(),
+        declinedDriverIds: FieldValue.arrayUnion(driverId),
+        lastDeclinedByDriverId: driverId,
+        lastDeclinedReason: safeText(reason, 'Driver declined'),
+        lastDeclinedAt: FieldValue.serverTimestamp(),
+        driverId: FieldValue.delete(),
+        driverName: FieldValue.delete(),
+        driverPhone: FieldValue.delete(),
+        driverVehicleType: FieldValue.delete(),
+        driverVehicleLabel: FieldValue.delete(),
+        driverPlateNumber: FieldValue.delete(),
+        driverLatitude: FieldValue.delete(),
+        driverLongitude: FieldValue.delete(),
+        assignedAt: FieldValue.delete(),
+        assignmentMode: 'cargo_ws',
+        updatedAt: FieldValue.serverTimestamp(),
+      }),
+      { merge: true }
+    );
+
+    if (driverSnap.exists) {
+      transaction.set(
+        driverRef,
+        {
+          isAvailable: true,
+          currentOrderId: '',
+          rejectionCount: FieldValue.increment(1),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  const next = await instantAssignCargoOffer(db, orderId, {
+    mode: 'cargo_ws',
+    connectedDriverIds: options.connectedDriverIds,
+    reassigned: true,
+  });
+  if (next.status === 'assigned' || next.status === 'already_assigned') {
+    return { ...next, reassigned: true };
+  }
+  return next;
 }
 
 module.exports = {
   autoAssignOrderById,
   maybeRunQueueForDriverChange,
   runAutoAssignmentQueue,
+  instantAssignCargoOffer,
+  listNearbyCargoDrivers,
+  releaseCargoOfferDriver,
+  acceptCargoOfferViaWs,
+  declineCargoOfferViaWs,
+  summarizeCargoDriver,
 };

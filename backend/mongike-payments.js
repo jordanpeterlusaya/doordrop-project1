@@ -3,12 +3,26 @@ const { getAuth } = require('firebase-admin/auth');
 const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 
 const { config } = require('./config');
+const {
+  buildAccessPlanState,
+  canInitiateDriverAccessPayment,
+  getAccessBillingPeriodKey,
+  getAccessPeriodStartMillis,
+  getCurrentAccessChargeTzs,
+  getDriverAccessPlan,
+  isDriverSubscriptionActive,
+  isDriverSubscriptionPaid,
+  isSameAccessBillingPeriod,
+  resolveAccessPaymentDuePatch,
+  resolveAccessPaidUntilMillis,
+} = require('./driver-access');
 
 const DRIVER_PAYMENTS_COLLECTION = 'driverPayments';
 const DRIVER_SUBSCRIPTION_PAYMENTS_COLLECTION = 'subscriptionPayments';
 const DEFAULT_MONGIKE_API_BASE_URL = 'https://mongike.com/api/v1';
 const TANZANIA_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
-const PAYMENT_CREATE_LOCK_MS = 2 * 60 * 1000;
+const PAYMENT_CREATE_LOCK_MS = 75 * 1000;
+const STALE_USSD_MS = 30 * 1000;
 
 function normalizePhoneNumber(value) {
   const digits = String(value || '').replace(/[^\d]/g, '');
@@ -31,50 +45,45 @@ function normalizePhoneNumber(value) {
   return digits;
 }
 
-const activePaymentNetwork = String(process.env.DRIVER_PAYMENT_ACTIVE_NETWORK || 'mpesa').trim().toLowerCase();
+function isValidMongikePhone(phone) {
+  return /^255[67]\d{8}$/.test(String(phone || ''));
+}
+
+const enabledPaymentNetworks = String(process.env.DRIVER_PAYMENT_ENABLED_NETWORKS || 'mpesa,mixx,airtel')
+  .split(',')
+  .map((item) => item.trim().toLowerCase())
+  .filter(Boolean);
 const driverPaymentRecipientPhone = String(process.env.DRIVER_PAYMENT_RECIPIENT_PHONE || '0750355402').trim();
 const normalizedDriverPaymentRecipientPhone = normalizePhoneNumber(driverPaymentRecipientPhone);
+
+function isPaymentNetworkEnabled(key) {
+  return enabledPaymentNetworks.includes(key);
+}
 
 const mongikeNetworks = [
   {
     key: 'mpesa',
     label: 'M-Pesa',
     provider: 'Vodacom',
-    color: '#16A34A',
-    logoUrl: 'https://images.seeklogo.com/logo-png/62/2/m-pesa-logo-png_seeklogo-622552.png',
-    enabled: activePaymentNetwork === 'mpesa',
-    comingSoon: activePaymentNetwork !== 'mpesa',
-    recipientPhone: activePaymentNetwork === 'mpesa' ? driverPaymentRecipientPhone : '',
+    color: '#00A651',
+    enabled: isPaymentNetworkEnabled('mpesa'),
+    comingSoon: !isPaymentNetworkEnabled('mpesa'),
   },
   {
     key: 'mixx',
     label: 'Mixx by Yas',
-    provider: 'Yas / Tigo Pesa',
-    color: '#155EEF',
-    logoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f2/Yas_Tanzania.svg/512px-Yas_Tanzania.svg.png',
-    enabled: activePaymentNetwork === 'mixx',
-    comingSoon: activePaymentNetwork !== 'mixx',
-    recipientPhone: activePaymentNetwork === 'mixx' ? driverPaymentRecipientPhone : '',
+    provider: 'Tigo / Yas',
+    color: '#E6007E',
+    enabled: isPaymentNetworkEnabled('mixx'),
+    comingSoon: !isPaymentNetworkEnabled('mixx'),
   },
   {
     key: 'airtel',
     label: 'Airtel Money',
     provider: 'Airtel',
-    color: '#DC2626',
-    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTweT0_EszZrApI-MHVpPBZueAISnt5GXJNnw&s',
-    enabled: activePaymentNetwork === 'airtel',
-    comingSoon: activePaymentNetwork !== 'airtel',
-    recipientPhone: activePaymentNetwork === 'airtel' ? driverPaymentRecipientPhone : '',
-  },
-  {
-    key: 'halopesa',
-    label: 'HaloPesa',
-    provider: 'Halotel',
-    color: '#7C3AED',
-    logoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSbuLQMvrrg2lEeCHcKj_5qd7fTXGC3akQx0Q&s',
-    enabled: activePaymentNetwork === 'halopesa',
-    comingSoon: activePaymentNetwork !== 'halopesa',
-    recipientPhone: activePaymentNetwork === 'halopesa' ? driverPaymentRecipientPhone : '',
+    color: '#ED1C24',
+    enabled: isPaymentNetworkEnabled('airtel'),
+    comingSoon: !isPaymentNetworkEnabled('airtel'),
   },
 ];
 
@@ -83,9 +92,11 @@ function parseNumber(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-const driverAccessFeeTzs = parseNumber(process.env.DRIVER_DAILY_ACCESS_FEE_TZS, 3000);
+const parsedTestFeeTzs = parseNumber(process.env.DRIVER_ACCESS_TEST_FEE_TZS, 0);
+const driverAccessFeeTzs = parsedTestFeeTzs > 0
+  ? parsedTestFeeTzs
+  : parseNumber(process.env.DRIVER_BODABODA_ACCESS_FEE_TZS || process.env.DRIVER_DAILY_ACCESS_FEE_TZS, 3500);
 const driverAccessDurationHours = parseNumber(process.env.DRIVER_ACCESS_DURATION_HOURS, 24);
-const driverAccessDurationMs = Math.max(1, driverAccessDurationHours) * 60 * 60 * 1000;
 
 function ensureFirebaseAdmin() {
   if (!getApps().length) {
@@ -164,6 +175,69 @@ function getMongikeApiBaseUrl() {
   return String(process.env.MONGIKE_API_BASE_URL || DEFAULT_MONGIKE_API_BASE_URL).trim().replace(/\/+$/, '');
 }
 
+function mongikeHeaders(extra = {}) {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'DoorDrive/1.0',
+    'x-api-key': getMongikeApiKey(),
+    ...extra,
+  };
+}
+
+async function callMongike(pathname, { method = 'GET', body } = {}) {
+  const apiKey = getMongikeApiKey();
+  if (!apiKey) {
+    throw serviceUnavailable('Mobile money is not configured on the server.');
+  }
+
+  const response = await fetch(`${getMongikeApiBaseUrl()}${pathname}`, {
+    method,
+    headers: mongikeHeaders(),
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20000),
+  });
+
+  const responseText = await response.text();
+  let parsed = null;
+  try {
+    parsed = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const message = parsed?.message || parsed?.error || responseText || `Payment provider failed with ${response.status}.`;
+    const error = new Error(message);
+    error.statusCode = response.status >= 500 ? 502 : 400;
+    error.mongikeResponse = parsed || responseText;
+    throw error;
+  }
+
+  return parsed || {};
+}
+
+const WALLET_HISTORY_CACHE_TTL_MS = 20 * 1000;
+let walletHistoryCache = {
+  at: 0,
+  transactions: [],
+};
+
+async function fetchMongikeWalletHistory() {
+  const now = Date.now();
+  if (now - walletHistoryCache.at < WALLET_HISTORY_CACHE_TTL_MS && walletHistoryCache.transactions.length) {
+    return walletHistoryCache.transactions;
+  }
+
+  const payload = await callMongike('/wallet/history');
+  const transactions = payload?.transactions || payload?.data || [];
+  walletHistoryCache = {
+    at: now,
+    transactions: Array.isArray(transactions) ? transactions : [],
+  };
+  return walletHistoryCache.transactions;
+}
+
 function buildWebhookUrl(req) {
   const explicitWebhookUrl = String(process.env.MONGIKE_WEBHOOK_URL || '').trim();
   if (explicitWebhookUrl) {
@@ -203,6 +277,10 @@ function getDriverPaymentMirrorRef(db, driverId, paymentId) {
     .doc(paymentId);
 }
 
+function getAdminPaymentReviewRef(db, paymentId) {
+  return db.collection('commissionPaymentReviews').doc(paymentId);
+}
+
 function normalizePaymentStatus(status) {
   const normalized = String(status || '').trim().toUpperCase();
   if (['COMPLETED', 'COMPLETE', 'SUCCESS', 'SUCCESSFUL', 'PAID'].includes(normalized)) {
@@ -217,19 +295,51 @@ function normalizePaymentStatus(status) {
   return normalized ? normalized.toLowerCase() : 'pending';
 }
 
+function extractMongikePaymentRecord(payload) {
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload || {};
+  const paymentStatus = data.status || data.payment_status || payload?.payment_status || 'PENDING';
+  return {
+    id: data.id || '',
+    orderId: data.order_id || data.reference || payload?.order_id || '',
+    gatewayRef: data.gateway_ref || data.merchantReference || data.reference || payload?.reference || '',
+    amount: Number(data.amount || payload?.amount || 0),
+    status: normalizePaymentStatus(paymentStatus),
+    providerStatus: paymentStatus,
+    expiresAt: data.expires_at || null,
+    message: payload?.message || '',
+  };
+}
+
 function isPendingPayment(payment) {
   const status = normalizePaymentStatus(payment?.status || payment?.localStatus);
   const expiresAt = toMillis(payment?.expiresAt || payment?.mongikeExpiresAt || payment?.localLockExpiresAt);
   return ['creating', 'pending'].includes(status) && (!expiresAt || expiresAt > Date.now());
 }
 
-function isDriverSubscriptionActive(_driver, _now = Date.now()) {
-  return true;
+function ussdAttemptAgeMs(payment, driver) {
+  const created = toMillis(
+    payment?.createdAt ||
+    payment?.updatedAt ||
+    driver?.lastSubscriptionPaymentSubmittedAt ||
+    driver?.lastSubscriptionPaymentExpiresAt
+  );
+  return created ? Date.now() - created : Number.POSITIVE_INFINITY;
+}
+
+function isFreshUssdAttempt(payment, driver) {
+  return ussdAttemptAgeMs(payment, driver) < STALE_USSD_MS;
+}
+
+function isDriverUssdLocked(driver) {
+  const status = normalizePaymentStatus(driver?.lastSubscriptionPaymentStatus);
+  const expiresAt = toMillis(driver?.lastSubscriptionPaymentExpiresAt);
+  return ['creating', 'pending'].includes(status) && (!expiresAt || expiresAt > Date.now());
 }
 
 function buildSubscriptionState(driver, latestPayment = null, now = Date.now()) {
+  const planState = buildAccessPlanState(driver, now);
   const paidUntilMillis = toMillis(driver?.subscriptionPaidUntil);
-  const active = paidUntilMillis > now;
+  const active = isDriverSubscriptionActive(driver, now);
   const latestStatus = normalizePaymentStatus(
     latestPayment?.status || driver?.lastSubscriptionPaymentStatus || driver?.subscriptionStatus
   );
@@ -239,7 +349,9 @@ function buildSubscriptionState(driver, latestPayment = null, now = Date.now()) 
   });
 
   let status = 'expired';
-  if (active) {
+  if (planState.grace) {
+    status = 'grace';
+  } else if (active) {
     status = 'active';
   } else if (pending) {
     status = 'pending';
@@ -254,19 +366,77 @@ function buildSubscriptionState(driver, latestPayment = null, now = Date.now()) 
     paidUntil: paidUntilMillis ? new Date(paidUntilMillis).toISOString() : null,
     paidUntilMillis,
     now: new Date(now).toISOString(),
-    dailyFee: driverAccessFeeTzs,
-    durationHours: driverAccessDurationHours,
+    dailyFee: planState.feeTzs,
+    amount: planState.feeTzs,
+    billingPeriodKey: planState.billingPeriodKey,
+    arrearsTzs: 0,
+    durationHours: planState.durationHours,
+    durationDays: planState.durationDays,
+    period: planState.period,
+    periodLabel: planState.periodLabel,
     currency: 'TZS',
-    message: active
-      ? 'Driver access is active.'
-      : pending
-        ? 'Payment is pending. Complete the mobile money prompt to activate access.'
-        : 'Driver access has expired. Renew to continue receiving and managing orders.',
+    vehicleType: planState.vehicleType,
+    vehicleLabel: planState.label,
+    minOrders: planState.minOrders,
+    completedOrders: planState.completedOrders,
+    remainingOrders: planState.remainingOrders,
+    grace: planState.grace,
+    canPay: planState.canPay,
+    paymentRequired: planState.paymentRequired,
+    message: planState.grace
+      ? `Complete ${planState.remainingOrders} more ${planState.label} ${planState.remainingOrders === 1 ? 'order' : 'orders'} before access payment is required.`
+      : active
+        ? `${planState.label} access is active.`
+        : pending
+          ? 'Payment is pending. Approve the USSD prompt on your phone to activate access.'
+          : `Pay TZS ${planState.feeTzs.toLocaleString()} for the current ${planState.periodLabel} only. Unused days are not billed.`,
   };
 }
 
 function compact(payload) {
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
+}
+
+function toAdminPaymentReviewPatch(payment, extra = {}) {
+  const amount = Number(extra.amount ?? payment.amount ?? 0);
+  const status = extra.status || payment.status || payment.localStatus || 'pending';
+  return compact({
+    source: 'mongike_ussd',
+    method: 'mobile_money_ussd',
+    provider: payment.provider || 'mobile_money',
+    paymentType: payment.paymentType,
+    driverId: payment.driverId,
+    driverName: payment.driverName,
+    driverPhone: payment.driverPhone,
+    driverEmail: payment.driverEmail,
+    payerPhone: payment.payerPhone || payment.buyerPhone,
+    amount,
+    paymentAmount: amount,
+    reviewedAmount: status === 'completed' ? amount : extra.reviewedAmount,
+    subscriptionFee: amount,
+    currency: payment.currency || 'TZS',
+    network: payment.network,
+    vehicleType: payment.vehicleType,
+    vehicleLabel: payment.vehicleLabel,
+    orderId: payment.orderId || payment.id,
+    transactionReference:
+      extra.transactionReference ||
+      payment.receiptNumber ||
+      payment.gatewayRef ||
+      payment.reference ||
+      payment.orderId ||
+      payment.id,
+    receiptNumber: extra.receiptNumber || payment.receiptNumber,
+    dateKey: payment.dateKey,
+    subscriptionPaidUntil: extra.subscriptionPaidUntil || payment.subscriptionPaidUntil,
+    status,
+    localStatus: extra.localStatus || status,
+    gatewayRef: extra.gatewayRef || payment.gatewayRef,
+    reference: extra.reference || payment.reference,
+    failureReason: extra.failureReason,
+    completedAt: extra.completedAt,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
 }
 
 function serializePayment(payment) {
@@ -322,18 +492,31 @@ async function fetchLatestDriverPayments(db, driverId, limit = 20) {
   return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
-async function fetchDriverPaymentStatus(driverId) {
+async function fetchDriverPaymentStatus(driverId, options = {}) {
+  const includeHistory = options.includeHistory === true;
+  const historyLimit = Number.isFinite(options.historyLimit) ? options.historyLimit : 10;
   const { db } = ensureFirebaseAdmin();
-  const driverSnapshot = await db.collection('drivers').doc(driverId).get();
-  const driver = driverSnapshot.exists ? { id: driverSnapshot.id, ...driverSnapshot.data() } : null;
-  const history = driver ? await fetchLatestDriverPayments(db, driverId, 12) : [];
-  const latestPayment = history[0] || null;
+  const driverRef = db.collection('drivers').doc(driverId);
+  const driverSnapshot = await driverRef.get();
+  let driver = driverSnapshot.exists ? { id: driverSnapshot.id, ...driverSnapshot.data() } : null;
+
+  if (driver) {
+    const duePatch = resolveAccessPaymentDuePatch(driver);
+    if (duePatch) {
+      await driverRef.set({ ...duePatch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      driver = { ...driver, ...duePatch };
+    }
+  }
+
+  const history = includeHistory && driver ? await fetchLatestDriverPayments(db, driverId, historyLimit) : [];
+  const latestPayment =
+    history[0] || (driver ? (await fetchLatestDriverPayments(db, driverId, 1))[0] || null : null);
 
   return {
     driverId,
     subscription: buildSubscriptionState(driver, latestPayment),
     latestPayment: serializePayment(latestPayment),
-    history: history.map(serializePayment),
+    history: includeHistory ? history.map(serializePayment) : [],
     networks: mongikeNetworks,
   };
 }
@@ -345,37 +528,27 @@ function generateOrderId(driverId) {
 }
 
 async function callMongikeInitiatePayment(payload) {
-  const apiKey = getMongikeApiKey();
-  if (!apiKey) {
-    throw serviceUnavailable('Mongike API key is not configured on the backend.');
-  }
+  return callMongike('/payments/mobile-money/tanzania', { method: 'POST', body: payload });
+}
 
-  const response = await fetch(`${getMongikeApiBaseUrl()}/payments/mobile-money/tanzania`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify(payload),
-  });
+async function fetchMongikeTransactionByOrderId(orderId, mongikePaymentId, gatewayRef) {
+  const transactions = await fetchMongikeWalletHistory();
+  const wantedOrder = String(orderId || '').trim();
+  const wantedId = String(mongikePaymentId || '').trim();
+  const wantedRef = String(gatewayRef || '').trim();
 
-  const responseText = await response.text();
-  let parsed = null;
-  try {
-    parsed = responseText ? JSON.parse(responseText) : null;
-  } catch {
-    parsed = null;
-  }
-
-  if (!response.ok) {
-    const message = parsed?.message || responseText || `Mongike payment initiation failed with ${response.status}.`;
-    const error = new Error(message);
-    error.statusCode = response.status >= 500 ? 502 : 400;
-    error.mongikeResponse = parsed || responseText;
-    throw error;
-  }
-
-  return parsed || {};
+  return (
+    transactions.find((item) => {
+      const reference = String(item?.reference || item?.order_id || '').trim();
+      const id = String(item?.id || '').trim();
+      const merchantReference = String(item?.merchantReference || item?.gateway_ref || '').trim();
+      return (
+        (wantedOrder && reference === wantedOrder) ||
+        (wantedId && id === wantedId) ||
+        (wantedRef && merchantReference === wantedRef)
+      );
+    }) || null
+  );
 }
 
 async function createPendingPaymentRecord(db, input) {
@@ -393,10 +566,19 @@ async function createPendingPaymentRecord(db, input) {
     }
 
     const driver = { id: driverSnapshot.id, ...driverSnapshot.data() };
-    if (isDriverSubscriptionActive(driver)) {
+    if (!canInitiateDriverAccessPayment(driver)) {
+      throw badRequest(
+        `Complete at least ${getDriverAccessPlan(driver).minOrders} delivered orders before paying for ${getDriverAccessPlan(driver).label} access.`
+      );
+    }
+    if (isDriverSubscriptionPaid(driver)) {
       activeSubscription = buildSubscriptionState(driver);
       return;
     }
+    const accessPlan = getDriverAccessPlan(driver);
+    const now = Date.now();
+    const billingPeriodKey = getAccessBillingPeriodKey(accessPlan, now);
+    const chargeTzs = getCurrentAccessChargeTzs(accessPlan);
 
     const currentPaymentId = String(driver.lastSubscriptionPaymentId || '').trim();
     const currentPaymentSnapshot = currentPaymentId
@@ -405,12 +587,16 @@ async function createPendingPaymentRecord(db, input) {
     const currentPayment = currentPaymentSnapshot?.exists
       ? { id: currentPaymentSnapshot.id, ...currentPaymentSnapshot.data() }
       : null;
-    if (currentPayment && isPendingPayment(currentPayment)) {
+    if (
+      currentPayment &&
+      isPendingPayment(currentPayment) &&
+      isFreshUssdAttempt(currentPayment, driver) &&
+      isSameAccessBillingPeriod(currentPayment, accessPlan, now)
+    ) {
       existingPayment = currentPayment;
       return;
     }
 
-    const now = Date.now();
     const paymentPayload = compact({
       id: input.orderId,
       orderId: input.orderId,
@@ -425,15 +611,20 @@ async function createPendingPaymentRecord(db, input) {
       network: input.network,
       recipientPhone: input.recipientPhone,
       merchantRecipientPhone: input.recipientPhone,
-      amount: driverAccessFeeTzs,
+      amount: chargeTzs,
+      arrearsTzs: 0,
+      billingPeriodKey,
       currency: 'TZS',
       feePayer: 'MERCHANT',
-      paymentType: 'driver_daily_access',
+      paymentType: accessPlan.period === 'week' ? 'driver_weekly_access' : 'driver_daily_access',
+      vehicleType: accessPlan.vehicleType,
+      vehicleLabel: accessPlan.label,
       status: 'creating',
       localStatus: 'creating',
-      provider: 'mongike',
+      provider: 'mobile_money',
       dateKey: getTanzaniaDateKey(now),
-      durationHours: driverAccessDurationHours,
+      durationHours: accessPlan.durationHours,
+      durationDays: accessPlan.durationDays,
       localLockExpiresAt: new Date(now + PAYMENT_CREATE_LOCK_MS),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -441,12 +632,17 @@ async function createPendingPaymentRecord(db, input) {
 
     transaction.set(paymentRef, paymentPayload);
     transaction.set(mirrorRef, paymentPayload);
+    transaction.set(getAdminPaymentReviewRef(db, input.orderId), {
+      ...paymentPayload,
+      ...toAdminPaymentReviewPatch(paymentPayload, { status: 'pending' }),
+      createdAt: paymentPayload.createdAt,
+    });
     transaction.set(driverRef, {
       subscriptionStatus: 'pending',
       lastSubscriptionPaymentStatus: 'creating',
       lastSubscriptionPaymentId: input.orderId,
       lastSubscriptionPaymentSubmittedAt: FieldValue.serverTimestamp(),
-      lastSubscriptionPaymentAmount: driverAccessFeeTzs,
+      lastSubscriptionPaymentAmount: chargeTzs,
       lastSubscriptionPaymentExpiresAt: new Date(now + PAYMENT_CREATE_LOCK_MS),
       isAvailable: false,
       updatedAt: FieldValue.serverTimestamp(),
@@ -460,33 +656,44 @@ async function createPendingPaymentRecord(db, input) {
 }
 
 async function markPaymentInitiated(db, orderId, driverId, mongikeResponse, requestPayload) {
-  const data = mongikeResponse?.data || {};
-  const status = normalizePaymentStatus(data.status || mongikeResponse?.status || 'PENDING');
-  const expiresAt = data.expires_at ? new Date(data.expires_at) : null;
+  const record = extractMongikePaymentRecord(mongikeResponse);
+  const status = record.status === 'completed' ? 'pending' : record.status || 'pending';
+  const expiresAt = record.expiresAt
+    ? new Date(record.expiresAt)
+    : new Date(Date.now() + 3 * 60 * 1000);
   const payload = compact({
-    status,
-    localStatus: status,
-    providerStatus: data.status || mongikeResponse?.status || '',
-    mongikePaymentId: data.id || '',
-    gatewayRef: data.gateway_ref || '',
-    reference: data.gateway_ref || '',
-    amount: Number(data.amount || requestPayload.amount || driverAccessFeeTzs),
-    mongikeMessage: mongikeResponse?.message || '',
+    status: status === 'failed' || status === 'expired' ? status : 'pending',
+    localStatus: status === 'failed' || status === 'expired' ? status : 'pending',
+    providerStatus: record.providerStatus || 'PENDING',
+    mongikePaymentId: record.id || '',
+    gatewayRef: record.gatewayRef || '',
+    reference: record.gatewayRef || '',
+    amount: Number(record.amount || requestPayload.amount || 0),
+    mongikeMessage: record.message || mongikeResponse?.message || '',
     mongikeResponse,
     mongikeRequest: requestPayload,
-    expiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined,
-    mongikeExpiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined,
+    expiresAt: Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined,
+    mongikeExpiresAt: Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined,
     updatedAt: FieldValue.serverTimestamp(),
   });
 
   await Promise.all([
     getDriverPaymentRef(db, orderId).set(payload, { merge: true }),
     getDriverPaymentMirrorRef(db, driverId, orderId).set(payload, { merge: true }),
+    getAdminPaymentReviewRef(db, orderId).set(
+      toAdminPaymentReviewPatch({ ...payload, orderId, driverId }, {
+        status: payload.status,
+        transactionReference: record.gatewayRef || orderId,
+        gatewayRef: record.gatewayRef,
+        amount: payload.amount,
+      }),
+      { merge: true }
+    ),
     db.collection('drivers').doc(driverId).set(compact({
       subscriptionStatus: 'pending',
       lastSubscriptionPaymentStatus: status,
       lastSubscriptionPaymentId: orderId,
-      lastSubscriptionPaymentGatewayRef: data.gateway_ref || undefined,
+      lastSubscriptionPaymentGatewayRef: record.gatewayRef || undefined,
       lastSubscriptionPaymentExpiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined,
       updatedAt: FieldValue.serverTimestamp(),
     }), { merge: true }),
@@ -505,6 +712,13 @@ async function markPaymentFailed(db, orderId, driverId, error) {
   await Promise.all([
     getDriverPaymentRef(db, orderId).set(payload, { merge: true }),
     getDriverPaymentMirrorRef(db, driverId, orderId).set(payload, { merge: true }),
+    getAdminPaymentReviewRef(db, orderId).set(
+      toAdminPaymentReviewPatch({ ...payload, orderId, driverId }, {
+        status: 'failed',
+        failureReason: message,
+      }),
+      { merge: true }
+    ),
     db.collection('drivers').doc(driverId).set({
       subscriptionStatus: 'expired',
       lastSubscriptionPaymentStatus: 'failed',
@@ -513,6 +727,38 @@ async function markPaymentFailed(db, orderId, driverId, error) {
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true }),
   ]);
+}
+
+async function expireStuckDriverPayment(db, driverId, paymentId, reason) {
+  const payload = compact({
+    status: 'expired',
+    localStatus: 'expired',
+    failureReason: reason || 'USSD prompt expired before PIN was entered.',
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const writes = [
+    db.collection('drivers').doc(driverId).set({
+      subscriptionStatus: 'expired',
+      lastSubscriptionPaymentStatus: 'expired',
+      lastSubscriptionPaymentExpiresAt: new Date(0),
+      isAvailable: false,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true }),
+  ];
+  if (paymentId) {
+    writes.push(
+      getDriverPaymentRef(db, paymentId).set(payload, { merge: true }),
+      getDriverPaymentMirrorRef(db, driverId, paymentId).set(payload, { merge: true }),
+      getAdminPaymentReviewRef(db, paymentId).set(
+        toAdminPaymentReviewPatch({ driverId, orderId: paymentId, status: 'expired' }, {
+          status: 'expired',
+          failureReason: payload.failureReason,
+        }),
+        { merge: true }
+      )
+    );
+  }
+  await Promise.all(writes);
 }
 
 async function initiateDriverPayment(req, body) {
@@ -526,16 +772,96 @@ async function initiateDriverPayment(req, body) {
   }
 
   const buyerPhone = normalizePhoneNumber(body.phoneNumber || body.buyerPhone || driver.phoneNumber || decoded.phone_number);
-  if (!buyerPhone || !buyerPhone.startsWith('255') || buyerPhone.length < 12) {
-    throw badRequest('Enter a valid Tanzanian mobile money number.');
+  if (!isValidMongikePhone(buyerPhone)) {
+    throw badRequest('Weka namba sahihi ya Tanzania, mfano 07XXXXXXXX au 2557XXXXXXXX.');
   }
 
+  if (!canInitiateDriverAccessPayment(driver)) {
+    const plan = getDriverAccessPlan(driver);
+    throw badRequest(
+      `Complete at least ${plan.minOrders} delivered ${plan.label} orders before paying. You have ${buildAccessPlanState(driver).completedOrders}.`
+    );
+  }
+
+  if (isDriverSubscriptionPaid(driver)) {
+    return {
+      duplicate: true,
+      subscription: buildSubscriptionState(driver),
+      latestPayment: null,
+      networks: mongikeNetworks,
+    };
+  }
+
+  const accessPlan = getDriverAccessPlan(driver);
+  const chargeTzs = getCurrentAccessChargeTzs(accessPlan);
+  const billingPeriodKey = getAccessBillingPeriodKey(accessPlan);
   const selectedNetwork = String(body.network || '').trim().toLowerCase();
   const network = mongikeNetworks.some((item) => item.key === selectedNetwork) ? selectedNetwork : 'mpesa';
   const networkConfig = mongikeNetworks.find((item) => item.key === network);
   if (!networkConfig?.enabled) {
-    throw badRequest(`${networkConfig?.label || 'This mobile money network'} is coming soon. Use Vodacom M-Pesa for now.`);
+    throw badRequest(`${networkConfig?.label || 'This network'} is not available. Choose M-Pesa, Mixx by Yas, or Airtel Money.`);
   }
+
+  const currentPaymentId = String(driver.lastSubscriptionPaymentId || '').trim();
+  const currentPaymentSnapshot = currentPaymentId ? await getDriverPaymentRef(db, currentPaymentId).get() : null;
+  const currentPayment = currentPaymentSnapshot?.exists
+    ? { id: currentPaymentSnapshot.id, ...currentPaymentSnapshot.data() }
+    : null;
+  const previousPeriodPending = currentPayment
+    && ['creating', 'pending'].includes(normalizePaymentStatus(currentPayment.status))
+    && !isSameAccessBillingPeriod(currentPayment, accessPlan);
+
+  if (previousPeriodPending) {
+    await expireStuckDriverPayment(
+      db,
+      driverId,
+      currentPaymentId,
+      'Previous unused access period expired. Missed days are not billed as arrears.'
+    );
+  } else if (isDriverUssdLocked(driver)) {
+    const currentPaymentId = String(driver.lastSubscriptionPaymentId || '').trim();
+    const currentPaymentSnapshot = currentPaymentId ? await getDriverPaymentRef(db, currentPaymentId).get() : null;
+    const currentPayment = currentPaymentSnapshot?.exists
+      ? { id: currentPaymentSnapshot.id, ...currentPaymentSnapshot.data() }
+      : null;
+    const keepExistingPush = !body.retry
+      && isFreshUssdAttempt(currentPayment, driver)
+      && isSameAccessBillingPeriod(currentPayment, accessPlan);
+    let remoteStatus = '';
+    if (keepExistingPush) {
+      try {
+        const remote = await fetchMongikeTransactionByOrderId(
+          currentPayment?.orderId || currentPaymentId,
+          currentPayment?.mongikePaymentId,
+          currentPayment?.gatewayRef || currentPayment?.reference
+        );
+        remoteStatus = normalizePaymentStatus(remote?.status);
+      } catch {
+        remoteStatus = '';
+      }
+    }
+
+    if (keepExistingPush && remoteStatus === 'pending') {
+      return {
+        duplicate: true,
+        subscription: buildSubscriptionState(driver, currentPayment),
+        latestPayment: serializePayment(currentPayment),
+        networks: mongikeNetworks,
+      };
+    }
+
+    await expireStuckDriverPayment(
+      db,
+      driverId,
+      currentPaymentId,
+      body.retry
+        ? 'Driver requested a new USSD push.'
+        : remoteStatus
+          ? `Previous USSD ended with ${remoteStatus}.`
+          : 'Previous USSD went stale before PIN was entered.'
+    );
+  }
+
   const orderId = generateOrderId(driverId);
   const driverName = String(driver.fullName || decoded.name || 'DoorDrive driver').trim();
   const driverEmail = String(driver.email || decoded.email || '').trim().toLowerCase();
@@ -569,31 +895,38 @@ async function initiateDriverPayment(req, body) {
     };
   }
 
-  const webhookUrl = buildWebhookUrl(req);
   const mongikeRequest = compact({
     order_id: orderId,
-    amount: driverAccessFeeTzs,
+    amount: chargeTzs,
     buyer_phone: buyerPhone,
     buyer_name: driverName,
     buyer_email: driverEmail || undefined,
     fee_payer: 'MERCHANT',
-    webhook_url: webhookUrl || undefined,
     metadata: compact({
-      product: 'DoorDrive daily driver access',
+      product: 'DoorDrive access',
       driverId,
+      vehicleType: accessPlan.vehicleType,
+      billingPeriodKey,
       network,
-      recipientPhone: driverPaymentRecipientPhone,
-      recipientPhoneInternational: normalizedDriverPaymentRecipientPhone,
-      durationHours: driverAccessDurationHours,
       app: 'doordropdrive',
     }),
   });
 
   try {
+    const startedAt = Date.now();
     const mongikeResponse = await callMongikeInitiatePayment(mongikeRequest);
+    console.log(`[ussd] mongike accepted ${orderId} in ${Date.now() - startedAt}ms`);
     await markPaymentInitiated(db, orderId, driverId, mongikeResponse, mongikeRequest);
     const paymentSnapshot = await getDriverPaymentRef(db, orderId).get();
-    const payment = paymentSnapshot.exists ? { id: paymentSnapshot.id, ...paymentSnapshot.data() } : null;
+    const payment = paymentSnapshot.exists ? { id: paymentSnapshot.id, ...paymentSnapshot.data() } : {
+      id: orderId,
+      orderId,
+      driverId,
+      amount: chargeTzs,
+      status: 'pending',
+      network,
+      payerPhone: buyerPhone,
+    };
 
     return {
       duplicate: false,
@@ -628,10 +961,19 @@ async function applyPaymentStatusUpdate(input) {
     const driverSnapshot = await transaction.get(driverRef);
     const driver = driverSnapshot.exists ? { id: driverSnapshot.id, ...driverSnapshot.data() } : null;
     const mirrorRef = getDriverPaymentMirrorRef(db, payment.driverId, orderId);
+    const adminRef = getAdminPaymentReviewRef(db, orderId);
     const nextStatus = normalizePaymentStatus(input.status);
     const alreadyCompleted = normalizePaymentStatus(payment.status) === 'completed';
 
     if (alreadyCompleted) {
+      transaction.set(adminRef, toAdminPaymentReviewPatch(payment, {
+        status: 'completed',
+        amount: Number(payment.amount || 0),
+        transactionReference: payment.receiptNumber || payment.gatewayRef || payment.reference || orderId,
+        receiptNumber: payment.receiptNumber,
+        subscriptionPaidUntil: payment.subscriptionPaidUntil,
+        completedAt: payment.completedAt || FieldValue.serverTimestamp(),
+      }), { merge: true });
       result = {
         idempotent: true,
         payment: serializePayment(payment),
@@ -652,6 +994,11 @@ async function applyPaymentStatusUpdate(input) {
       });
       transaction.set(paymentRef, failedPayload, { merge: true });
       transaction.set(mirrorRef, failedPayload, { merge: true });
+      transaction.set(adminRef, toAdminPaymentReviewPatch({ ...payment, ...failedPayload }, {
+        status: nextStatus,
+        failureReason: input.webhookPayload?.description || payment.failureReason,
+        transactionReference: failedPayload.gatewayRef || orderId,
+      }), { merge: true });
       transaction.set(driverRef, {
         subscriptionStatus: 'expired',
         lastSubscriptionPaymentStatus: nextStatus,
@@ -666,18 +1013,25 @@ async function applyPaymentStatusUpdate(input) {
       return;
     }
 
-    const paidAmount = Number(input.amount || payment.amount || 0);
-    if (paidAmount < driverAccessFeeTzs) {
+    const accessPlan = getDriverAccessPlan(driver);
+    const requiredAmount = getCurrentAccessChargeTzs(accessPlan);
+    const paidAmount = Number(input.amount || payment.amount || requiredAmount || 0);
+    if (paidAmount < requiredAmount) {
       const mismatchPayload = compact({
         status: 'failed',
         localStatus: 'failed',
         providerStatus: input.providerStatus || input.status,
-        failureReason: `Paid amount ${paidAmount} is below required TZS ${driverAccessFeeTzs}.`,
+        failureReason: `Paid amount ${paidAmount} is below required TZS ${requiredAmount}.`,
         webhookPayload: input.webhookPayload,
         updatedAt: FieldValue.serverTimestamp(),
       });
       transaction.set(paymentRef, mismatchPayload, { merge: true });
       transaction.set(mirrorRef, mismatchPayload, { merge: true });
+      transaction.set(adminRef, toAdminPaymentReviewPatch({ ...payment, ...mismatchPayload }, {
+        status: 'failed',
+        failureReason: mismatchPayload.failureReason,
+        amount: paidAmount,
+      }), { merge: true });
       transaction.set(driverRef, {
         subscriptionStatus: 'expired',
         lastSubscriptionPaymentStatus: 'failed',
@@ -694,8 +1048,8 @@ async function applyPaymentStatusUpdate(input) {
 
     const now = Date.now();
     const currentPaidUntil = toMillis(driver?.subscriptionPaidUntil);
-    const subscriptionStartsAt = new Date(Math.max(currentPaidUntil, now));
-    const subscriptionPaidUntil = new Date(Math.max(currentPaidUntil, now) + driverAccessDurationMs);
+    const subscriptionStartsAt = new Date(Math.max(now, getAccessPeriodStartMillis(accessPlan, now)));
+    const subscriptionPaidUntil = new Date(resolveAccessPaidUntilMillis(accessPlan, now, currentPaidUntil));
     const receiptNumber = buildReceiptNumber(orderId, input.reference || payment.gatewayRef);
     const completedPayload = compact({
       status: 'completed',
@@ -703,7 +1057,9 @@ async function applyPaymentStatusUpdate(input) {
       providerStatus: input.providerStatus || input.status || 'COMPLETED',
       gatewayRef: input.reference || payment.gatewayRef,
       reference: input.reference || payment.reference,
-      amount: paidAmount || driverAccessFeeTzs,
+      amount: requiredAmount,
+      arrearsTzs: 0,
+      billingPeriodKey: getAccessBillingPeriodKey(accessPlan, now),
       receiptNumber,
       subscriptionStartsAt,
       subscriptionPaidUntil,
@@ -714,16 +1070,25 @@ async function applyPaymentStatusUpdate(input) {
 
     transaction.set(paymentRef, completedPayload, { merge: true });
     transaction.set(mirrorRef, completedPayload, { merge: true });
+    transaction.set(adminRef, toAdminPaymentReviewPatch({ ...payment, ...completedPayload }, {
+      status: 'completed',
+      amount: requiredAmount,
+      receiptNumber,
+      transactionReference: receiptNumber || completedPayload.gatewayRef || orderId,
+      subscriptionPaidUntil,
+      completedAt: completedPayload.completedAt,
+    }), { merge: true });
     transaction.set(driverRef, {
       subscriptionStatus: 'active',
       subscriptionPaidUntil,
+      accessPaymentDuePeriodKey: FieldValue.delete(),
       lastSubscriptionPaidAt: FieldValue.serverTimestamp(),
       lastSubscriptionPaymentStatus: 'completed',
       lastSubscriptionPaymentId: orderId,
-      lastSubscriptionPaymentAmount: paidAmount || driverAccessFeeTzs,
+      lastSubscriptionPaymentAmount: requiredAmount,
       lastSubscriptionPaymentGatewayRef: input.reference || payment.gatewayRef || '',
       lastSubscriptionPaymentReceiptNumber: receiptNumber,
-      totalSubscriptionPaid: FieldValue.increment(paidAmount || driverAccessFeeTzs),
+      totalSubscriptionPaid: FieldValue.increment(paidAmount || requiredAmount),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
@@ -741,18 +1106,19 @@ async function handleMongikeWebhook(req, body) {
   const apiKey = getMongikeApiKey();
   const webhookApiKey = String(req.headers['x-api-key'] || req.headers['X-Api-Key'] || '').trim();
   if (!apiKey || webhookApiKey !== apiKey) {
-    const error = new Error('Invalid Mongike webhook signature.');
+    const error = new Error('Invalid payment webhook signature.');
     error.statusCode = 401;
     throw error;
   }
 
+  const payload = body && typeof body === 'object' ? body : {};
   return applyPaymentStatusUpdate({
-    orderId: body.order_id || body.orderId,
-    status: body.payment_status || body.status,
-    providerStatus: body.payment_status || body.status,
-    reference: body.reference || body.gateway_ref || body.gatewayRef,
-    amount: body.amount,
-    webhookPayload: body,
+    orderId: payload.order_id || payload.orderId || payload.reference,
+    status: payload.payment_status || payload.status,
+    providerStatus: payload.payment_status || payload.status,
+    reference: payload.reference || payload.gateway_ref || payload.gatewayRef || payload.merchantReference,
+    amount: payload.amount,
+    webhookPayload: payload,
   });
 }
 
@@ -761,7 +1127,11 @@ async function verifyDriverPayment(req, body) {
   const { db } = ensureFirebaseAdmin();
   const paymentId = String(body.paymentId || body.orderId || '').trim();
   if (!paymentId) {
-    return fetchDriverPaymentStatus(decoded.uid);
+    const latest = (await fetchLatestDriverPayments(db, decoded.uid, 1))[0];
+    if (!latest || normalizePaymentStatus(latest.status) !== 'pending') {
+      return fetchDriverPaymentStatus(decoded.uid);
+    }
+    return verifyDriverPayment(req, { paymentId: latest.orderId || latest.id });
   }
 
   const paymentSnapshot = await getDriverPaymentRef(db, paymentId).get();
@@ -774,6 +1144,34 @@ async function verifyDriverPayment(req, body) {
     const error = new Error('You cannot verify another driver payment.');
     error.statusCode = 403;
     throw error;
+  }
+
+  if (normalizePaymentStatus(payment.status) === 'pending') {
+    try {
+      const remote = await fetchMongikeTransactionByOrderId(
+        payment.orderId || paymentId,
+        payment.mongikePaymentId,
+        payment.gatewayRef || payment.reference
+      );
+      if (remote) {
+        const remoteStatus = normalizePaymentStatus(remote.status);
+        if (remoteStatus === 'completed' || remoteStatus === 'failed' || remoteStatus === 'expired') {
+          await applyPaymentStatusUpdate({
+            orderId: payment.orderId || paymentId,
+            status: remote.status,
+            providerStatus: remote.status,
+            reference: remote.merchantReference || remote.gateway_ref || payment.gatewayRef,
+            amount: remote.amount || payment.amount,
+            webhookPayload: remote,
+          });
+          return fetchDriverPaymentStatus(decoded.uid);
+        }
+      }
+    } catch (error) {
+      if (error?.statusCode && error.statusCode < 500) {
+        throw error;
+      }
+    }
   }
 
   if (normalizePaymentStatus(payment.status) === 'pending' && toMillis(payment.expiresAt) && toMillis(payment.expiresAt) <= Date.now()) {
@@ -792,9 +1190,10 @@ async function verifyDriverPayment(req, body) {
   return fetchDriverPaymentStatus(decoded.uid);
 }
 
-async function handleDriverPaymentStatus(req) {
+async function handleDriverPaymentStatus(req, url) {
   const decoded = await requireFirebaseUser(req);
-  return fetchDriverPaymentStatus(decoded.uid);
+  const includeHistory = String(url?.searchParams?.get('includeHistory') || '').trim() === '1';
+  return fetchDriverPaymentStatus(decoded.uid, { includeHistory, historyLimit: 10 });
 }
 
 async function handleDriverPaymentHistory(req) {

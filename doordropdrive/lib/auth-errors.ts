@@ -29,6 +29,17 @@ export function getFirebaseAuthErrorMessage(code?: string) {
   }
 }
 
+export function getFirebasePasswordResetErrorMessage(code?: string) {
+  switch (code) {
+    case 'auth/missing-email':
+      return 'Enter the email address linked to your account.';
+    case 'auth/user-not-found':
+      return 'We could not find an account with that email address.';
+    default:
+      return getFirebaseAuthErrorMessage(code);
+  }
+}
+
 export function getFirebaseDataErrorMessage(code?: string, fallback = 'Something went wrong. Please try again.') {
   switch (code) {
     case 'permission-denied':

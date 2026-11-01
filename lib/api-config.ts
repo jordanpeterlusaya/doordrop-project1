@@ -3,7 +3,7 @@ import { logAsyncStart, logAsyncSuccess, logInfo, logWarning } from '@/lib/debug
 import { getRuntimeEnvValue } from '@/lib/runtime-env';
 import Constants from 'expo-constants';
 
-const BACKEND_COOLDOWN_MS = 45000;
+const BACKEND_COOLDOWN_MS = 12000;
 const HEALTH_TIMEOUT_MS = 5000;
 let lastBackendFailureAt = 0;
 

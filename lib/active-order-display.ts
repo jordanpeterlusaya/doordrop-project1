@@ -68,88 +68,62 @@ export function isBusCustomerParcel(
 }
 
 const BUS_PROGRESS_STEPS = [
-  { key: 'search', labelEn: 'Bus', labelSw: 'Basi' },
-  { key: 'found', labelEn: 'Matched', labelSw: 'Limepatikana' },
-  { key: 'pickup', labelEn: 'Pickup', labelSw: 'Chukua' },
-  { key: 'transit', labelEn: 'On the way', labelSw: 'Njiani' },
-  { key: 'done', labelEn: 'Done', labelSw: 'Mwisho' },
+  { key: 'received', labelEn: 'Order Received', labelSw: 'Oda imepokelewa' },
+  { key: 'confirmed', labelEn: 'Confirmed', labelSw: 'Imethibitishwa' },
+  { key: 'transit', labelEn: 'On the Way', labelSw: 'Iko njiani' },
+  { key: 'delivered', labelEn: 'Delivered', labelSw: 'Imewasili' },
 ] as const;
 
-function busProgressIndex(order: DeliveryOrder) {
+/** Same four stages the transporter portal writes onto carrierTrackStep. */
+function busStageIndex(order: DeliveryOrder) {
   const step = String(order.carrierTrackStep || '');
-  if (step === 'handed' || step === 'arrived' || order.status === 'delivered') {
-    return 4;
-  }
-  if (step === 'transit') {
-    return 3;
-  }
-  if (step === 'pickup' || step === 'packed') {
-    return 2;
-  }
-  if (step === 'received' || order.carrierMatchStatus === 'accepted' || order.carrierMatchStatus === 'offered') {
-    return 1;
-  }
+  const match = String(order.carrierMatchStatus || '');
+  if (step === 'handed' || order.status === 'delivered') return 3;
+  if (step === 'transit' || step === 'arrived') return 2;
+  if (step === 'received' || step === 'pickup' || step === 'packed' || match === 'accepted') return 1;
   return 0;
 }
 
-export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw') {
-  const sw = language === 'sw';
-  const step = String(order.carrierTrackStep || '');
-  const route = String(order.carrierRouteLabel || '').trim();
-  const companyOnTheWay = sw
-    ? 'Kampuni imepatikana · yuko njiani kuchukua mzigo'
-    : 'Company found · on the way to pick up the cargo';
-  const withRoute = (base: string) => (route ? `${base} · ${route}` : base);
+function busStageTime(order: DeliveryOrder, index: number, current: number) {
+  if (index === 0) return order.createdAt;
+  if (index === 3 && current >= 3) return order.deliveredAt;
+  if (index === current && index > 0) return order.carrierJourneyAt;
+  return undefined;
+}
 
-  if (step === 'handed' || order.status === 'delivered') {
-    return sw ? 'Mzigo umekabidhiwa' : 'Parcel handed over';
+function stageTimeLabel(value: unknown) {
+  if (!value) return '';
+  let date: Date | null = null;
+  if (value instanceof Date) date = value;
+  else if (typeof value === 'object' && value !== null && 'toDate' in value && typeof value.toDate === 'function') {
+    const next = value.toDate();
+    date = next instanceof Date ? next : null;
+  } else if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    date = Number.isNaN(parsed.getTime()) ? null : parsed;
   }
-  if (step === 'arrived') {
-    return sw ? 'Mzigo umefika' : 'Parcel arrived';
-  }
-  if (step === 'transit') {
-    return sw ? 'Mzigo uko njiani' : 'Parcel is on the way';
-  }
-  if (step === 'packed') {
-    return sw ? 'Kampuni imepokea mzigo' : 'Company received the parcel';
-  }
-  if (step === 'pickup') {
-    return order.carrierPickupMode === 'haul_delivers_to_office'
-      ? sw
-        ? 'Mzigo unaletwa ofisini'
-        : 'Parcel is going to the company office'
-      : withRoute(companyOnTheWay);
-  }
-  if (
-    step === 'received' ||
-    order.carrierMatchStatus === 'accepted' ||
-    order.carrierMatchStatus === 'offered'
-  ) {
-    return withRoute(companyOnTheWay);
-  }
-  return sw ? 'Tunatafuta kampuni iliyopo karibu' : 'Looking for a nearby company';
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+export function getBusParcelHeadline(order: DeliveryOrder, language: 'en' | 'sw') {
+  const step = BUS_PROGRESS_STEPS[busStageIndex(order)];
+  return language === 'sw' ? step.labelSw : step.labelEn;
 }
 
 export function getBusParcelDetail(order: DeliveryOrder, language: 'en' | 'sw') {
   const sw = language === 'sw';
-  const route = String(order.carrierRouteLabel || '').trim();
-  if (order.carrierMatchStatus === 'offered' || order.carrierMatchStatus === 'accepted') {
-    return sw
-      ? 'Kampuni yuko njiani kuchukua mzigo.'
-      : 'The company is on the way to pick up the cargo.';
-  }
-  if (order.carrierPickupMode === 'agent_collects') {
-    return sw ? 'Kampuni itakuja kuchukua mzigo kwako.' : 'The company will collect the parcel from you.';
-  }
-  if (order.carrierPickupMode === 'haul_delivers_to_office') {
-    return sw ? 'Mzigo utaletwa ofisini mwa kampuni.' : 'Haul will bring the parcel to the company office.';
-  }
-  if (route) {
-    return sw ? `Njia: ${route}.` : `Route: ${route}.`;
-  }
-  return sw
-    ? 'Tunalinganisha uzito na njia na kampuni iliyothibitishwa.'
-    : 'We are matching the weight and route to a verified company.';
+  const lines = [
+    sw ? 'Oda yako imepokelewa.' : 'Your order has been received.',
+    sw ? 'Kampuni imethibitisha oda yako.' : 'The transporter has confirmed your order.',
+    sw ? 'Mzigo wako uko njiani.' : 'Your cargo is on its way.',
+    sw ? 'Mzigo wako umefika.' : 'Your cargo has arrived.',
+  ];
+  const stage = busStageIndex(order);
+  const base = lines[stage];
+  if (stage !== 2) return base;
+  const place = String(order.carrierLocationLabel || '').trim();
+  return place ? `${base} ${place}.` : base;
 }
 
 function cityProgressIndex(status: DeliveryOrderStatus) {
@@ -243,11 +217,12 @@ export function getActiveOrderHeadline(order: DeliveryOrder, language: 'en' | 's
 
 export function getActiveOrderProgress(order: DeliveryOrder, language: 'en' | 'sw') {
   if (isBusCustomerParcel(order)) {
-    const currentIndex = busProgressIndex(order);
+    const currentIndex = busStageIndex(order);
     return BUS_PROGRESS_STEPS.map((step, index) => ({
       key: step.key,
       label: language === 'sw' ? step.labelSw : step.labelEn,
       state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'upcoming',
+      timeLabel: stageTimeLabel(busStageTime(order, index, currentIndex)),
     }));
   }
 
@@ -257,6 +232,7 @@ export function getActiveOrderProgress(order: DeliveryOrder, language: 'en' | 's
       key: step.key,
       label: language === 'sw' ? step.labelSw : step.labelEn,
       state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'upcoming',
+      timeLabel: '',
     }));
   }
 
@@ -265,6 +241,7 @@ export function getActiveOrderProgress(order: DeliveryOrder, language: 'en' | 's
     key: step.key,
     label: language === 'sw' ? step.labelSw : step.labelEn,
     state: index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'upcoming',
+    timeLabel: '',
   }));
 }
 

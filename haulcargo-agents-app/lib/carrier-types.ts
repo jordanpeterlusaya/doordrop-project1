@@ -137,6 +137,7 @@ export type CarrierShipment = {
 /** Desk rail stops at Imefika. Keys stay the ones the customer app and SMS already read. */
 export const DESK_RAIL = [
   { key: 'received', label: 'Imekubaliwa', status: 'accepted' },
+  { key: 'pickup', label: 'Tunafuata', status: 'contacted' },
   { key: 'packed', label: 'Imepokelewa', status: 'picked_up' },
   { key: 'transit', label: 'Imetumwa', status: 'in_transit' },
   { key: 'arrived', label: 'Imefika', status: 'arrived' },
@@ -149,8 +150,8 @@ export const STATUS_LABEL: Record<string, string> = {
   matching: 'Inatafutwa',
   assigned: 'Oda mpya',
   accepted: 'Imekubaliwa',
-  contacted: 'Imekubaliwa',
-  pickup_scheduled: 'Imekubaliwa',
+  contacted: 'Tunafuata',
+  pickup_scheduled: 'Tunafuata',
   picked_up: 'Imepokelewa',
   at_bus: 'Imepokelewa',
   in_transit: 'Imetumwa',

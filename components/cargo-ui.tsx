@@ -1,8 +1,7 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    SafeAreaView,
     ScrollView,
     StatusBar,
     KeyboardAvoidingView,
@@ -14,10 +13,14 @@ import {
     View,
     ViewStyle,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { bottomTabs, cargoTheme, type AppTabKey, type CargoIcon } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { isHistoryActivityOrder } from '@/lib/active-order-display';
 import { useAppCopy } from '@/lib/app-copy';
+import { subscribeToUserOrders } from '@/lib/delivery-data';
+import { useAuthSession } from '@/providers/auth-provider';
 
 type CargoScreenProps = {
   children: React.ReactNode;
@@ -28,6 +31,7 @@ type CargoScreenProps = {
   statusBarStyle?: 'light-content' | 'dark-content';
   keyboardAvoiding?: boolean;
   keyboardVerticalOffset?: number;
+  scrollRef?: React.RefObject<ScrollView | null>;
 };
 
 type CargoHeaderProps = {
@@ -45,6 +49,8 @@ type ButtonProps = {
   onPress?: () => void;
   icon?: CargoIcon;
   variant?: 'primary' | 'secondary' | 'dark';
+  /** `parcel` = original send-parcel CTA (56 / 18 / 16), not tickets 56pt pills. */
+  size?: 'default' | 'parcel';
   style?: StyleProp<ViewStyle>;
   disabled?: boolean;
 };
@@ -103,41 +109,51 @@ export function CargoScreen({
   statusBarStyle = 'dark-content',
   keyboardAvoiding = false,
   keyboardVerticalOffset = 0,
+  scrollRef,
 }: CargoScreenProps) {
-  const shouldUseKeyboardAvoiding = keyboardAvoiding && Platform.OS === 'ios';
-  const body = (
-    <>
-      {scroll ? (
-        <ScrollView
-          style={[styles.screen, { backgroundColor }]}
-          contentContainerStyle={[styles.content, contentContainerStyle]}
-          keyboardDismissMode="on-drag"
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
-          {children}
-        </ScrollView>
-      ) : (
-        <View style={[styles.screen, styles.content, { backgroundColor }, contentContainerStyle]}>
-          {children}
-        </View>
-      )}
-      {footer}
-    </>
+  const insets = useSafeAreaInsets();
+  const isTransparentChrome = backgroundColor === 'transparent';
+
+  const scrollBody = scroll ? (
+    <ScrollView
+      ref={scrollRef}
+      style={[styles.screen, { backgroundColor }]}
+      contentContainerStyle={[styles.content, contentContainerStyle]}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}>
+      {children}
+    </ScrollView>
+  ) : (
+    <View style={[styles.screen, styles.content, { backgroundColor }, contentContainerStyle]}>{children}</View>
   );
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
-      <StatusBar barStyle={statusBarStyle} backgroundColor="transparent" translucent />
-      {shouldUseKeyboardAvoiding ? (
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor }]}>
+      <StatusBar
+        barStyle={statusBarStyle}
+        backgroundColor={isTransparentChrome ? 'transparent' : backgroundColor}
+        translucent={isTransparentChrome}
+      />
+      {keyboardAvoiding ? (
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={keyboardVerticalOffset}
           style={styles.keyboardAvoiding}>
-          {body}
+          {scrollBody}
         </KeyboardAvoidingView>
       ) : (
-        body
+        scrollBody
       )}
+      {footer ? (
+        <View
+          style={[
+            styles.footerSafe,
+            { paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 12 : 8) },
+          ]}>
+          {footer}
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -184,13 +200,40 @@ export function CargoHeader({
   );
 }
 
-export function PrimaryButton({ label, onPress, icon, variant = 'primary', style, disabled = false }: ButtonProps) {
+export const primaryCtaStyles = StyleSheet.create({
+  button: {
+    minHeight: cargoTheme.cta.minHeight,
+    borderRadius: cargoTheme.cta.borderRadius,
+    backgroundColor: cargoTheme.cta.backgroundColor,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
+  },
+  label: {
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    color: cargoTheme.cta.labelColor,
+    letterSpacing: cargoTheme.cta.letterSpacing,
+  },
+});
+
+export function PrimaryButton({
+  label,
+  onPress,
+  icon,
+  variant = 'primary',
+  size = 'default',
+  style,
+  disabled = false,
+}: ButtonProps) {
   const handlePress = useGuardedPress(onPress, disabled || !onPress);
+  const compact = size === 'parcel';
   const variantStyles = {
     primary: {
-      backgroundColor: cargoTheme.colors.primary,
-      color: '#FFFFFF',
-      borderColor: cargoTheme.colors.primary,
+      backgroundColor: cargoTheme.cta.backgroundColor,
+      color: cargoTheme.cta.labelColor,
+      borderColor: cargoTheme.cta.backgroundColor,
     },
     secondary: {
       backgroundColor: cargoTheme.colors.surface,
@@ -198,9 +241,9 @@ export function PrimaryButton({ label, onPress, icon, variant = 'primary', style
       borderColor: cargoTheme.colors.line,
     },
     dark: {
-      backgroundColor: cargoTheme.colors.darkSurface,
-      color: '#FFFFFF',
-      borderColor: cargoTheme.colors.darkSurface,
+      backgroundColor: cargoTheme.cta.backgroundColor,
+      color: cargoTheme.cta.labelColor,
+      borderColor: cargoTheme.cta.backgroundColor,
     },
   }[variant];
 
@@ -213,6 +256,7 @@ export function PrimaryButton({ label, onPress, icon, variant = 'primary', style
       onPress={handlePress}
       style={[
         styles.button,
+        compact && styles.buttonParcel,
         {
           backgroundColor: variantStyles.backgroundColor,
           borderColor: variantStyles.borderColor,
@@ -221,7 +265,9 @@ export function PrimaryButton({ label, onPress, icon, variant = 'primary', style
         style,
       ]}>
       <View style={styles.buttonInner}>
-        <Text style={[styles.buttonText, { color: variantStyles.color }]}>{label}</Text>
+        <Text style={[styles.buttonText, compact && styles.buttonTextParcel, { color: variantStyles.color }]}>
+          {label}
+        </Text>
         {icon ? <MaterialCommunityIcons name={icon} size={20} color={variantStyles.color} /> : null}
       </View>
     </TouchableOpacity>
@@ -279,16 +325,48 @@ export function SummaryRow({ label, value, emphasis = false }: SummaryRowProps) 
   );
 }
 
-export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
+export function BottomNav({
+  activeTab,
+  embedInSafeFooter = false,
+}: {
+  activeTab?: AppTabKey;
+  /** When true, parent already pads for the home indicator (CargoScreen footer). */
+  embedInSafeFooter?: boolean;
+}) {
   const router = useRouter();
   const copy = useAppCopy();
+  const insets = useSafeAreaInsets();
+  const { user } = useAuthSession();
   const lastNavPressRef = useRef(0);
+  const [historyActivity, setHistoryActivity] = useState(false);
   const tabLabels = {
     home: copy.nav.home,
-    track: copy.nav.track,
     history: copy.nav.history,
     account: copy.nav.account,
   };
+
+  const tabIcons = {
+    home: { idle: 'home-outline', active: 'home' },
+    history: { idle: 'time-outline', active: 'time' },
+    account: { idle: 'person-outline', active: 'person' },
+  } as const;
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setHistoryActivity(false);
+      return;
+    }
+
+    return subscribeToUserOrders(
+      user.uid,
+      (orders) => {
+        setHistoryActivity(orders.some((order) => isHistoryActivityOrder(order)));
+      },
+      () => {
+        setHistoryActivity(false);
+      }
+    );
+  }, [user?.uid]);
 
   const handleTabPress = useCallback(
     (tab: (typeof bottomTabs)[number]) => {
@@ -307,30 +385,41 @@ export function BottomNav({ activeTab }: { activeTab: AppTabKey }) {
     [activeTab, router]
   );
 
+  const bottomPad = embedInSafeFooter
+    ? 8
+    : Math.max(insets.bottom, Platform.OS === 'android' ? 10 : 6);
+
   return (
-    <View style={styles.bottomNav}>
-      {bottomTabs.map((tab) => {
-        const isActive = tab.key === activeTab;
-        return (
-          <TouchableOpacity
-            key={tab.key}
-            activeOpacity={0.88}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: isActive, disabled: isActive }}
-            disabled={isActive}
-            style={styles.navItem}
-            onPress={() => handleTabPress(tab)}>
-            <View style={[styles.navIconWrap, isActive && styles.navIconWrapActive]}>
-              <MaterialCommunityIcons
-                name={tab.icon}
-                size={22}
-                color={isActive ? cargoTheme.colors.primaryDark : '#94A3B8'}
-              />
-            </View>
-            <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{tabLabels[tab.key]}</Text>
-          </TouchableOpacity>
-        );
-      })}
+    <View style={[styles.navRoot, { paddingBottom: bottomPad }]}>
+      <View style={styles.bottomNav}>
+        {bottomTabs.map((tab) => {
+          const isActive = tab.key === activeTab;
+          const showHistoryDot = tab.key === 'history' && historyActivity && !isActive;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              activeOpacity={0.88}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: isActive, disabled: isActive }}
+              accessibilityLabel={
+                showHistoryDot ? `${tabLabels[tab.key]}, activity in progress` : tabLabels[tab.key]
+              }
+              disabled={isActive}
+              style={styles.navItem}
+              onPress={() => handleTabPress(tab)}>
+              <View>
+                <Ionicons
+                  name={isActive ? tabIcons[tab.key].active : tabIcons[tab.key].idle}
+                  size={24}
+                  color={isActive ? '#111827' : '#9CA3AF'}
+                />
+                {showHistoryDot ? <View style={styles.navActivityDot} /> : null}
+              </View>
+              <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{tabLabels[tab.key]}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -349,43 +438,48 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingBottom: 24,
   },
+  footerSafe: {
+    backgroundColor: cargoTheme.colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#EAF0F6',
+  },
   header: {
-    paddingTop: 8,
-    marginBottom: 20,
+    paddingTop: 4,
+    marginBottom: 16,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 18,
+    marginBottom: 12,
   },
   headerButton: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerSpacer: {
-    width: 46,
-    height: 46,
+    width: 40,
+    height: 40,
   },
   headerTitle: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 24,
+    lineHeight: 30,
     fontFamily: typography.extrabold,
   },
   headerSubtitle: {
-    marginTop: 8,
+    marginTop: 6,
     fontSize: 14,
     lineHeight: 21,
   },
   button: {
-    minHeight: 56,
-    borderRadius: 18,
+    minHeight: cargoTheme.cta.minHeight,
+    borderRadius: cargoTheme.cta.borderRadius,
     borderWidth: 1,
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
   },
   buttonDisabled: {
     opacity: 0.55,
@@ -397,8 +491,21 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   buttonText: {
-    fontSize: 16,
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    letterSpacing: cargoTheme.cta.letterSpacing,
+  },
+  buttonParcel: {
+    minHeight: cargoTheme.ctaParcel.minHeight,
+    borderRadius: cargoTheme.ctaParcel.borderRadius,
+    paddingHorizontal: cargoTheme.ctaParcel.paddingHorizontal,
+  },
+  buttonTextParcel: {
+    fontSize: cargoTheme.ctaParcel.labelSize,
+    lineHeight: cargoTheme.ctaParcel.labelLineHeight,
     fontFamily: typography.extrabold,
+    letterSpacing: cargoTheme.ctaParcel.letterSpacing,
   },
   sectionHeader: {
     marginBottom: 12,
@@ -414,7 +521,7 @@ const styles = StyleSheet.create({
   sectionAction: {
     fontSize: 13,
     fontFamily: typography.bold,
-    color: cargoTheme.colors.primary,
+    color: cargoTheme.colors.ink,
   },
   menuRow: {
     backgroundColor: cargoTheme.colors.surface,
@@ -482,36 +589,48 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: typography.extrabold,
   },
+  navRoot: {
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+  },
   bottomNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
+    flexShrink: 0,
+    width: '100%',
     paddingTop: 10,
-    paddingBottom: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#EAF0F6',
-    backgroundColor: cargoTheme.colors.surface,
+    paddingHorizontal: 4,
+    backgroundColor: '#FFFFFF',
   },
   navItem: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  navIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    minHeight: 48,
+    paddingBottom: 2,
   },
-  navIconWrapActive: {
-    backgroundColor: '#ECFDF3',
+  navActivityDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: cargoTheme.colors.primary,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
   navLabel: {
-    fontSize: 12,
-    fontFamily: typography.bold,
-    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: typography.medium,
+    color: '#9CA3AF',
   },
   navLabelActive: {
-    color: cargoTheme.colors.primaryDark,
+    color: '#111827',
+    fontFamily: typography.semibold,
   },
 });

@@ -13,7 +13,7 @@ import { upsertUserProfile } from '@/lib/user-profile';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useNotifications } from '@/providers/notification-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const screenScope = 'ProfileEditScreen';
 

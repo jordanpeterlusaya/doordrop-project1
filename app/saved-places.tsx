@@ -11,7 +11,7 @@ import { useAppCopy } from '@/lib/app-copy';
 import { getPersistedItem, setPersistedItem } from '@/lib/persistent-storage';
 import { type SavedPlace } from '@/lib/saved-places';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const SAVED_PLACES_KEY = 'doordrop.savedPlaces';
 const screenScope = 'SavedPlacesScreen';

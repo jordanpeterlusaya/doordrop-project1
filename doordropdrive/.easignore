@@ -1,10 +1,14 @@
 node_modules/
 .expo/
-android/
-ios/
+/android/
+/ios/
 *.apk
 *.aab
 .git
 .env
 .env.*
 !.env.example
+modules/**/android/build/
+modules/**/.gradle/
+dist/
+*.log

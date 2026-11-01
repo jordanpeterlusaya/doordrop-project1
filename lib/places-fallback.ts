@@ -1,6 +1,7 @@
 import { logWarning } from '@/lib/debug-logger';
 import { getGoogleMapsApiKey } from '@/lib/maps-config';
-import type { RoutePoint } from '@/lib/route-utils';
+import { filterSuggestionsToServiceCity, getNearestServiceCity, isPointNearServiceCity } from '@/lib/service-cities';
+import { getDistanceBetweenPoints, type RoutePoint } from '@/lib/route-utils';
 
 export type FallbackSuggestion = {
   id: string;
@@ -135,10 +136,18 @@ function normalizeHaystack(value: string) {
   return value.toLowerCase().replace(/['’]/g, '');
 }
 
-export function searchLocalPlaces(query: string, limit = 6): FallbackSuggestion[] {
+export function searchLocalPlaces(query: string, limit = 6, origin?: RoutePoint): FallbackSuggestion[] {
   const needle = normalizeHaystack(query.trim());
   if (needle.length < 2) {
     return [];
+  }
+
+  // Hardcoded locals are Dar-only; only use them when the user is near Dar.
+  if (origin) {
+    const city = getNearestServiceCity(origin);
+    if (city.key !== 'dar-es-salaam' || !isPointNearServiceCity(origin, city, 80_000)) {
+      return [];
+    }
   }
 
   const ranked = darPlaces
@@ -149,6 +158,16 @@ export function searchLocalPlaces(query: string, limit = 6): FallbackSuggestion[
       const includes = name.includes(needle) || address.includes(needle);
       if (!starts && !includes) {
         return null;
+      }
+
+      if (origin) {
+        const distance = getDistanceBetweenPoints(origin, {
+          latitude: place.latitude,
+          longitude: place.longitude,
+        });
+        if (distance > 80_000) {
+          return null;
+        }
       }
 
       return {
@@ -243,6 +262,13 @@ async function fetchPhotonSuggestions(query: string, origin?: RoutePoint, limit 
         return null;
       }
 
+      if (origin) {
+        const distance = getDistanceBetweenPoints(origin, { latitude, longitude });
+        if (distance > 120_000) {
+          return null;
+        }
+      }
+
       const name = properties.name?.trim() || properties.street?.trim() || query;
       const address = [
         properties.housenumber && properties.street ? `${properties.street} ${properties.housenumber}` : properties.street,
@@ -285,13 +311,21 @@ type NominatimHit = {
   };
 };
 
-async function fetchNominatimSuggestions(query: string, limit = 6): Promise<FallbackSuggestion[]> {
+async function fetchNominatimSuggestions(query: string, origin?: RoutePoint, limit = 6): Promise<FallbackSuggestion[]> {
   const url = new URL('https://nominatim.openstreetmap.org/search');
   url.searchParams.set('q', query);
   url.searchParams.set('format', 'jsonv2');
   url.searchParams.set('addressdetails', '1');
-  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('limit', String(Math.max(limit, 8)));
   url.searchParams.set('countrycodes', 'tz');
+  if (origin) {
+    const delta = 1.1;
+    url.searchParams.set(
+      'viewbox',
+      `${origin.longitude - delta},${origin.latitude + delta},${origin.longitude + delta},${origin.latitude - delta}`
+    );
+    url.searchParams.set('bounded', '1');
+  }
 
   const response = await fetchWithTimeout(url.toString(), {
     headers: {
@@ -310,6 +344,13 @@ async function fetchNominatimSuggestions(query: string, limit = 6): Promise<Fall
       const longitude = Number(hit.lon);
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
         return null;
+      }
+
+      if (origin) {
+        const distance = getDistanceBetweenPoints(origin, { latitude, longitude });
+        if (distance > 120_000) {
+          return null;
+        }
       }
 
       const name =
@@ -369,14 +410,16 @@ async function fetchGooglePlacesSuggestions(query: string, origin?: RoutePoint, 
       regionCode: 'TZ',
       includedRegionCodes: ['TZ'],
       origin: origin ? { latitude: origin.latitude, longitude: origin.longitude } : undefined,
-      locationBias: origin
+      ...(origin
         ? {
-            circle: {
-              center: { latitude: origin.latitude, longitude: origin.longitude },
-              radius: 50000,
+            locationRestriction: {
+              circle: {
+                center: { latitude: origin.latitude, longitude: origin.longitude },
+                radius: 120000,
+              },
             },
           }
-        : undefined,
+        : {}),
     }),
   });
 
@@ -414,17 +457,14 @@ async function fetchGooglePlacesSuggestions(query: string, origin?: RoutePoint, 
 export async function fetchFallbackSuggestions(
   query: string,
   origin?: RoutePoint,
-  limit = 6
+  limit = 8
 ): Promise<FallbackSuggestion[]> {
-  const local = searchLocalPlaces(query, limit);
-  if (local.length >= 2) {
-    return local;
-  }
+  const local = searchLocalPlaces(query, limit, origin);
 
   const remoteResults = await Promise.allSettled([
     fetchGooglePlacesSuggestions(query, origin, limit),
     fetchPhotonSuggestions(query, origin, limit),
-    fetchNominatimSuggestions(query, limit),
+    fetchNominatimSuggestions(query, origin, limit),
   ]);
 
   remoteResults.forEach((result, index) => {
@@ -440,5 +480,6 @@ export async function fetchFallbackSuggestions(
     .filter((result): result is PromiseFulfilledResult<FallbackSuggestion[]> => result.status === 'fulfilled')
     .flatMap((result) => result.value);
 
-  return mergeSuggestions([local, remote], limit);
+  // Prefer Google / remote sources first so Dar local catalog cannot crowd out real Places hits.
+  return filterSuggestionsToServiceCity(mergeSuggestions([remote, local], limit * 2), origin, limit);
 }

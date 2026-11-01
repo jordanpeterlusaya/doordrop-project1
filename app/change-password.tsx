@@ -32,7 +32,7 @@ import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/l
 import { auth } from '@/lib/firebase';
 import { useAuthSession } from '@/providers/auth-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const screenScope = 'ChangePasswordScreen';
 

@@ -3,6 +3,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { InteractionManager, Platform, View } from 'react-native';
 
 import { InAppBanner } from '@/components/in-app-banner';
+import { getRequestDriverHref } from '@/lib/driver-request';
 import { AppOfflineBanner } from '@/components/service-notice';
 import {
   getDoorDropPushNotificationAvailability,
@@ -49,6 +50,10 @@ function shouldShowInAppBanner(
     promotions?: boolean;
   } | null | undefined
 ) {
+  if (notification.type === 'message') {
+    return true;
+  }
+
   if (notification.type === 'order_created') {
     return false;
   }
@@ -222,6 +227,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }
 
     void markUserNotificationRead(current.id).catch(() => undefined);
+
+    if (current.driverId) {
+      router.push(
+        getRequestDriverHref({
+          driverId: current.driverId,
+          driverName: current.driverName,
+          driverVehicleType: current.driverVehicleType,
+        })
+      );
+      return;
+    }
 
     if (current.orderId) {
       router.push({

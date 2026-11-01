@@ -10,27 +10,6 @@ function isExpoGo() {
   return Constants.appOwnership === 'expo' || Constants.executionEnvironment === 'storeClient';
 }
 
-export const nativeNotifications = isExpoGo() ? null : require('expo-notifications');
-
-if (nativeNotifications) {
-  nativeNotifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
-  });
-}
-
-function getExpoProjectId() {
-  return (
-    Constants.easConfig?.projectId ||
-    (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
-    ''
-  );
-}
-
 type PushNotificationRuntimeConfig = {
   androidNativeFcmConfigured?: boolean;
   androidPackage?: string;
@@ -46,6 +25,54 @@ type PushNotificationAvailability = {
 
 function getPushNotificationRuntimeConfig() {
   return (Constants.expoConfig?.extra?.pushNotifications ?? {}) as PushNotificationRuntimeConfig;
+}
+
+function loadNativeNotifications() {
+  try {
+    if (Platform.OS === 'web' || isExpoGo()) {
+      return null;
+    }
+
+    const runtimeConfig = getPushNotificationRuntimeConfig();
+    if (Platform.OS === 'android' && runtimeConfig.androidNativeFcmConfigured !== true) {
+      return null;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-notifications');
+  } catch (error) {
+    logWarning(pushScope, 'expo-notifications-unavailable', {
+      message: error instanceof Error ? error.message : String(error ?? ''),
+    });
+    return null;
+  }
+}
+
+export const nativeNotifications = loadNativeNotifications();
+
+if (nativeNotifications) {
+  try {
+    nativeNotifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+  } catch (error) {
+    logWarning(pushScope, 'setNotificationHandler-failed', {
+      message: error instanceof Error ? error.message : String(error ?? ''),
+    });
+  }
+}
+
+function getExpoProjectId() {
+  return (
+    Constants.easConfig?.projectId ||
+    (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
+    ''
+  );
 }
 
 export function getDoorDropPushNotificationAvailability(): PushNotificationAvailability {

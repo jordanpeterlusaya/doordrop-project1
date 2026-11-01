@@ -1,7 +1,7 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 export default function Terms() {
   return (
@@ -34,14 +34,17 @@ export default function Terms() {
 
 `}You may not send:
 • Hazardous materials or explosives
-• Illegal substances or contraband
-• Weapons or firearms
+• Illegal substances, narcotics, or contraband
+• Weapons, firearms, or ammunition
 • Counterfeit goods
+• Stolen property
 • Items that violate intellectual property rights
 • Perishable items (unless specially arranged)
 • Items that are dangerous or could cause harm
 
-doordrop reserves the right to refuse service for prohibited items.</Text>
+You are solely responsible for the contents of every parcel you send. By placing an order you warrant that the parcel is lawful under the laws of the United Republic of Tanzania and any other applicable shipping, customs, aviation, and road-transport rules.
+
+doordrop reserves the right to refuse, delay, open, inspect, or stop any parcel that is flagged as suspicious, that fails screening, or that we reasonably believe may be illegal, dangerous, or misdeclared. If we find or reasonably suspect illegal contents, we may retain the parcel, freeze related account activity, and report the matter to the Tanzania Police Force or other competent authorities, including sharing order, identity, and location information required for that report. doordrop is a logistics platform, not a courier of illegal goods, and cooperation with lawful investigations does not waive our rights or your liabilities.</Text>
 
         <Text style={styles.section}><Text style={styles.bold}>6. Pricing and Payment</Text>{`
 
@@ -133,7 +136,7 @@ You waive the right to pursue class action lawsuits.</Text>
 Email: doordrop225@gmail.com
 Address: doordrop, Dar es Salaam, Tanzania
 
-Last Updated: May 2026</Text>
+Last Updated: September 2026</Text>
       </View>
     </ScrollView>
   );

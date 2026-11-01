@@ -1,0 +1,56 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:1:1-17:12
+INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:1:1-17:12
+	package
+		INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.VIBRATE
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:2:3-64
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:2:20-61
+uses-permission#android.permission.WAKE_LOCK
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:3:3-66
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:3:20-63
+uses-permission#android.permission.MODIFY_AUDIO_SETTINGS
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:4:3-78
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:4:20-75
+uses-permission#android.permission.POST_NOTIFICATIONS
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:5:3-75
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:5:20-72
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:6:3-75
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:6:20-72
+uses-permission#android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:7:3-90
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:7:20-87
+uses-permission#android.permission.USE_FULL_SCREEN_INTENT
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:8:3-79
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:8:20-76
+application
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:10:3-16:17
+service#expo.modules.incomingalert.IncomingAlertService
+ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:11:5-15:38
+	android:exported
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:13:7-31
+	android:stopWithTask
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:15:7-35
+	android:foregroundServiceType
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:14:7-52
+	android:name
+		ADDED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml:12:7-43
+uses-sdk
+INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml
+INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /home/jordan/DoorDrop/doordropdrive/modules/incoming-alert/android/src/main/AndroidManifest.xml

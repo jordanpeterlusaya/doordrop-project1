@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="sw">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>doordrop — Omba kufutwa kwa akaunti</title>
+    <meta
+      name="description"
+      content="Omba kufutwa kwa akaunti yako ya DoorDrop na data zinazohusiana. Request DoorDrop account and data deletion."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="script.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <header class="site-header">
+        <div class="title-wrap">
+          <h1>doordrop</h1>
+          <p class="updated">Omba kufutwa kwa akaunti na data · Account &amp; data deletion</p>
+        </div>
+        <nav class="site-nav">
+          <a href="index.html">Terms</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="delete-account.html" aria-current="page">Delete account</a>
+        </nav>
+      </header>
+
+      <article class="content">
+        <section class="no-collapse highlight">
+          <h2>Omba kufutwa kwa akaunti (Account deletion request)</h2>
+          <div class="section-content">
+            <p>
+              Ukifungua akaunti ya <strong>DoorDrop</strong>, unaweza kuomba ifutwe pamoja na data
+              zinazohusiana. Ombi lako litashughulikiwa kwa mikono na timu yetu.
+            </p>
+            <p>
+              If you created a DoorDrop account, you can request that we delete the account and
+              related personal data. Requests are handled by our support team.
+            </p>
+          </div>
+        </section>
+
+        <section class="no-collapse">
+          <h2>Jinsi ya kuomba · How to request</h2>
+          <div class="section-content">
+            <ol>
+              <li>Jaza fomu hapa chini (jina, nambari ya simu au barua pepe iliyosajiliwa kwenye app).</li>
+              <li>Bonyeza <strong>Tuma ombi</strong> — barua pepe itafunguka kwenda
+                <a href="mailto:doordrop225@gmail.com">doordrop225@gmail.com</a>.</li>
+              <li>Tuma barua hiyo. Unaweza pia kuandika moja kwa moja kwa anwani hiyo ukiwa na somo
+                <em>“DoorDrop account deletion”</em>.</li>
+            </ol>
+            <p>
+              Fill in the form below with the name and phone/email used in the app, then send the
+              email. You may also email us directly with the subject “DoorDrop account deletion”.
+            </p>
+            <p class="muted">
+              WhatsApp (hiari):
+              <a href="https://wa.me/255785019093?text=Habari%2C%20naomba%20kufutwa%20kwa%20akaunti%20yangu%20ya%20DoorDrop."
+                >+255 785 019 093</a>
+            </p>
+          </div>
+        </section>
+
+        <section class="no-collapse">
+          <h2>Fomu ya ombi · Request form</h2>
+          <div class="section-content">
+            <form id="deleteAccountForm" class="delete-form" novalidate>
+              <label>
+                Jina kamili / Full name
+                <input id="fullName" name="fullName" type="text" autocomplete="name" required placeholder="mf. Amina Juma" />
+              </label>
+              <label>
+                Simu iliyosajiliwa / Registered phone
+                <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="07XXXXXXXX" />
+              </label>
+              <label>
+                Barua pepe / Email (ikiwa unayo)
+                <input id="email" name="email" type="email" autocomplete="email" placeholder="wewe@email.com" />
+              </label>
+              <label>
+                Maelezo ya ziada / Extra notes (si lazima)
+                <textarea id="notes" name="notes" rows="3" placeholder="mf. namba ya akaunti, sababu fupi…"></textarea>
+              </label>
+              <p class="form-hint muted">Weka angalau simu <em>au</em> barua pepe inayolingana na akaunti yako.</p>
+              <p id="formError" class="form-error" hidden></p>
+              <p id="formSuccess" class="form-success" hidden></p>
+              <button type="submit">Tuma ombi · Send request</button>
+            </form>
+          </div>
+        </section>
+
+        <section>
+          <h2>Data zinazofutwa · Data we delete</h2>
+          <div class="section-content">
+            <p>Baada ya kuthibitisha ombi lako, kwa kawaida tutafuta:</p>
+            <ul>
+              <li>Akaunti yako (profile, jina, simu, barua pepe)</li>
+              <li>Mahali uliyohifadhi (saved places) na mapendeleo</li>
+              <li>Historia ya oda kwenye akaunti yako (inapowezekana kisheria)</li>
+              <li>Picha / media zilizounganishwa na akaunti yako</li>
+              <li>Tokeni za arifa (push tokens) na data za kuingia</li>
+            </ul>
+            <p>
+              After verifying your request, we typically delete your account profile, saved places,
+              in-app order history where legally allowed, related media, and push/login tokens.
+            </p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Data zinazobaki · Data we may retain</h2>
+          <div class="section-content">
+            <p>Baadhi ya taarifa zinaweza kubaki kwa muda mfupi au kama sheria inavyohitaji, mfano:</p>
+            <ul>
+              <li>Rekodi za malipo / miamala (kwa ajili ya uhasibu, kodi, na kuzuia ulaghai)</li>
+              <li>Rekodi za mizozo, udanganyifu, au ripoti za kisheria</li>
+              <li>Nakala za backup hadi zifutwe kwa ratiba ya kawaida ya mfumo</li>
+            </ul>
+            <p>
+              Some payment, fraud-prevention, and legal records may be retained as required by law
+              or until routine backups expire. Retained data is not used for marketing.
+            </p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Muda · Timeline</h2>
+          <div class="section-content">
+            <p>
+              Tutathibitisha ombi lako ndani ya siku <strong>7</strong> za kazi, na kukamilisha
+              kufutwa kwa akaunti ndani ya siku <strong>30</strong> baada ya uthibitisho, isipokuwa
+              sheria au mzozo unaoendelea unahitaji muda zaidi.
+            </p>
+            <p>
+              We aim to acknowledge within <strong>7</strong> business days and complete deletion
+              within <strong>30</strong> days after verification, unless a longer period is required
+              by law or an active dispute.
+            </p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Mawasiliano · Contact</h2>
+          <div class="section-content">
+            Email:
+            <a href="mailto:doordrop225@gmail.com">doordrop225@gmail.com</a><br />
+            Address: doordrop, Dar es Salaam, Tanzania<br />
+            <a href="privacy.html">Privacy Policy</a>
+            ·
+            <a href="index.html">Terms &amp; Conditions</a>
+          </div>
+        </section>
+      </article>
+
+      <footer class="footer">
+        <button type="button" id="printBtn">Print</button>
+      </footer>
+    </main>
+  </body>
+</html>

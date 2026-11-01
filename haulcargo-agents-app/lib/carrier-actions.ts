@@ -116,7 +116,8 @@ export async function cancelAcceptedJob(shipmentId: string, carrierId: string, a
 }
 
 const FORWARD: Record<string, string> = {
-  received: 'packed',
+  received: 'pickup',
+  pickup: 'packed',
   packed: 'transit',
   transit: 'arrived',
 };
@@ -150,6 +151,7 @@ export async function advanceDeskStep(
       actor: actorEmail,
     }),
   };
+  if (step.key === 'pickup') patch.pickupMode = 'agent_collects';
   if (step.key === 'packed') patch.pickedUpAt = serverTimestamp();
   if (step.key === 'arrived') {
     await markShipmentArrived(shipmentId);

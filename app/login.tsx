@@ -11,7 +11,7 @@ import { useAppCopy } from '@/lib/app-copy';
 import { resolveAuthReturnTo } from '@/lib/auth-navigation';
 import { useAuthSession } from '@/providers/auth-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const TERMS_URL = 'https://doordrop-terms.vercel.app/';
 

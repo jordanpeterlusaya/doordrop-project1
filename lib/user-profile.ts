@@ -1,7 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, getDoc, increment, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocFromCache, increment, serverTimestamp, setDoc } from 'firebase/firestore';
 
 import { db } from '@/lib/firebase';
+import { readablePhone } from '@/lib/phone-link';
+
+const PROFILE_FETCH_TIMEOUT_MS = 8000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
 
 export type UserProfile = {
   uid: string;
@@ -58,13 +77,41 @@ async function shouldRecordAppOpen(uid: string) {
 }
 
 export async function getUserProfile(uid: string) {
-  const snapshot = await getDoc(userProfileRef(uid));
+  const ref = userProfileRef(uid);
+  let cachedProfile: UserProfile | null = null;
 
-  if (!snapshot.exists()) {
-    return null;
+  try {
+    const cached = await getDocFromCache(ref);
+    if (cached.exists()) {
+      cachedProfile = cached.data() as UserProfile;
+    }
+  } catch {
+    // No local cache yet — fall through to network.
   }
 
-  return snapshot.data() as UserProfile;
+  if (cachedProfile && readablePhone(cachedProfile.phoneNumber)) {
+    void getDoc(ref).catch(() => undefined);
+    return cachedProfile;
+  }
+
+  try {
+    const snapshot = await withTimeout(
+      getDoc(ref),
+      PROFILE_FETCH_TIMEOUT_MS,
+      'Firestore profile fetch timed out'
+    );
+
+    if (snapshot.exists()) {
+      return snapshot.data() as UserProfile;
+    }
+  } catch (error) {
+    if (cachedProfile) {
+      return cachedProfile;
+    }
+    throw error;
+  }
+
+  return cachedProfile;
 }
 
 export async function upsertUserProfile(
@@ -75,10 +122,15 @@ export async function upsertUserProfile(
     notificationPreferences?: UserProfile['notificationPreferences'];
   }
 ) {
+  const phoneNumber = readablePhone(profile.phoneNumber);
+  const profileWithoutPhone = { ...profile };
+  delete profileWithoutPhone.phoneNumber;
+
   await setDoc(
     userProfileRef(profile.uid),
     {
-      ...profile,
+      ...profileWithoutPhone,
+      ...(phoneNumber ? { phoneNumber } : {}),
       updatedAt: serverTimestamp(),
       createdAt: serverTimestamp(),
     },
@@ -95,27 +147,36 @@ export async function recordUserAppOpen(input: {
   latitude?: number;
   longitude?: number;
 }) {
-  if (!(await shouldRecordAppOpen(input.uid))) {
+  const hasLocation =
+    typeof input.latitude === 'number' &&
+    Number.isFinite(input.latitude) &&
+    typeof input.longitude === 'number' &&
+    Number.isFinite(input.longitude);
+  const shouldCount = await shouldRecordAppOpen(input.uid);
+
+  if (!shouldCount && !hasLocation) {
     return;
   }
 
+  const phoneNumber = readablePhone(input.phoneNumber);
   const payload: Record<string, unknown> = {
     uid: input.uid,
     fullName: input.fullName,
     email: input.email?.trim().toLowerCase() || '',
-    phoneNumber: input.phoneNumber,
     phoneVerified: input.phoneVerified,
-    appOpenCount: increment(1),
     lastActiveAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
+    isAppOnline: true,
+    ...(phoneNumber ? { phoneNumber } : {}),
   };
 
-  if (typeof input.latitude === 'number' && Number.isFinite(input.latitude)) {
-    payload.lastActiveLatitude = input.latitude;
+  if (shouldCount) {
+    payload.appOpenCount = increment(1);
   }
 
-  if (typeof input.longitude === 'number' && Number.isFinite(input.longitude)) {
+  if (hasLocation) {
+    payload.lastActiveLatitude = input.latitude;
     payload.lastActiveLongitude = input.longitude;
   }
 

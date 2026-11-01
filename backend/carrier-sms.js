@@ -655,7 +655,7 @@ function buildCompanyOfferBody(order, shipment, orderId, carrier) {
   body += ` Mtumaji: ${clipSms(senderName, 20)}${senderPhone ? ` ${clipSms(senderPhone, 14)}` : ''}.`;
   body += ` Mpokeaji: ${clipSms(recipientName, 20)}${recipientPhone ? ` ${clipSms(recipientPhone, 14)}` : ''}.`;
   if (price) body += ` ${price}.`;
-  body += ' Fungua HAUL Agents kukubali.';
+  body += ' Imefika kwenye HAUL. Kubali kwenye portal au Agents.';
   return body.slice(0, 320);
 }
 
@@ -808,31 +808,73 @@ async function loadCarrierDoc(db, carrierId) {
   }
 }
 
-/** SMS to the transport company when an offer is assigned. */
+function uniqueSmsPhones(values) {
+  const seen = new Set();
+  const phones = [];
+  for (const value of values) {
+    const phone = normalizeSmsPhone(value);
+    if (!phone || seen.has(phone)) continue;
+    seen.add(phone);
+    phones.push(phone);
+  }
+  return phones;
+}
+
+async function companyOfferPhones(db, carrierId, carrier, shipment) {
+  const raw = [
+    carrier?.phone,
+    carrier?.phoneNormalized,
+    carrier?.notificationPhone,
+    carrier?.smsPhone,
+    shipment?.carrierPhone,
+  ];
+  const lists = await Promise.all([
+    db.collection('carrierStaff').where('carrierId', '==', carrierId).limit(30).get().catch(() => null),
+    db.collection('carrierMembers').where('carrierId', '==', carrierId).limit(30).get().catch(() => null),
+  ]);
+  for (const snap of lists) {
+    if (!snap) continue;
+    snap.docs.forEach((doc) => raw.push(doc.data()?.phone, doc.data()?.phoneNormalized));
+  }
+  return uniqueSmsPhones(raw);
+}
+
+/** SMS to the transport company when an offer is assigned. Portal accounts use the same phone path as Agents. */
 async function sendCompanyOfferSms(db, { orderId, shipment, carrierId, order }) {
   const carrier = await loadCarrierDoc(db, carrierId);
-  const to = String(carrier?.phone || carrier?.phoneNormalized || shipment?.carrierPhone || '').trim();
-  const body = buildCompanyOfferBody(order, shipment, orderId, carrier || {});
-  // Persist company label for later arrival/sender copy.
+  // Persist company label for later arrival/sender copy even if SMS is opted out.
   if (carrier) {
     await db.collection('carrierShipments').doc(orderId).set(
       {
-        carrierCompanyName: String(carrier.tradingName || carrier.companyName || '').trim(),
+        carrierCompanyName: String(carrier.tradingName || carrier.companyName || carrier.name || '').trim(),
         carrierPhone: String(carrier.phone || carrier.phoneNormalized || '').trim(),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
   }
-  return sendIdempotentSms(db, {
-    orderId,
-    shipment,
-    to,
-    body,
-    jobKey: `offer_company_${carrierId || 'x'}`.slice(0, 80),
-    audience: 'company',
-    event: 'company_offer',
-  });
+  if (carrier && carrier.notifySms === false) {
+    return { skipped: true, reason: 'notifySms_disabled' };
+  }
+  const phones = await companyOfferPhones(db, carrierId, carrier, shipment);
+  if (!phones.length) return { skipped: true, reason: 'no_phone', audience: 'company' };
+  const body = buildCompanyOfferBody(order, shipment, orderId, carrier || {});
+  const results = [];
+  for (const to of phones) {
+    const suffix = to.replace(/\D/g, '').slice(-6) || 'x';
+    results.push(
+      await sendIdempotentSms(db, {
+        orderId,
+        shipment,
+        to,
+        body,
+        jobKey: `offer_company_${carrierId || 'x'}_${suffix}`.slice(0, 80),
+        audience: 'company',
+        event: 'company_offer',
+      })
+    );
+  }
+  return { sent: results.some((item) => item?.sent), phones: phones.length, results };
 }
 
 /** SMS to mtumaji when a company has been found / offered. */

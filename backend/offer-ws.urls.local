@@ -1,0 +1,4 @@
+EXPO_PUBLIC_CARGO_OFFER_WS_URL=wss://haul-cargo-offer-ws-729242246964.us-central1.run.app
+EXPO_PUBLIC_PARCEL_OFFER_WS_URL=wss://haul-parcel-offer-ws-729242246964.us-central1.run.app
+CARGO_OFFER_WS_HTTPS=https://haul-cargo-offer-ws-729242246964.us-central1.run.app
+PARCEL_OFFER_WS_HTTPS=https://haul-parcel-offer-ws-729242246964.us-central1.run.app

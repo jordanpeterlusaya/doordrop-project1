@@ -423,6 +423,7 @@ export default function TrackOrderWebScreen() {
                   <Text style={[styles.stepLabel, step.state === 'current' && styles.stepLabelCurrent]} numberOfLines={2}>
                     {step.label}
                   </Text>
+                  {step.timeLabel ? <Text style={styles.stepTime}>{step.timeLabel}</Text> : null}
                 </View>
               ))}
             </View>
@@ -745,6 +746,11 @@ const styles = StyleSheet.create({
   },
   stepDotDone: {
     backgroundColor: '#111827',
+  },
+  stepTime: {
+    fontSize: 11,
+    color: '#6B7280',
+    textAlign: 'center',
   },
   stepDotCurrent: {
     backgroundColor: '#FFE500',

@@ -1,8 +1,8 @@
 const DEFAULT_COUNTRY_CODE = '+255';
 const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
 
-export function normalizePhoneNumber(input: string) {
-  const trimmed = input.trim();
+export function normalizePhoneNumber(input?: string | null) {
+  const trimmed = String(input || '').trim();
 
   if (!trimmed) {
     return '';

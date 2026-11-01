@@ -160,6 +160,20 @@ async function trivapesaFetch(pathname, { method = 'GET', body } = {}) {
   return parsed || {};
 }
 
+function driverCommissionWebhookUrl() {
+  const explicit = String(process.env.TRIVAPESA_DRIVER_WEBHOOK_URL || '').trim();
+  if (explicit) return explicit;
+  const base = String(
+    process.env.PUBLIC_API_BASE_URL ||
+      process.env.BACKEND_PUBLIC_URL ||
+      process.env.EXPO_PUBLIC_API_BASE_URL ||
+      'https://us-central1-efootball-app-9d175.cloudfunctions.net/api'
+  )
+    .trim()
+    .replace(/\/+$/, '');
+  return `${base}/driver/commission/webhook/trivapesa`;
+}
+
 async function createCollection(input) {
   const network = requestNetwork(input.network);
   const payload = {
@@ -168,7 +182,7 @@ async function createCollection(input) {
     customer_phone: String(input.phone || ''),
     customer_name: String(input.customerName || 'HAUL carrier').slice(0, 80),
     external_id: String(input.externalId || ''),
-    callback_url: commissionWebhookUrl(),
+    callback_url: String(input.callbackUrl || '').trim() || commissionWebhookUrl(),
   };
   if (network) payload.network = network;
   const parsed = await trivapesaFetch('/api/v1/payments/collections', { method: 'POST', body: payload });
@@ -217,6 +231,7 @@ module.exports = {
   REQUEST_NETWORKS,
   apiKey,
   commissionWebhookUrl,
+  driverCommissionWebhookUrl,
   createCollection,
   eventName,
   fetchCollection,

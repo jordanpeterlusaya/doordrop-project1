@@ -1,4 +1,13 @@
+import Constants from 'expo-constants';
+
 type RuntimeEnv = Record<string, string | undefined>;
+
+function getExpoExtra(): Record<string, unknown> {
+  const manifestExtra = (Constants as { manifest2?: { extra?: { expoClient?: { extra?: Record<string, unknown> } } } })
+    .manifest2?.extra?.expoClient?.extra;
+  const extra = (Constants.expoConfig?.extra ?? manifestExtra ?? {}) as Record<string, unknown>;
+  return extra && typeof extra === 'object' ? extra : {};
+}
 
 export function getRuntimeEnv() {
   if (typeof process === 'undefined' || !process?.env) {
@@ -9,6 +18,29 @@ export function getRuntimeEnv() {
 }
 
 export function getRuntimeEnvValue(key: string) {
-  const value = getRuntimeEnv()[key];
-  return typeof value === 'string' ? value : '';
+  const fromProcess = getRuntimeEnv()[key];
+  if (typeof fromProcess === 'string' && fromProcess.trim()) {
+    return fromProcess;
+  }
+
+  const extra = getExpoExtra();
+  const fromExtra = extra[key];
+  if (typeof fromExtra === 'string' && fromExtra.trim()) {
+    return fromExtra;
+  }
+
+  // Also accept short aliases baked into app.config extra (cargoOfferWsUrl, etc.)
+  const aliases: Record<string, string[]> = {
+    EXPO_PUBLIC_API_BASE_URL: ['apiBaseUrl'],
+    EXPO_PUBLIC_CARGO_OFFER_WS_URL: ['cargoOfferWsUrl'],
+    EXPO_PUBLIC_PARCEL_OFFER_WS_URL: ['parcelOfferWsUrl'],
+  };
+  for (const alias of aliases[key] || []) {
+    const value = extra[alias];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+
+  return '';
 }

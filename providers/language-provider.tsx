@@ -18,7 +18,7 @@ function isAppLanguage(value: string | null): value is AppLanguage {
 }
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const [language, setLanguageState] = useState<AppLanguage>('en');
+  const [language, setLanguageState] = useState<AppLanguage>('sw');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

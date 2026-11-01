@@ -6,7 +6,7 @@ import { CargoHeader, CargoScreen, MenuRow } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { useAppCopy } from '@/lib/app-copy';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 export default function PoliciesScreen() {
   const router = useRouter();

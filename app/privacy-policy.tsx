@@ -1,7 +1,7 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 export default function PrivacyPolicy() {
   return (
@@ -44,13 +44,13 @@ We also automatically collect:
         <Text style={styles.section}><Text style={styles.bold}>4. Information Sharing</Text>{`
 
 `}We may share your information with:
-• Delivery partners and contractors
+• Delivery partners and contractors (limited operational details needed to complete a delivery)
 • Payment processors and financial institutions
-• Law enforcement (when legally required)
+• Law enforcement and other competent authorities when legally required, or when we reasonably believe a parcel or account activity is illegal, fraudulent, or a threat to public safety
 • Service providers who assist our operations
 • Business partners with your consent
 
-We do not sell your personal information to third parties for marketing purposes.</Text>
+We do not sell your personal information to third parties for marketing purposes. Parcel contents are not published on tickets or public tracking pages. We may still inspect, photograph, or document a flagged parcel for safety, insurance, and legal compliance.</Text>
 
         <Text style={styles.section}><Text style={styles.bold}>5. Data Security</Text>{`
 
@@ -89,7 +89,7 @@ Contact us at doordrop225@gmail.com to exercise these rights.</Text>
 Email: doordrop225@gmail.com
 Address: doordrop, Dar es Salaam, Tanzania
 
-Last Updated: May 2026</Text>
+Last Updated: September 2026</Text>
       </View>
     </ScrollView>
   );

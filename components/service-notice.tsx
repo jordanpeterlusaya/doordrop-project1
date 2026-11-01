@@ -1,12 +1,15 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { usePathname } from 'expo-router';
 import React from 'react';
-import { StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Image, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
 import { useNetworkStatus, type CustomerNoticeKind } from '@/lib/network-status';
+
+const offlineAvatar = require('@/assets/images/offline-sad-avatar.png');
 
 export function ServiceNotice({
   kind,
@@ -22,24 +25,31 @@ export function ServiceNotice({
           icon: 'wifi-off' as const,
           title: copy.notice.offlineTitle,
           text: message || copy.notice.offlineText,
+          avatar: offlineAvatar,
         }
       : kind === 'service'
         ? {
             icon: 'map-marker-radius-outline' as const,
             title: copy.notice.serviceTitle,
             text: message || copy.notice.serviceText,
+            avatar: null,
           }
         : {
             icon: 'map-search-outline' as const,
             title: copy.notice.locationTitle,
             text: message || copy.notice.locationText,
+            avatar: null,
           };
 
   return (
-    <View style={styles.card}>
-      <View style={styles.iconWrap}>
-        <MaterialCommunityIcons name={presentation.icon} size={20} color={cargoTheme.colors.primaryDark} />
-      </View>
+    <View style={[styles.card, presentation.avatar ? styles.cardOffline : null]}>
+      {presentation.avatar ? (
+        <Image source={presentation.avatar} style={styles.avatar} resizeMode="contain" />
+      ) : (
+        <View style={styles.iconWrap}>
+          <MaterialCommunityIcons name={presentation.icon} size={20} color={cargoTheme.colors.primaryDark} />
+        </View>
+      )}
       <View style={styles.copy}>
         <Text style={styles.title}>{presentation.title}</Text>
         <Text style={styles.text}>{presentation.text}</Text>
@@ -53,10 +63,12 @@ export function OfflineBanner() {
 }
 
 export function AppOfflineBanner() {
+  const pathname = usePathname();
   const online = useNetworkStatus();
   const insets = useSafeAreaInsets();
+  const hideOnHome = pathname === '/home' || pathname === '/';
 
-  if (online) {
+  if (online || hideOnHome) {
     return null;
   }
 
@@ -82,7 +94,7 @@ const styles = StyleSheet.create({
   },
   card: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
@@ -95,6 +107,15 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
+  },
+  cardOffline: {
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
   },
   iconWrap: {
     width: 40,

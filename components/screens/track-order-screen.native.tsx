@@ -41,6 +41,8 @@ import {
     getDeliveryOrderStatusLabel,
     hasDeliveryOrderRating,
     isNinunulieOrder,
+    confirmCarrierQuote,
+    declineCarrierQuote,
     submitDeliveryOrderRating,
     subscribeToDrivers,
     subscribeToOrder,
@@ -89,6 +91,7 @@ import {
   resolveOutsideTrackingCountdownPlan,
   resolveTimestampMillis,
 } from '@/lib/outside-parcel-eta';
+import { connectParcelOfferSocket } from '@/lib/parcel-offer-socket';
 import { useAuthSession } from '@/providers/auth-provider';
 import { useLanguage } from '@/providers/language-provider';
 
@@ -295,7 +298,7 @@ function buildShipmentSteps(order: DeliveryOrder, language: 'en' | 'sw') {
       key: step.key,
       label: step.label,
       state: step.state,
-      timeLabel: '',
+      timeLabel: step.timeLabel || '',
     }));
   }
 
@@ -480,12 +483,14 @@ export default function TrackOrderScreen() {
   const params = useLocalSearchParams<{
     orderId?: string;
     placed?: string;
+    instantCarrier?: string;
     notifyRecipient?: string;
     code?: string;
     receipt?: string;
   }>();
   const orderId = getParamValue(params.orderId);
   const placedParam = getParamValue(params.placed);
+  const instantCarrierParam = getParamValue(params.instantCarrier);
   const notifyRecipientParam = getParamValue(params.notifyRecipient);
   const codeParam = getParamValue(params.code);
   const receiptParam = getParamValue(params.receipt);
@@ -523,6 +528,7 @@ export default function TrackOrderScreen() {
   const [notifySentChannel, setNotifySentChannel] = useState<'sms' | 'whatsapp' | null>(null);
   const [trackCodeInput, setTrackCodeInput] = useState('');
   const [trackLookupError, setTrackLookupError] = useState('');
+  const [quoteBusy, setQuoteBusy] = useState(false);
   const [trackLookupLoading, setTrackLookupLoading] = useState(false);
   const trackLookupAttemptRef = useRef('');
   const countdownAnchorAttemptRef = useRef('');
@@ -913,6 +919,70 @@ export default function TrackOrderScreen() {
     return filterValidCoordinates([pickupPoint, dropoffPoint]);
   }, [dropoffPoint, pickupPoint, routeEstimate?.coordinates]);
   const isBusTrack = Boolean(order && isBusCustomerParcel(order));
+
+  // Instant carrier match over WebSocket when the customer finishes send-parcel.
+  useEffect(() => {
+    if (!orderId || !user || !order) return;
+    if (!isBusCustomerParcel(order)) return;
+    if (order.status === 'cancelled' || order.status === 'delivered') return;
+    if (order.carrierMatchStatus === 'accepted') return;
+    const wantsInstant =
+      instantCarrierParam === '1' ||
+      order.carrierDispatch === 'instant' ||
+      placedParam === '1';
+    if (!wantsInstant) return;
+
+    let closed = false;
+    let client: ReturnType<typeof connectParcelOfferSocket> | null = null;
+
+    const start = async () => {
+      try {
+        const token = await user.getIdToken();
+        if (closed) return;
+        client = connectParcelOfferSocket({
+          onOpen: () => {
+            client?.send({ type: 'hello', role: 'customer', userId: user.uid, token });
+            client?.send({ type: 'customer_request', orderId, token });
+          },
+          onEvent: (event) => {
+            if (event.type === 'error') {
+              logWarning(screenScope, 'parcelOfferSocket', {
+                orderId,
+                message: String(event.message || ''),
+              });
+            }
+          },
+          onError: () => {
+            logWarning(screenScope, 'parcelOfferSocket', { orderId, message: 'socket error' });
+          },
+        });
+      } catch (error) {
+        logWarning(screenScope, 'parcelOfferSocket', {
+          orderId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    void start();
+    return () => {
+      closed = true;
+      client?.close();
+    };
+    // Reconnect only when the order identity / match gate changes — not on every snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrow deps
+  }, [
+    instantCarrierParam,
+    order?.carrierDispatch,
+    order?.carrierMatchStatus,
+    order?.id,
+    order?.parcelScope,
+    order?.status,
+    orderId,
+    placedParam,
+    user?.uid,
+  ]);
+
   const hasLiveMap = mapCanRender && !isBusTrack;
   const isWaitingForDriver =
     !!order &&
@@ -2009,9 +2079,11 @@ export default function TrackOrderScreen() {
       ? images.cargoAvatarKirikuu
       : order?.driverVehicleType === 'canter' || order?.cargoVehicleKey === 'canter'
         ? images.cargoAvatarCanter
-        : order?.flow === 'cargo'
-          ? images.cargoAvatarToyo
-          : null;
+        : order?.cargoVehicleKey === 'toyo_electric' || order?.driverVehicleType === 'toyo_electric'
+          ? images.cargoAvatarToyoElectric
+          : order?.flow === 'cargo'
+            ? images.cargoAvatarToyo
+            : null;
   const pickupPillDetail = useMemo(() => {
     if (!order || ['delivered', 'cancelled', 'in_transit', 'at_hub'].includes(order.status)) {
       return undefined;
@@ -2435,6 +2507,66 @@ export default function TrackOrderScreen() {
                 />
               ) : null}
 
+              {isBusTrack && order.quoteStatus === 'awaiting_company' ? (
+                <View style={styles.quoteCard}>
+                  <Text style={styles.quoteTitle}>
+                    {language === 'sw' ? 'Bei bado haijatoka' : 'Price not sent yet'}
+                  </Text>
+                  <Text style={styles.quoteBody}>
+                    {language === 'sw'
+                      ? 'Kampuni itaona picha ya mzigo kisha itatuma bei. Utaweza kuthibitisha au kughairi hapa.'
+                      : 'The company will see the cargo photo and send a price. You can confirm or cancel here.'}
+                  </Text>
+                </View>
+              ) : null}
+
+              {isBusTrack && order.quoteStatus === 'offered' && Number(order.carrierQuoteTzs) > 0 ? (
+                <View style={styles.quoteCard}>
+                  <Text style={styles.quoteTitle}>
+                    {language === 'sw' ? 'Bei ya kampuni' : 'Company price'}
+                  </Text>
+                  <Text style={styles.quoteAmount}>
+                    TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}
+                  </Text>
+                  <View style={styles.quoteActions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={quoteBusy}
+                      style={[styles.quoteConfirm, quoteBusy && styles.quoteBusy]}
+                      onPress={() => {
+                        setQuoteBusy(true);
+                        void confirmCarrierQuote(order.id)
+                          .catch((error) => {
+                            Alert.alert(
+                              language === 'sw' ? 'Imeshindikana' : 'Could not confirm',
+                              error instanceof Error ? error.message : 'Try again.'
+                            );
+                          })
+                          .finally(() => setQuoteBusy(false));
+                      }}>
+                      <Text style={styles.quoteConfirmText}>{language === 'sw' ? 'Thibitisha' : 'Confirm'}</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={quoteBusy}
+                      style={[styles.quoteCancel, quoteBusy && styles.quoteBusy]}
+                      onPress={() => {
+                        setQuoteBusy(true);
+                        void declineCarrierQuote(order.id)
+                          .catch((error) => {
+                            Alert.alert(
+                              language === 'sw' ? 'Imeshindikana' : 'Could not cancel',
+                              error instanceof Error ? error.message : 'Try again.'
+                            );
+                          })
+                          .finally(() => setQuoteBusy(false));
+                      }}>
+                      <Text style={styles.quoteCancelText}>{language === 'sw' ? 'Ghairi' : 'Cancel'}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : null}
+
               {order.driverId ? (
                 <View style={styles.driverCard}>
                   {pickupMinutes ? (
@@ -2514,6 +2646,38 @@ export default function TrackOrderScreen() {
                   <View style={styles.statusPointer} />
                 </View>
               ) : null}
+              {isBusTrack ? (
+                <View style={styles.stepRailVertical}>
+                  {shipmentSteps.map((step, index) => (
+                    <View key={step.key} style={styles.vStep}>
+                      <View style={styles.vRail}>
+                        <View
+                          style={[
+                            styles.stepDot,
+                            step.state === 'done' && styles.stepDotDone,
+                            step.state === 'current' && styles.stepDotCurrent,
+                          ]}
+                        />
+                        {index < shipmentSteps.length - 1 ? (
+                          <View style={[styles.vStem, step.state === 'done' && styles.stepLinkOn]} />
+                        ) : null}
+                      </View>
+                      <View style={styles.stepCopy}>
+                        <Text
+                          style={[
+                            styles.stepLabel,
+                            styles.stepLabelVertical,
+                            step.state === 'current' && styles.stepLabelCurrent,
+                            step.state === 'upcoming' && styles.stepLabelUpcoming,
+                          ]}>
+                          {step.label}
+                        </Text>
+                        {step.timeLabel ? <Text style={styles.stepTime}>{step.timeLabel}</Text> : null}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : (
               <View style={styles.stepRail}>
                 {shipmentSteps.map((step, index) => (
                   <View key={step.key} style={styles.stepCol}>
@@ -2552,6 +2716,7 @@ export default function TrackOrderScreen() {
                   </View>
                 ))}
               </View>
+              )}
 
               <View style={styles.routeCard}>
                 <View style={styles.routeRail}>
@@ -3106,6 +3271,64 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#E5E7EB',
   },
+  quoteCard: {
+    backgroundColor: '#FFF8D6',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  quoteTitle: {
+    fontSize: 14,
+    fontFamily: typography.semibold,
+    color: '#111827',
+  },
+  quoteBody: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.medium,
+    color: '#374151',
+  },
+  quoteAmount: {
+    marginTop: 8,
+    fontSize: 28,
+    fontFamily: typography.bold,
+    color: '#111827',
+  },
+  quoteActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  quoteConfirm: {
+    flex: 1,
+    backgroundColor: '#111827',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  quoteConfirmText: {
+    color: '#F5E000',
+    fontFamily: typography.semibold,
+    fontSize: 15,
+  },
+  quoteCancel: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#111827',
+  },
+  quoteCancelText: {
+    color: '#111827',
+    fontFamily: typography.semibold,
+    fontSize: 15,
+  },
+  quoteBusy: {
+    opacity: 0.6,
+  },
   headerTitleCenter: {
     flex: 1,
     textAlign: 'center',
@@ -3221,6 +3444,37 @@ const styles = StyleSheet.create({
   stepRail: {
     marginTop: 16,
     flexDirection: 'row',
+  },
+  stepRailVertical: {
+    marginTop: 16,
+  },
+  vStep: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  vRail: {
+    width: 14,
+    alignItems: 'center',
+  },
+  vStem: {
+    width: 2,
+    flex: 1,
+    minHeight: 22,
+    backgroundColor: '#E5E7EB',
+    marginTop: 2,
+  },
+  stepCopy: {
+    flex: 1,
+    paddingBottom: 14,
+  },
+  stepLabelVertical: {
+    textAlign: 'left',
+  },
+  stepTime: {
+    marginTop: 2,
+    fontSize: 12,
+    color: '#6B7280',
+    fontFamily: typography.regular,
   },
   stepCol: {
     flex: 1,

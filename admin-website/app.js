@@ -754,32 +754,52 @@ function getOrderNumber(order) {
 }
 
 async function sendDriverIncomingOrderPush(driver, order) {
-  const token = String(driver?.latestPushToken || '').trim();
-  if (!/^Expo(nent)?PushToken\[[^\]]+\]$/.test(token)) {
-    return;
+  // Keep admin ops assign aligned with backend/driver-push.js (Expo + FCM).
+  const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+  const CHANNEL_ID = 'haul_new_orders_v1';
+  const SOUND = 'order_alert.wav';
+  const isExpo = (t) => /^Expo(nent)?PushToken\[[^\]]+\]$/.test(String(t || '').trim());
+  const isFcm = (t) => {
+    const v = String(t || '').trim();
+    return Boolean(v) && !isExpo(v) && v.length >= 40 && !/\s/.test(v);
+  };
+  const expo = new Set();
+  const fcm = new Set();
+  for (const t of [driver?.expoPushToken, driver?.latestPushToken, driver?.fcmToken]) {
+    if (isExpo(t)) expo.add(String(t).trim());
+    else if (isFcm(t)) fcm.add(String(t).trim());
+  }
+  const orderId = order?.id || '';
+  const orderNumber = getOrderNumber(order);
+  const title = 'Oda mpya';
+  const body = `${orderNumber} inakungoja. Kubali au kataa sasa.`;
+  const data = { type: 'incoming_order', orderId, orderNumber: String(orderNumber || '') };
+
+  if (expo.size) {
+    await fetch(EXPO_PUSH_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        [...expo].map((to) => ({
+          to,
+          title,
+          body,
+          sound: SOUND,
+          priority: 'high',
+          channelId: CHANNEL_ID,
+          ttl: 120,
+          data,
+        }))
+      ),
+    }).catch(() => null);
   }
 
-  await fetch('https://exp.host/--/api/v2/push/send', {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      to: token,
-      title: 'New DoorDrive order',
-      body: `${getOrderNumber(order)} is waiting. Accept or decline now.`,
-      sound: 'default',
-      priority: 'high',
-      channelId: 'incoming_order_alarm',
-      ttl: 90,
-      data: {
-        type: 'incoming_order',
-        orderId: order.id || '',
-        orderNumber: getOrderNumber(order),
-      },
-    }),
-  }).catch(() => null);
+  if (fcm.size && typeof firebase !== 'undefined' && firebase?.messaging) {
+    // Admin website may not have Admin SDK; FCM is best-effort here.
+  }
 }
 
 function getGeneratedOrderNumber(documentId) {

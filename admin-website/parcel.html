@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DoorDrop Parcel</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #0b1220;
+      --muted: #64748b;
+      --green: #16a34a;
+      --line: #e5e7eb;
+      --bg: #f3f5f4;
+      --surface: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Manrope, system-ui, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top, rgba(22, 163, 74, 0.12), transparent 40%),
+        var(--bg);
+      padding: 24px 16px 40px;
+    }
+    .card {
+      width: min(440px, 100%);
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .brand img { width: 36px; height: 36px; border-radius: 10px; }
+    .brand strong { font-size: 1.15rem; letter-spacing: -0.03em; }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.45rem;
+      letter-spacing: -0.04em;
+    }
+    .code {
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      color: var(--green);
+      margin: 0 0 16px;
+    }
+    .muted { color: var(--muted); margin: 0; line-height: 1.45; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #dcfce7;
+      color: #166534;
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin: 12px 0 18px;
+    }
+    .row {
+      display: grid;
+      gap: 4px;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+    }
+    .row span { color: var(--muted); font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .row strong { font-size: 1rem; }
+    .route {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px;
+      border-radius: 14px;
+      background: #f8faf9;
+      margin-bottom: 8px;
+    }
+    .route .arrow { color: var(--green); font-weight: 800; }
+    .transport {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0 4px;
+      font-weight: 700;
+    }
+    .transport .icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: #eff6ff;
+      display: grid;
+      place-items: center;
+      font-size: 1.25rem;
+    }
+    .error { color: #b91c1c; }
+    .footer { margin-top: 18px; font-size: 0.85rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <article class="card" id="root">
+    <div class="brand">
+      <img src="./assets/doordrop.png" alt="DoorDrop" />
+      <strong>DoorDrop parcel</strong>
+    </div>
+    <p class="muted" id="loading">Loading parcel details…</p>
+  </article>
+  <script type="module" src="./parcel.js"></script>
+</body>
+</html>

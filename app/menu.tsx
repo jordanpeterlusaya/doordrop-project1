@@ -10,7 +10,7 @@ import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
 import { useAuthSession } from '@/providers/auth-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 function getInitials(name?: string) {
   const parts = (name ?? '').trim().split(/\s+/).filter(Boolean);

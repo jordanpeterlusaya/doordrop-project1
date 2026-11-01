@@ -7,12 +7,9 @@ import { CargoHeader, CargoScreen } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
+import { SUPPORT_PHONE, SUPPORT_PHONE_LABEL, SUPPORT_WHATSAPP } from '@/lib/support-contact';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
-
-const SUPPORT_PHONE = '0796904849';
-const SUPPORT_WHATSAPP = '255796904849';
-const SUPPORT_PHONE_LABEL = '0796 904 849';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 export default function SupportCenterScreen() {
   const router = useRouter();

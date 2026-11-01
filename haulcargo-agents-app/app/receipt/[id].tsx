@@ -6,10 +6,10 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { Header, PrimaryButton, Screen, Card } from '@/components/ui';
 import { theme } from '@/constants/theme';
-import { dropOffLabel, money, shipmentCode } from '@/lib/carrier-helpers';
+import { carrierDisplayName, dropOffLabel, money, shipmentCode } from '@/lib/carrier-helpers';
 import { useCarrierSession } from '@/providers/carrier-session';
 
-function stickerHtml(item: ReturnType<typeof useCarrierSession>['shipments'][0]) {
+function stickerHtml(item: ReturnType<typeof useCarrierSession>['shipments'][0], companyName: string) {
   const code = shipmentCode(item);
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>
     body{font-family:sans-serif;padding:24px}
@@ -17,7 +17,7 @@ function stickerHtml(item: ReturnType<typeof useCarrierSession>['shipments'][0])
     .row{margin-top:12px;font-size:14px}
     .brand{color:#14532d;font-weight:700}
   </style></head><body>
-    <div class="brand">HAUL · Haul Cargo Agents</div>
+    <div class="brand">${companyName}</div>
     <div class="code">${code}</div>
     <div class="row">Kwenda: ${dropOffLabel(item)}</div>
     <div class="row">Uzito: ${item.weightKg || 0} kg</div>
@@ -29,7 +29,8 @@ function stickerHtml(item: ReturnType<typeof useCarrierSession>['shipments'][0])
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { shipments } = useCarrierSession();
+  const { shipments, carrier } = useCarrierSession();
+  const companyName = carrierDisplayName(carrier) || 'HAUL';
   const item = shipments.find((s) => s.id === id);
 
   if (!item) {
@@ -42,7 +43,7 @@ export default function ReceiptScreen() {
   }
 
   const sharePrint = async () => {
-    const html = stickerHtml(item);
+    const html = stickerHtml(item, companyName);
     const { uri } = await Print.printToFileAsync({ html });
     if (await Sharing.isAvailableAsync()) {
       await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Shiriki risiti' });
@@ -53,7 +54,7 @@ export default function ReceiptScreen() {
     <Screen scroll>
       <Header title="Risiti / Stika" back />
       <Card>
-        <Text style={styles.brand}>HAUL Cargo</Text>
+        <Text style={styles.brand}>{companyName}</Text>
         <Text style={styles.code}>{shipmentCode(item)}</Text>
         <View style={styles.row}>
           <Text style={styles.label}>Kwenda</Text>

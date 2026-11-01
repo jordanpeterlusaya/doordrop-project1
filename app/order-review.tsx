@@ -1,22 +1,33 @@
 import { FirebaseError } from 'firebase/app';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
 import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
+import { ParcelPackingInstructions } from '@/components/parcel-packing-instructions';
 import { doordropAdminHandoffLocation } from '@/constants/admin-location';
 import { cargoTheme, cargoVehicles, type FlowType, type ParcelScope } from '@/constants/cargo-theme';
+import { CITY_PARCELS_ENABLED } from '@/constants/parcel-features';
 import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
 import { recordAppActivity } from '@/lib/app-analytics';
 import { getFirebaseDataErrorMessage } from '@/lib/auth-errors';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess, logWarning } from '@/lib/debug-logger';
 import { createDeliveryOrder } from '@/lib/delivery-data';
-import { isNotifiableRecipientPhone } from '@/lib/recipient-notify';
+import { clearParcelPhotoDraft, getParcelPhotoDraft } from '@/lib/parcel-photo-draft';
+import { uploadParcelCargoPhoto } from '@/lib/parcel-photo-upload';
+import { readablePhone } from '@/lib/phone-link';
+import { getUserProfile } from '@/lib/user-profile';
+import { OUTSIDE_STANDARD_MAX_KG } from '@/lib/outside-parcel';
 import { useAuthSession } from '@/providers/auth-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const screenScope = 'OrderReviewScreen';
 
@@ -37,7 +48,7 @@ function parseTextParam(value?: string | string[]) {
 function buildOrderReviewReturnTo(params: Record<string, string | string[] | undefined>) {
   const query = new URLSearchParams();
 
-  Object.entries(params).forEach(([key, value]) => {
+  Object.entries(params || {}).forEach(([key, value]) => {
     const normalized = Array.isArray(value) ? value[0] : value;
     if (normalized !== undefined) {
       query.set(key, normalized);
@@ -57,6 +68,9 @@ const cargoVehicleKeyAliases: Record<string, string> = {
   bike: 'bodaboda',
   bajaj: 'toyo',
   bajaji: 'toyo',
+  toyo_electric: 'toyo_electric',
+  'toyo-electric': 'toyo_electric',
+  toyoelectric: 'toyo_electric',
   toyo: 'toyo',
   kirikuu: 'kirikuu',
   cargo: 'toyo',
@@ -65,6 +79,9 @@ const cargoVehicleKeyAliases: Record<string, string> = {
   truck: 'toyo',
   toyo_xl: 'toyo',
   'toyo-xl': 'toyo',
+  canter: 'toyo',
+  center: 'toyo',
+  fuso: 'toyo',
 };
 
 function resolveCargoVehicle(vehicleParam?: string | string[]) {
@@ -101,9 +118,13 @@ function OrderReviewScreenContent() {
     outsideDestinationStand?: string;
     outsideDestinationLat?: string;
     outsideDestinationLng?: string;
+    outsideShippingMode?: string;
+    outsideHandoffMode?: string;
     recipientName?: string;
     recipientPhone?: string;
     parcelWeightKg?: string;
+    declaredValueTzs?: string;
+    contentsDeclarationAccepted?: string;
     scheduleDate?: string;
     scheduleTime?: string;
     distance?: string;
@@ -111,7 +132,27 @@ function OrderReviewScreenContent() {
     distanceMeters?: string;
     durationSeconds?: string;
     cargoSize?: string;
+    fareType?: string;
+    customerOffer?: string;
+    minFare?: string;
+    distanceKm?: string;
+    suggestedFare?: string;
+    suggestedFareMin?: string;
+    suggestedFareMax?: string;
     notifyRecipient?: string;
+    outsideParcelSize?: string;
+    parcelPhotoUri?: string;
+    parcelPhotoUrl?: string;
+    requestedDriverId?: string;
+    requestedDriverName?: string;
+    outsideExpressRouteId?: string;
+    outsideExpressDepartureId?: string;
+    outsideExpressDepartureAtMs?: string;
+    outsideExpressDepartureLabel?: string;
+    outsideExpressBookingCutoffAtMs?: string;
+    outsideExpressAirportHandoffAtMs?: string;
+    outsideExpressFirstMileDeadlineAtMs?: string;
+    outsideExpressArrivalOffsetMinutes?: string;
   }>();
   const copy = useAppCopy();
   const [creatingOrder, setCreatingOrder] = useState(false);
@@ -121,6 +162,7 @@ function OrderReviewScreenContent() {
   const flow: FlowType = params.flow === 'cargo' ? 'cargo' : 'parcel';
   const scope: ParcelScope = params.scope === 'outside' ? 'outside' : 'city';
   const isOutsideParcel = flow === 'parcel' && scope === 'outside';
+  const cityParcelCheckoutBlocked = flow === 'parcel' && scope === 'city' && !CITY_PARCELS_ENABLED;
   const vehicle = resolveCargoVehicle(params.vehicle);
 
   const timing =
@@ -130,8 +172,23 @@ function OrderReviewScreenContent() {
 
   const serviceLabel =
     flow === 'cargo' ? vehicle.title : scope === 'city' ? 'In-city parcel delivery' : 'Other regions parcel delivery';
+  const customerOfferAmount = useMemo(() => {
+    const fromParam = parseCoordinate(params.customerOffer);
+    if (typeof fromParam === 'number' && fromParam > 0) {
+      return fromParam;
+    }
+    const digits = String(params.price || '').replace(/[^\d]/g, '');
+    const parsed = Number(digits);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }, [params.customerOffer, params.price]);
+  const suggestedFareAmount = useMemo(() => parseCoordinate(params.suggestedFare), [params.suggestedFare]);
+  const suggestedFareMin = useMemo(() => parseCoordinate(params.suggestedFareMin), [params.suggestedFareMin]);
+  const suggestedFareMax = useMemo(() => parseCoordinate(params.suggestedFareMax), [params.suggestedFareMax]);
+  const isNegotiatedCargo = flow === 'cargo' && (params.fareType === 'negotiated' || typeof customerOfferAmount === 'number');
   const estimatedFare =
-    flow === 'cargo' ? params.price ?? vehicle.price : params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 12,500');
+    flow === 'cargo'
+      ? params.price ?? (customerOfferAmount ? `TZS ${customerOfferAmount.toLocaleString('en-US')}` : vehicle.price)
+      : params.price ?? (scope === 'city' ? 'TZS 6,500' : 'TZS 12,500');
   const eta = flow === 'cargo' ? params.duration ?? vehicle.eta : params.eta ?? (scope === 'city' ? '15-30 min' : '3-5 hrs');
   const estimatedTotal =
     flow === 'cargo'
@@ -161,10 +218,21 @@ function OrderReviewScreenContent() {
   const distanceMeters = useMemo(() => parseCoordinate(params.distanceMeters), [params.distanceMeters]);
   const durationSeconds = useMemo(() => parseCoordinate(params.durationSeconds), [params.durationSeconds]);
   const customerName = profile?.fullName?.trim() || user?.displayName?.trim() || 'DoorDrop Customer';
-  const customerPhone = profile?.phoneNumber?.trim() || '';
+  const customerPhone = profile?.phoneNumber?.trim() || user?.phoneNumber?.trim() || '';
   const customerEmail = user?.email?.trim().toLowerCase() || '';
 
+  useEffect(() => {
+    if (!cityParcelCheckoutBlocked) {
+      return;
+    }
+    router.replace('/send-parcel');
+  }, [cityParcelCheckoutBlocked, router]);
+
   const handleCreateOrder = async () => {
+    if (cityParcelCheckoutBlocked) {
+      router.replace('/send-parcel');
+      return;
+    }
     if (!user || creatingOrder) {
       logWarning(screenScope, 'handleCreateOrder skipped', {
         hasUser: Boolean(user),
@@ -194,6 +262,8 @@ function OrderReviewScreenContent() {
         distanceMeters,
         durationSeconds,
         estimatedFare,
+        fareType: isNegotiatedCargo ? 'negotiated' : undefined,
+        customerOffer: customerOfferAmount,
       },
     });
     logAsyncStart(screenScope, 'createDeliveryOrder', {
@@ -203,11 +273,42 @@ function OrderReviewScreenContent() {
     });
 
     try {
+      let senderPhone = readablePhone(customerPhone);
+      if (!senderPhone) {
+        try {
+          const freshProfile = await getUserProfile(user.uid);
+          senderPhone = readablePhone(freshProfile?.phoneNumber);
+        } catch (profileError) {
+          logWarning(screenScope, 'sender phone lookup skipped', {
+            userId: user.uid,
+            error: profileError instanceof Error ? profileError.message : String(profileError),
+          });
+        }
+      }
+      let parcelPhotoUrls: string[] | undefined;
+      if (isOutsideParcel) {
+        const draft = getParcelPhotoDraft();
+        const existingUrl = String(params.parcelPhotoUrl || draft?.downloadURL || '').trim();
+        const localUri = String(draft?.localUri || params.parcelPhotoUri || '').trim();
+        if (existingUrl.startsWith('http')) {
+          parcelPhotoUrls = [existingUrl];
+        } else if (localUri) {
+          const uploaded = await uploadParcelCargoPhoto({
+            userId: user.uid,
+            localUri,
+            orderKey: `outside-${Date.now()}`,
+          });
+          parcelPhotoUrls = [uploaded.downloadURL];
+        } else {
+          throw new Error('Weka picha ya mzigo kabla ya kutuma ombi.');
+        }
+        clearParcelPhotoDraft();
+      }
       const order = await createDeliveryOrder({
         userId: user.uid,
         customerName,
         customerEmail,
-        customerPhone,
+        customerPhone: senderPhone || customerPhone,
         flow,
         serviceLabel,
         pickupLabel: pickupValue,
@@ -217,9 +318,15 @@ function OrderReviewScreenContent() {
         dropoffLatitude,
         dropoffLongitude,
         etaLabel: eta,
-        fareLabel: estimatedFare,
-        totalLabel: estimatedTotal,
-        routeLabel: pricingRoute ?? `${pickupValue} to ${dropoffValue}`,
+        fareLabel: isOutsideParcel && params.outsideShippingMode !== 'express' ? 'Bei baada ya kampuni' : estimatedFare,
+        totalLabel: isOutsideParcel && params.outsideShippingMode !== 'express' ? 'Bei baada ya kampuni' : estimatedTotal,
+        quoteStatus: isOutsideParcel && params.outsideShippingMode !== 'express' ? 'awaiting_company' : undefined,
+        outsideParcelSize: isOutsideParcel ? params.outsideParcelSize?.trim() || undefined : undefined,
+        parcelPhotoUrls,
+        routeLabel:
+          pricingRoute && !/local delivery/i.test(pricingRoute)
+            ? pricingRoute
+            : `${pickupValue} → ${dropoffValue}`,
         timingMode: params.timing === 'later' ? 'later' : 'now',
         scheduleDate: params.scheduleDate,
         scheduleTime: params.scheduleTime,
@@ -242,10 +349,34 @@ function OrderReviewScreenContent() {
         outsideDestinationLatitude: isOutsideParcel ? outsideDestinationLatitude : undefined,
         outsideDestinationLongitude: isOutsideParcel ? outsideDestinationLongitude : undefined,
         outsideParcelWeightKg: isOutsideParcel ? params.parcelWeightKg?.trim() || undefined : undefined,
+        declaredValueTzs: params.declaredValueTzs?.trim() || undefined,
+        contentsDeclarationAccepted: params.contentsDeclarationAccepted === '1',
+        outsideShippingMode: isOutsideParcel ? params.outsideShippingMode?.trim() || undefined : undefined,
+        outsideHandoffMode: isOutsideParcel ? params.outsideHandoffMode?.trim() || undefined : undefined,
         distanceLabel: params.distance,
         durationLabel: params.duration,
         distanceMeters,
         durationSeconds,
+        fareType: isNegotiatedCargo ? 'negotiated' : undefined,
+        customerOffer: isNegotiatedCargo ? customerOfferAmount : undefined,
+        minFare: isNegotiatedCargo ? parseCoordinate(params.minFare) : undefined,
+        distanceKm: isNegotiatedCargo ? parseCoordinate(params.distanceKm) : undefined,
+        lastOfferBy: isNegotiatedCargo ? 'customer' : undefined,
+        negotiationStatus: isNegotiatedCargo ? 'confirmed' : undefined,
+        suggestedFare: isNegotiatedCargo ? suggestedFareAmount : undefined,
+        suggestedFareMin: isNegotiatedCargo ? suggestedFareMin : undefined,
+        suggestedFareMax: isNegotiatedCargo ? suggestedFareMax : undefined,
+        requestedDriverId: parseTextParam(params.requestedDriverId),
+        requestedDriverName: parseTextParam(params.requestedDriverName),
+        outsideExpressRouteId: parseTextParam(params.outsideExpressRouteId),
+        outsideExpressDepartureId: parseTextParam(params.outsideExpressDepartureId),
+        outsideExpressDepartureAtMs: parseCoordinate(params.outsideExpressDepartureAtMs),
+        outsideExpressDepartureLabel: parseTextParam(params.outsideExpressDepartureLabel),
+        outsideExpressBookingCutoffAtMs: parseCoordinate(params.outsideExpressBookingCutoffAtMs),
+        outsideExpressAirportHandoffAtMs: parseCoordinate(params.outsideExpressAirportHandoffAtMs),
+        outsideExpressFirstMileDeadlineAtMs: parseCoordinate(params.outsideExpressFirstMileDeadlineAtMs),
+        outsideExpressArrivalOffsetMinutes: parseCoordinate(params.outsideExpressArrivalOffsetMinutes),
+        carrierDispatch: isOutsideParcel ? 'instant' : undefined,
       });
 
       logAsyncSuccess(screenScope, 'createDeliveryOrder', {
@@ -277,17 +408,19 @@ function OrderReviewScreenContent() {
         },
       });
 
-      const recipientPhone = params.recipientPhone?.trim() || '';
-      const shouldNotifyRecipient =
-        flow === 'parcel' && params.notifyRecipient !== '0' && isNotifiableRecipientPhone(recipientPhone);
-
       router.replace({
         pathname: '/track-order',
-        params: {
-          orderId: order.id,
-          placed: '1',
-          notifyRecipient: shouldNotifyRecipient ? '1' : '0',
-        },
+        params:
+          flow === 'parcel'
+            ? {
+                orderId: order.id,
+                placed: '1',
+                instantCarrier: isOutsideParcel ? '1' : '',
+              }
+            : {
+                orderId: order.id,
+                placed: '1',
+              },
       });
     } catch (saveError) {
       logAsyncFailure(screenScope, 'createDeliveryOrder', saveError, {
@@ -322,6 +455,62 @@ function OrderReviewScreenContent() {
     }
   };
 
+  if (cityParcelCheckoutBlocked) {
+    return null;
+  }
+
+  if (flow === 'parcel') {
+    const outsideSize = String(params.outsideParcelSize || '');
+    const showPacking = scope !== 'outside' || outsideSize === 'ndogo' || outsideSize === 'wastani';
+    const weightLimitKg =
+      outsideSize === 'ndogo' ? 5 : outsideSize === 'wastani' ? 20 : scope === 'outside' ? OUTSIDE_STANDARD_MAX_KG : 15;
+
+    if (!showPacking) {
+      return (
+        <CargoScreen
+          contentContainerStyle={styles.content}
+          backgroundColor="#FFFFFF"
+          footer={
+            <View style={styles.footer}>
+              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              <PrimaryButton
+                label={creatingOrder ? copy.confirm.creating : 'Tuma ombi'}
+                onPress={() => {
+                  if (!user) {
+                    router.push({ pathname: '/login', params: { returnTo: reviewReturnTo } });
+                    return;
+                  }
+                  void handleCreateOrder();
+                }}
+                style={creatingOrder ? styles.buttonDisabled : undefined}
+              />
+            </View>
+          }>
+          <CargoHeader title="Ombi la mzigo" subtitle="Bei itatumwa na kampuni baada ya kuona picha." />
+        </CargoScreen>
+      );
+    }
+
+    return (
+      <>
+        <ParcelPackingInstructions
+          weightLimitKg={weightLimitKg}
+          strict={scope === 'outside'}
+          busy={creatingOrder}
+          error={error || authError || ''}
+          onClose={() => router.back()}
+          onConfirm={() => {
+            if (!user) {
+              router.push({ pathname: '/login', params: { returnTo: reviewReturnTo } });
+              return;
+            }
+            void handleCreateOrder();
+          }}
+        />
+      </>
+    );
+  }
+
   return (
     <CargoScreen
       contentContainerStyle={styles.content}
@@ -330,7 +519,13 @@ function OrderReviewScreenContent() {
         <View style={styles.footer}>
           {user ? (
             <PrimaryButton
-              label={creatingOrder ? copy.confirm.creating : `${copy.confirm.confirm} · ${estimatedFare}`}
+              label={
+                creatingOrder
+                  ? copy.confirm.creating
+                  : flow === 'cargo'
+                    ? copy.cargo.findOffers
+                    : `${copy.confirm.confirm} · ${estimatedFare}`
+              }
               onPress={handleCreateOrder}
               style={creatingOrder ? styles.buttonDisabled : undefined}
             />
@@ -386,14 +581,28 @@ function OrderReviewScreenContent() {
           <Text style={styles.summaryLabel}>{copy.confirm.payment}</Text>
           <Text style={styles.summaryValue}>{copy.confirm.cash}</Text>
         </View>
+        {params.outsideExpressDepartureLabel ? (
+          <View style={styles.summaryLine}>
+            <Text style={styles.summaryLabel}>Flight</Text>
+            <Text style={styles.summaryValue}>{params.outsideExpressDepartureLabel}</Text>
+          </View>
+        ) : null}
         {params.timing === 'later' ? (
           <View style={styles.summaryLine}>
             <Text style={styles.summaryLabel}>{copy.confirm.when}</Text>
             <Text style={styles.summaryValue}>{timing}</Text>
           </View>
         ) : null}
+        {params.declaredValueTzs ? (
+          <View style={styles.summaryLine}>
+            <Text style={styles.summaryLabel}>{copy.parcel.declaredValue}</Text>
+            <Text style={styles.summaryValue}>
+              TZS {String(params.declaredValueTzs).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+            </Text>
+          </View>
+        ) : null}
         <View style={[styles.summaryLine, styles.summaryLineLast]}>
-          <Text style={styles.summaryLabel}>{copy.confirm.fare}</Text>
+          <Text style={styles.summaryLabel}>{flow === 'cargo' ? copy.cargo.offerAmount : copy.confirm.fare}</Text>
           <Text style={styles.fareValue}>{estimatedFare}</Text>
         </View>
       </View>

@@ -4,23 +4,60 @@
   --text:#111827;
   --muted:#6b7280;
   --accent:#0066cc;
+  --danger:#b42318;
+  --ok:#027a48;
+  --line:#e5e7eb;
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:var(--bg); color:var(--text)}
 .container{max-width:900px;margin:32px auto;padding:24px}
-header{background:var(--card);padding:24px;border-radius:8px;box-shadow:0 1px 3px rgba(16,24,40,.06)}
+header,.site-header{background:var(--card);padding:24px;border-radius:8px;box-shadow:0 1px 3px rgba(16,24,40,.06)}
 h1{margin:0;font-size:28px}
 .updated{color:var(--muted);margin-top:8px}
+.site-nav{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}
+.site-nav a{color:var(--accent);text-decoration:none;font-size:14px}
+.site-nav a[aria-current="page"]{font-weight:700;text-decoration:underline}
 .content{margin-top:16px}
 section{background:var(--card);margin-top:12px;padding:18px;border-radius:8px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+section.highlight{border:1px solid rgba(0,102,204,.22)}
 h2{margin:0;font-size:16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+section.no-collapse h2,section.request-form-section h2{cursor:default}
 .section-content{margin-top:12px;line-height:1.6;color:var(--text)}
-.section-content ul{padding-left:20px}
+.section-content ul,.section-content ol{padding-left:20px}
+.muted{color:var(--muted)}
 .footer{display:flex;justify-content:flex-end;margin-top:12px}
-button{background:var(--accent);color:#fff;border:none;padding:10px 14px;border-radius:6px;cursor:pointer}
+button{background:var(--accent);color:#fff;border:none;padding:10px 14px;border-radius:6px;cursor:pointer;font-weight:600}
 button:active{transform:translateY(1px)}
 
 /* collapsed state */
 section.collapsed .section-content{display:none}
+section.open .section-content{display:block}
+
+.request-form,.delete-form{display:grid;gap:14px;margin-top:4px;max-width:520px}
+.request-form label,.delete-form label{display:grid;gap:6px;font-size:14px;color:var(--text);font-weight:600}
+.request-form input[type="text"],
+.request-form input[type="tel"],
+.request-form input[type="email"],
+.request-form textarea,
+.delete-form input,
+.delete-form textarea{
+  width:100%;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:10px 12px;
+  font:inherit;
+  font-weight:400;
+  background:#fff;
+}
+.request-form .checkbox-row{
+  display:grid;
+  grid-template-columns:auto 1fr;
+  gap:10px;
+  align-items:start;
+}
+.request-form .checkbox-row input{margin-top:4px}
+.form-note,.form-hint{margin:0;color:var(--muted);font-size:14px;font-weight:400}
+.form-error{color:var(--danger);font-size:14px;margin:0}
+.form-success{color:var(--ok);font-size:14px;margin:0}
 
 @media (max-width:600px){.container{margin:16px;padding:16px}}

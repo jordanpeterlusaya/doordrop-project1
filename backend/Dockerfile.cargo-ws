@@ -1,0 +1,18 @@
+# Public cargo-offer WebSocket (HAUL ↔ Pilots). Deploy to Cloud Run.
+FROM node:22-slim
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+# App sources (local requires only *.js modules in this folder)
+COPY *.js ./
+
+ENV NODE_ENV=production
+# Cloud Run sets PORT; cargo-offer-ws reads CARGO_OFFER_WS_PORT || PORT
+ENV CARGO_OFFER_WS_PORT=8080
+ENV PORT=8080
+ENV DOORDROP_FIREBASE_PROJECT_ID=efootball-app-9d175
+
+EXPOSE 8080
+CMD ["node", "cargo-offer-ws.js"]

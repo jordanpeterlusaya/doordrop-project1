@@ -161,19 +161,13 @@ export function trackLabel(stepKey: string) {
 /** Index on the desk rail. Imefika is the last step. Pickup mode does not move this. */
 export function deskIndex(item: CarrierShipment) {
   const step = String(item.trackStep || '');
-  if (step === 'handed' || item.shipmentStatus === 'delivered') return 4;
-  if (step === 'arrived' || item.shipmentStatus === 'arrived') return 3;
-  if (step === 'transit' || item.shipmentStatus === 'in_transit') return 2;
-  if (step === 'packed' || item.shipmentStatus === 'picked_up' || item.shipmentStatus === 'at_bus') return 1;
-  if (
-    step === 'received' ||
-    step === 'pickup' ||
-    item.shipmentStatus === 'accepted' ||
-    item.shipmentStatus === 'contacted' ||
-    item.shipmentStatus === 'pickup_scheduled'
-  ) {
-    return 0;
-  }
+  const status = String(item.shipmentStatus || '');
+  if (step === 'handed' || status === 'delivered') return 5;
+  if (step === 'arrived' || status === 'arrived') return 4;
+  if (step === 'transit' || status === 'in_transit') return 3;
+  if (step === 'packed' || status === 'picked_up' || status === 'at_bus') return 2;
+  if (step === 'pickup' || status === 'contacted' || status === 'pickup_scheduled') return 1;
+  if (step === 'received' || status === 'accepted') return 0;
   return -1;
 }
 
@@ -182,7 +176,8 @@ function railAt(index: number) {
 }
 
 export function deskStatusLabel(item: CarrierShipment) {
-  if (isDelivered(item) || item.shipmentStatus === 'arrived' || item.trackStep === 'arrived') return 'Imefika';
+  if (isDelivered(item)) return 'Imekabidhiwa';
+  if (item.shipmentStatus === 'arrived' || item.trackStep === 'arrived') return 'Imefika';
   const step = railAt(deskIndex(item));
   if (step) return step.label;
   if (item.shipmentStatus === 'assigned') return 'Oda mpya';

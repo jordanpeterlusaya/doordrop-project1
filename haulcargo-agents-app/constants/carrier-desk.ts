@@ -5,10 +5,10 @@
  * Promotion is an unbroken streak of finished shipments (Imefika / delivered).
  * One company reject or post-accept cancel resets the streak to 0.
  *
- * - Bronze:   streak 0–99     kamisheni 20%, ofa ya kawaida
- * - Silver:   streak 100–249  kamisheni 18%, kipaumbele kidogo
- * - Gold:     streak 250–499  kamisheni 17%, kipaumbele zaidi
- * - Platinum: streak 500+     kamisheni 15%, kipaumbele cha juu
+ * - Bronze:   streak 0–99     kamisheni 12%, ofa ya kawaida
+ * - Silver:   streak 100–249  kamisheni 10%, kipaumbele kidogo
+ * - Gold:     streak 250–499  kamisheni 8%, kipaumbele zaidi
+ * - Platinum: streak 500+     kamisheni 6%, kipaumbele cha juu
  *
  * Cancel rate is rejects / (completed + rejects). Above 25%, with at least
  * 8 decisions, the company pays 20% even if the streak tier is higher.
@@ -24,10 +24,10 @@
  * Keep payCeilingTzs identical to TIER_RULES in backend/carrier-matching.js.
  */
 export const CARRIER_TIER_RULES = [
-  { id: 'bronze', label: 'Bronze', minStreak: 0, feePercent: 20, priority: 'Ofa ya kawaida', priorityBonus: 0, payCeilingTzs: 30_000 },
-  { id: 'silver', label: 'Silver', minStreak: 100, feePercent: 18, priority: 'Kipaumbele kidogo', priorityBonus: 6, payCeilingTzs: 60_000 },
-  { id: 'gold', label: 'Gold', minStreak: 250, feePercent: 17, priority: 'Kipaumbele zaidi', priorityBonus: 16, payCeilingTzs: 100_000 },
-  { id: 'platinum', label: 'Platinum', minStreak: 500, feePercent: 15, priority: 'Kipaumbele cha juu', priorityBonus: 40, payCeilingTzs: 150_000 },
+  { id: 'bronze', label: 'Bronze', minStreak: 0, feePercent: 12, priority: 'Ofa ya kawaida', priorityBonus: 0, payCeilingTzs: 30_000 },
+  { id: 'silver', label: 'Silver', minStreak: 100, feePercent: 10, priority: 'Kipaumbele kidogo', priorityBonus: 6, payCeilingTzs: 60_000 },
+  { id: 'gold', label: 'Gold', minStreak: 250, feePercent: 8, priority: 'Kipaumbele zaidi', priorityBonus: 16, payCeilingTzs: 100_000 },
+  { id: 'platinum', label: 'Platinum', minStreak: 500, feePercent: 6, priority: 'Kipaumbele cha juu', priorityBonus: 40, payCeilingTzs: 150_000 },
 ] as const;
 
 export type CarrierTierId = (typeof CARRIER_TIER_RULES)[number]['id'];
@@ -73,7 +73,7 @@ export type CarrierStanding = {
   highCommission: boolean;
   /** 40% with at least 8 decisions, or 3 post-accept cancels. */
   closure: boolean;
-  /** Rate actually charged on the next offer. 20 when punished. */
+  /** Rate actually charged on the next offer. 15 when punished. */
   feePercent: number;
   priorityBonus: number;
   tier: CarrierTier;
@@ -116,7 +116,7 @@ export function carrierStanding(input: CarrierStandingInput): CarrierStanding {
     cancelPercent: Math.round(cancelRate * 100),
     highCommission: punished,
     closure,
-    feePercent: punished ? 20 : tier.feePercent,
+    feePercent: punished ? 15 : tier.feePercent,
     priorityBonus: punished ? 0 : tier.priorityBonus,
     tier,
     nextLabel: next?.label ?? null,
@@ -155,23 +155,32 @@ export type DeskNotice = {
   hard: boolean;
 };
 
+/** Cancel resets the streak, the rate rises, commission can become 20%, the account can be closed. */
+export const CANCEL_WARNING_COPY =
+  'Mfululizo unarudi 0. Cancel inaongezeka. Kamisheni inaweza kuwa 20%. Akaunti inaweza kufungwa.';
+
+function offersHeld(standing: CarrierStanding, offersPaused = false) {
+  return (
+    Boolean(offersPaused) ||
+    standing.postAcceptCancels >= CLOSURE_POST_ACCEPT_CANCELS ||
+    (standing.cancelRate >= CLOSURE_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS)
+  );
+}
+
+function highCancelCommission(standing: CarrierStanding) {
+  return standing.cancelRate > HIGH_COMMISSION_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS;
+}
+
 /**
  * Cancel notice, empty while the rate is healthy.
  * 15%+: onyo. Above 25% with enough decisions: 20% commission.
- * "Akaunti inaweza kufungwa" in the 40% band, after 3 post-accept cancels,
- * or while offers are paused for fraud. Shown once as a bottom sheet.
+ * Closure band, 3 post-accept cancels, or a fraud hold: account can be closed.
+ * Shown once as a bottom sheet.
  */
 export function tierWarning(standing: CarrierStanding, offersPaused = false) {
-  const held =
-    Boolean(offersPaused) ||
-    standing.postAcceptCancels >= CLOSURE_POST_ACCEPT_CANCELS ||
-    (standing.cancelRate >= CLOSURE_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS);
-  if (held) return 'Akaunti inaweza kufungwa';
-  if (standing.cancelRate > HIGH_COMMISSION_RATE && standing.decisions >= HIGH_COMMISSION_MIN_DECISIONS) {
-    return `Cancel ${standing.cancelPercent}%. Kamisheni sasa 20%.`;
-  }
+  if (offersHeld(standing, offersPaused) || highCancelCommission(standing)) return CANCEL_WARNING_COPY;
   if (standing.cancelRate >= CANCEL_WARN_RATE) {
-    return `Onyo: cancel ${standing.cancelPercent}%. Punguza kukataa.`;
+    return `Cancel ${standing.cancelPercent}%. ${CANCEL_WARNING_COPY}`;
   }
   return '';
 }
@@ -179,8 +188,8 @@ export function tierWarning(standing: CarrierStanding, offersPaused = false) {
 export function cancelDeskNotice(standing: CarrierStanding, offersPaused = false): DeskNotice | null {
   const message = tierWarning(standing, offersPaused);
   if (!message) return null;
-  if (message.startsWith('Akaunti')) return { id: 'closure', message, hard: true };
-  if (message.includes('20%')) return { id: 'commission', message, hard: false };
+  if (offersHeld(standing, offersPaused)) return { id: 'closure', message, hard: true };
+  if (highCancelCommission(standing)) return { id: 'commission', message, hard: false };
   return { id: 'onyo', message, hard: false };
 }
 
@@ -196,8 +205,7 @@ export function paywallDeskNotice(unpaidTzs: number, ceilingTzs: number): DeskNo
 /** Stays open until Rudi or Kataa oda. Same warning before Kataa and after accept. */
 export const KATAA_CONFIRM = {
   title: 'Kataa oda',
-  message:
-    'Mfululizo unarudi 0. Cancel inaongezeka. Kamisheni inaweza kuwa 20%. Kiwango kikubwa kinafunga akaunti na kusimamisha oda mpya.',
+  message: CANCEL_WARNING_COPY,
   confirmLabel: 'Kataa oda',
   backLabel: 'Rudi',
 } as const;

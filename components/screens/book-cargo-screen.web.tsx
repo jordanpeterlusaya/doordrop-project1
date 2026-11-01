@@ -1,78 +1,93 @@
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { CargoHeader, CargoScreen, PrimaryButton } from '@/components/cargo-ui';
-import { cargoTheme } from '@/constants/cargo-theme';
+import { typography } from '@/constants/typography';
 
 export default function BookCargoWebScreen() {
   const router = useRouter();
 
   return (
-    <CargoScreen contentContainerStyle={styles.content}>
-      <CargoHeader
-        title="Book cargo"
-        subtitle="Web preview for the mobile cargo flow."
-        leftAction="none"
-      />
+    <View style={styles.page}>
+      <View style={styles.toolbar}>
+        <Pressable style={styles.back} onPress={() => router.replace('/home')}>
+          <Text style={styles.backText}>←</Text>
+        </Pressable>
+        <Text style={styles.title}>Mizigo</Text>
+      </View>
 
       <View style={styles.card}>
-        <Text style={styles.title}>Cargo booking uses the native app route tools</Text>
-        <Text style={styles.text}>
-          The full cargo request flow calculates route distance and hybrid distance-based pricing from the mobile app. Once the customer confirms it, the order is written to Firestore and the DoorDrop team handles assignment and status updates.
+        <Text style={styles.cardTitle}>Chagua gari kwenye simu</Text>
+        <Text style={styles.cardText}>
+          Booking ya Mizigo inatumia ramani, Toyo Electric / TOYO / Kirikuu, na bei ya kujadili. Fungua HAUL kwenye simu
+          kuchagua pickup, drop-off, kisha Toa bei yako.
         </Text>
       </View>
 
-      <View style={styles.notice}>
-        <Text style={styles.noticeTitle}>Dispatch connection</Text>
-        <Text style={styles.noticeText}>Orders created from the app and dispatch updates share the same Firebase project and Firestore collections.</Text>
-      </View>
-
-      <PrimaryButton label="Back to web home" variant="secondary" onPress={() => router.replace('/home')} />
-    </CargoScreen>
+      <Pressable style={styles.cta} onPress={() => router.replace('/home')}>
+        <Text style={styles.ctaText}>Rudi nyumbani</Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    paddingBottom: 32,
-    gap: 18,
+  page: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
+    paddingTop: 28,
+    gap: 16,
   },
-  card: {
-    borderRadius: 28,
-    padding: 20,
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  back: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backText: {
+    fontSize: 18,
+    color: '#111827',
   },
   title: {
-    fontSize: 24,
-    lineHeight: 30,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-    marginBottom: 10,
+    fontSize: 20,
+    fontFamily: typography.extrabold,
+    color: '#111827',
   },
-  text: {
+  card: {
+    borderRadius: 24,
+    padding: 20,
+    backgroundColor: '#FFFFFF',
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontFamily: typography.extrabold,
+    color: '#111827',
+    marginBottom: 8,
+  },
+  cardText: {
     fontSize: 14,
     lineHeight: 22,
-    color: cargoTheme.colors.subtext,
+    fontFamily: typography.body,
+    color: '#6B7280',
   },
-  notice: {
-    borderRadius: 24,
-    padding: 18,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+  cta: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  noticeTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: cargoTheme.colors.text,
-    marginBottom: 10,
-  },
-  noticeText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: cargoTheme.colors.subtext,
+  ctaText: {
+    fontSize: 17,
+    fontFamily: typography.bold,
+    color: '#FFFFFF',
   },
 });

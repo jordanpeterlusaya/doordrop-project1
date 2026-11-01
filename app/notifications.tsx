@@ -9,12 +9,14 @@ import { CargoHeader, CargoScreen } from '@/components/cargo-ui';
 import { cargoTheme } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
 import { useAppCopy } from '@/lib/app-copy';
-import { formatDeliveryDateTime, getDeliveryOrderStatusLabel } from '@/lib/delivery-data';
+import { formatDeliveryDateTime, getDeliveryOrderStatusLabel, isNinunulieOrder } from '@/lib/delivery-data';
 import { logAsyncFailure, logAsyncStart, logAsyncSuccess } from '@/lib/debug-logger';
 import { getNotificationPresentation } from '@/lib/notification-presentation';
+import { getRequestDriverHref } from '@/lib/driver-request';
+import { useLanguage } from '@/providers/language-provider';
 import { useNotifications } from '@/providers/notification-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
 
 const screenScope = 'NotificationsScreen';
 
@@ -100,6 +102,7 @@ function NotificationRow({
 
 function NotificationsScreenContent() {
   const router = useRouter();
+  const { language } = useLanguage();
   const {
     loading,
     markAllRead,
@@ -258,7 +261,35 @@ function NotificationsScreenContent() {
                         logAsyncFailure(screenScope, 'markRead', error, { notificationId: item.id });
                       });
 
+                    if (item.driverId) {
+                      const href = getRequestDriverHref({
+                        driverId: item.driverId,
+                        driverName: item.driverName,
+                        driverVehicleType: item.driverVehicleType,
+                      });
+                      router.push(href);
+                      return;
+                    }
+
                     if (item.orderId) {
+                      const isNinunulieNotification =
+                        isNinunulieOrder({
+                          flow: item.flow,
+                          serviceLabel: item.serviceLabel,
+                        }) ||
+                        String(item.serviceLabel || '').toLowerCase() === 'ninunulie' ||
+                        String(item.title || '').toLowerCase().includes('ninunulie');
+
+                      if (isNinunulieNotification) {
+                        Alert.alert(
+                          'Ninunulie',
+                          language === 'sw'
+                            ? `Oda ${item.orderNumber || ''} inashughulikiwa kupitia WhatsApp na ofisi. Haipo kwenye live tracking.`
+                            : `Order ${item.orderNumber || ''} is handled via WhatsApp and the office. It is not on live tracking.`
+                        );
+                        return;
+                      }
+
                       router.push({
                         pathname: '/track-order',
                         params: { orderId: item.orderId },

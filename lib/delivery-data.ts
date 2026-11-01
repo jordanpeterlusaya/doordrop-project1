@@ -100,6 +100,10 @@ export type DeliveryOrder = {
   contentsDeclarationAcceptedAt?: unknown;
   outsideShippingMode?: string;
   outsideHandoffMode?: string;
+  outsideParcelSize?: string;
+  quoteStatus?: 'awaiting_company' | 'offered' | 'confirmed' | 'declined';
+  carrierQuoteTzs?: number;
+  parcelPhotoUrls?: string[];
   /** When driver starts trip with an outside parcel (customer pickup complete). */
   outsidePickupAt?: unknown;
   /** Fixed countdown start — persists until order completes or cancels. */
@@ -126,6 +130,12 @@ export type DeliveryOrder = {
   carrierRouteLabel?: string;
   carrierPickupMode?: string;
   carrierTrackStep?: string;
+  carrierJourneyAt?: unknown;
+  carrierJourneyStatus?: string;
+  carrierJourneyMessage?: string;
+  carrierLocationLabel?: string;
+  carrierLocationSource?: 'gps' | 'manual' | string;
+  carrierEtaLabel?: string;
   /** Verified bus company name (customer-safe mirror from carrier match). */
   carrierName?: string;
   /** Bus agent / contact person name (customer-safe). */
@@ -205,6 +215,8 @@ export type DeliveryOrder = {
   acceptedByDriverAt?: unknown;
   assignedAt?: unknown;
   assignmentMode?: string;
+  cargoDispatch?: string;
+  carrierDispatch?: string;
   assignmentScore?: number;
   assignmentReason?: string;
   declinedDriverIds?: string[];
@@ -319,6 +331,9 @@ export type CreateDeliveryOrderInput = {
   contentsDeclarationAccepted?: boolean;
   outsideShippingMode?: string;
   outsideHandoffMode?: string;
+  outsideParcelSize?: string;
+  quoteStatus?: 'awaiting_company' | 'offered' | 'confirmed' | 'declined';
+  parcelPhotoUrls?: string[];
   etaLabel: string;
   fareLabel: string;
   totalLabel: string;
@@ -359,6 +374,9 @@ export type CreateDeliveryOrderInput = {
   durationSeconds?: number;
   requestedDriverId?: string;
   requestedDriverName?: string;
+  assignmentMode?: string;
+  cargoDispatch?: string;
+  carrierDispatch?: string;
   outsideExpressRouteId?: string;
   outsideExpressDepartureId?: string;
   outsideExpressDepartureAtMs?: number;
@@ -633,6 +651,9 @@ function normalizeOrderVehicleKey(vehicleKey?: string) {
     motorbike: 'bodaboda',
     bike: 'bodaboda',
     kirikuu: 'kirikuu',
+    toyo_electric: 'toyo_electric',
+    'toyo-electric': 'toyo_electric',
+    toyoelectric: 'toyo_electric',
     toyo: 'toyo',
     bajaj: 'toyo',
     bajaji: 'toyo',
@@ -672,6 +693,7 @@ function getVehicleLabelForKey(vehicleKey?: string, fallback?: string) {
     boda: 'Bodaboda / Motorcycle',
     motorcycle: 'Bodaboda / Motorcycle',
     motorbike: 'Bodaboda / Motorcycle',
+    toyo_electric: 'Toyo Electric',
     toyo: 'TOYO',
     kirikuu: 'Kirikuu',
     canter: 'Canter',
@@ -695,6 +717,9 @@ function getServiceMatchConfig(order: DeliveryOrder) {
     motorbike: 'bodaboda',
     bike: 'bodaboda',
     kirikuu: 'kirikuu',
+    toyo_electric: 'toyo',
+    'toyo-electric': 'toyo',
+    toyoelectric: 'toyo',
     bajaj: 'toyo',
     bajaji: 'toyo',
     toyo: 'toyo',
@@ -1218,6 +1243,9 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     contentsDeclarationAcceptedAt: input.contentsDeclarationAccepted === true ? serverTimestamp() : undefined,
     outsideShippingMode: input.outsideShippingMode,
     outsideHandoffMode: input.outsideHandoffMode,
+    ...(input.outsideParcelSize ? { outsideParcelSize: input.outsideParcelSize } : {}),
+    ...(input.quoteStatus ? { quoteStatus: input.quoteStatus } : {}),
+    ...(input.parcelPhotoUrls?.length ? { parcelPhotoUrls: input.parcelPhotoUrls } : {}),
     outsideOriginCity,
     parcelCode,
     trackingId: parcelCode,
@@ -1262,22 +1290,33 @@ export async function createDeliveryOrder(input: CreateDeliveryOrderInput) {
     durationSeconds: input.durationSeconds,
     requestedDriverId: input.requestedDriverId,
     requestedDriverName: input.requestedDriverName,
-    assignmentMode: isOutside ? 'ops_desk' : undefined,
+    assignmentMode: isOutside ? 'ops_desk' : input.assignmentMode,
+    cargoDispatch: input.cargoDispatch,
+    carrierDispatch: isOutside ? input.carrierDispatch || 'instant' : input.carrierDispatch,
     driverSearchStatus: isOutside
       ? 'ops_desk'
       : input.timingMode === 'later'
         ? undefined
-        : 'searching',
+        : input.assignmentMode === 'cargo_ws' || input.cargoDispatch === 'instant'
+          ? 'waiting_for_driver'
+          : 'searching',
     driverSearchMessage: isOutside
       ? 'DoorDrop central office will assign a driver to collect your parcel.'
       : input.timingMode === 'later'
         ? undefined
-        : input.flow === 'cargo' && input.fareType === 'negotiated'
-          ? `Tunatafuta rider kwa bei yako ya ${input.fareLabel}.`
-          : `Looking for the nearest online ${cargoVehicleLabel || input.serviceLabel} driver.`,
+        : input.assignmentMode === 'cargo_ws' || input.cargoDispatch === 'instant'
+          ? 'Dereva amepangiwa. Anasubiri kuthibitisha.'
+          : input.flow === 'cargo' && input.fareType === 'negotiated'
+            ? `Tunatafuta rider kwa bei yako ya ${input.fareLabel}.`
+            : `Looking for the nearest online ${cargoVehicleLabel || input.serviceLabel} driver.`,
     driverSearchStartedAt: isOutside || input.timingMode === 'later' ? undefined : serverTimestamp(),
     driverSearchExpiresAt:
-      isOutside || input.timingMode === 'later' ? undefined : new Date(Date.now() + DRIVER_SEARCH_TIMEOUT_MS),
+      isOutside ||
+      input.timingMode === 'later' ||
+      input.assignmentMode === 'cargo_ws' ||
+      input.cargoDispatch === 'instant'
+        ? undefined
+        : new Date(Date.now() + DRIVER_SEARCH_TIMEOUT_MS),
     ...(isOutside && typeof input.outsideExpressDepartureAtMs === 'number' && input.outsideExpressDepartureAtMs > 0
       ? {
           outsideExpressRouteId: input.outsideExpressRouteId,
@@ -2074,6 +2113,8 @@ export async function updateCargoNegotiation(
     customerOfferNote?: string;
     customerPhone?: string;
     recipientPhone?: string;
+    assignmentMode?: string;
+    cargoDispatch?: string;
   }
 ) {
   const confirming = patch.negotiationStatus === 'confirmed';
@@ -2356,6 +2397,44 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
     driverName: order.driverName,
     cancellationReason: trimmedReason,
     cancelledBy: 'customer',
+  }).catch(() => undefined);
+}
+
+export async function confirmCarrierQuote(orderId: string) {
+  const orderSnapshot = await getDoc(orderRef(orderId));
+  if (!orderSnapshot.exists()) throw new Error('Order was not found.');
+  const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
+  const amount = Math.round(Number(order.carrierQuoteTzs) || 0);
+  if (order.quoteStatus !== 'offered' || amount <= 0) {
+    throw new Error('The company price is not ready yet.');
+  }
+  const label = `TZS ${amount.toLocaleString('en-US')}`;
+  const batch = writeBatch(db);
+  batch.update(orderRef(orderId), {
+    quoteStatus: 'confirmed',
+    fareLabel: label,
+    totalLabel: label,
+    fareConfirmedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  const shipmentId = String(order.carrierShipmentId || order.id).trim();
+  const shipmentSnap = await getDoc(doc(db, 'carrierShipments', shipmentId));
+  if (shipmentSnap.exists()) {
+    batch.update(doc(db, 'carrierShipments', shipmentId), {
+      quoteStatus: 'confirmed',
+      cashExpected: amount,
+      fareLabel: label,
+      updatedAt: serverTimestamp(),
+    });
+  }
+  await batch.commit();
+}
+
+export async function declineCarrierQuote(orderId: string) {
+  await cancelDeliveryOrderByUser(orderId, 'Customer declined the company price');
+  await updateDoc(orderRef(orderId), {
+    quoteStatus: 'declined',
+    updatedAt: serverTimestamp(),
   }).catch(() => undefined);
 }
 

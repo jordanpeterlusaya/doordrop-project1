@@ -37,14 +37,22 @@ app-example
 /ios
 /android
 .git
+# Keep doordropdrive/ SOURCE in the archive — HAUL imports
+# @/doordropdrive/lib/cargo-order-agreement, and driver EAS builds
+# upload from the monorepo root then resolve doordropdrive/.
 doordropdrive/node_modules/
 doordropdrive/.expo/
 doordropdrive/android/
 doordropdrive/ios/
-haulcargo-agents-app/android/
-haulcargo-agents-app/ios/
-haulcargo-agents-app/.expo/
+doordropdrive/dist/
+doordropdrive/*.apk
+doordropdrive/*.aab
+haulcargo-agents-app/
+carrier-portal/
 backend/
 admin-website/
 company-website/
 terms-website/
+.keystore-backup/
+agents-*.png
+*.log

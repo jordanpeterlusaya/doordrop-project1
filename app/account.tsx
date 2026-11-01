@@ -4,46 +4,80 @@ import React, { useMemo, useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { AuthSessionBoundary } from '@/components/auth/session-boundary';
-import { BottomNav, CargoHeader, CargoScreen } from '@/components/cargo-ui';
-import { cargoTheme } from '@/constants/cargo-theme';
+import { BottomNav, CargoScreen } from '@/components/cargo-ui';
+import { cargoTheme, type CargoIcon } from '@/constants/cargo-theme';
 import { typography } from '@/constants/typography';
+import { useAppCopy } from '@/lib/app-copy';
 import { useAuthSession } from '@/providers/auth-provider';
-import { useLanguage, type AppLanguage } from '@/providers/language-provider';
+import { useLanguage } from '@/providers/language-provider';
 
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
+
+type TileKey = 'safety' | 'inbox';
+
+const TILES: { key: TileKey; icon: CargoIcon; route: '/emergency' | '/notifications' }[] = [
+  { key: 'safety', icon: 'shield-check-outline', route: '/emergency' },
+  { key: 'inbox', icon: 'email-outline', route: '/notifications' },
+];
+
+function SettingsRow({
+  icon,
+  title,
+  value,
+  destructive,
+  onPress,
+}: {
+  icon: CargoIcon;
+  title: string;
+  value?: string;
+  destructive?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity activeOpacity={0.88} style={styles.settingsRow} onPress={onPress}>
+      <MaterialCommunityIcons
+        name={icon}
+        size={22}
+        color={destructive ? '#DC2626' : cargoTheme.colors.text}
+      />
+      <Text style={[styles.settingsTitle, destructive && styles.settingsTitleDestructive]}>{title}</Text>
+      {value ? <Text style={styles.settingsValue}>{value}</Text> : null}
+      <MaterialCommunityIcons name="chevron-right" size={20} color={destructive ? '#FCA5A5' : '#94A3B8'} />
+    </TouchableOpacity>
+  );
+}
 
 function AccountScreenContent() {
   const router = useRouter();
+  const copy = useAppCopy();
   const { profile, profileLoading, signOut, user } = useAuthSession();
-  const { language, loading: languageLoading, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const [signingOut, setSigningOut] = useState(false);
-  const isSw = language === 'sw';
 
-  const copy = {
-    title: isSw ? 'Akaunti' : 'Account',
-    editProfile: isSw ? 'Hariri wasifu' : 'Edit profile',
-    language: isSw ? 'Lugha' : 'Language',
-    savedPlaces: isSw ? 'Maeneo yaliyohifadhiwa' : 'Saved places',
-    help: isSw ? 'Msaada' : 'Help',
-    policies: isSw ? 'Sera' : 'Policies',
-    signOut: isSw ? 'Toka' : 'Sign out',
-    signingOut: isSw ? 'Inatoka...' : 'Signing out...',
-    login: isSw ? 'Ingia' : 'Login',
-    notSignedIn: isSw ? 'Haujaingia' : 'Not signed in',
-    signOutFailedTitle: isSw ? 'Imeshindikana kutoka' : 'Sign out failed',
-    signOutFailedMessage: isSw ? 'Tafadhali jaribu tena.' : 'Please try again.',
-  };
-
-  const profileName = profile?.fullName?.trim() || user?.displayName?.trim() || 'DoorDrop';
-  const profileMeta = user?.email?.trim() || profile?.phoneNumber?.trim() || copy.notSignedIn;
+  const signedIn = Boolean(user);
+  const profileName = signedIn
+    ? profile?.fullName?.trim() || user?.displayName?.trim() || copy.account.guestName
+    : copy.account.guestName;
+  const profileMeta = signedIn
+    ? user?.email?.trim() || profile?.phoneNumber?.trim() || ''
+    : copy.account.guestMeta;
   const initials = useMemo(() => {
-    const source = profile?.fullName?.trim() || user?.displayName?.trim() || user?.email?.trim() || 'DD';
-    return source
+    if (!signedIn) {
+      return '';
+    }
+
+    const source = profile?.fullName?.trim() || user?.displayName?.trim() || user?.email?.trim() || '';
+    const letters = source
       .split(/\s+/)
+      .filter(Boolean)
       .slice(0, 2)
       .map((part) => part[0]?.toUpperCase() ?? '')
       .join('');
-  }, [profile?.fullName, user?.displayName, user?.email]);
+    return letters || 'H';
+  }, [profile?.fullName, signedIn, user?.displayName, user?.email]);
+
+  const languageValue =
+    language === 'sw' ? copy.account.languageKiswahili : copy.account.languageEnglish;
 
   const handleSignOut = async () => {
     if (signingOut) {
@@ -55,92 +89,111 @@ function AccountScreenContent() {
       await signOut();
       router.replace('/login');
     } catch {
-      Alert.alert(copy.signOutFailedTitle, copy.signOutFailedMessage);
+      Alert.alert(copy.account.signOutFailedTitle, copy.account.signOutFailedMessage);
     } finally {
       setSigningOut(false);
     }
   };
 
-  return (
-    <CargoScreen backgroundColor="#FFFFFF" contentContainerStyle={styles.content} footer={<BottomNav activeTab="account" />}>
-      <CargoHeader title={copy.title} leftAction="menu" onLeftPress={() => router.push('/menu')} />
+  const openProfile = () => {
+    router.push(signedIn ? '/profile-edit' : '/login');
+  };
 
-      <TouchableOpacity activeOpacity={0.88} style={styles.profileRow} onPress={() => router.push('/profile-edit')}>
+  return (
+    <CargoScreen backgroundColor="#FFFFFF" contentContainerStyle={styles.content} footer={<BottomNav activeTab="account" embedInSafeFooter />}>
+      <TouchableOpacity activeOpacity={0.88} style={styles.identityRow} onPress={openProfile}>
+        <View style={styles.identityCopy}>
+          <Text numberOfLines={2} style={styles.displayName}>
+            {profileLoading && signedIn ? '...' : profileName}
+          </Text>
+          {profileMeta ? (
+            <Text numberOfLines={2} style={styles.displayMeta}>
+              {profileMeta}
+            </Text>
+          ) : null}
+        </View>
         <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{initials}</Text>
+          {signedIn && initials ? (
+            <Text style={styles.avatarText}>{initials}</Text>
+          ) : (
+            <MaterialCommunityIcons name="account-outline" size={28} color={cargoTheme.colors.text} />
+          )}
         </View>
-        <View style={styles.profileCopy}>
-          <Text numberOfLines={1} style={styles.profileName}>
-            {profileLoading ? '...' : profileName}
-          </Text>
-          <Text numberOfLines={1} style={styles.profileMeta}>
-            {profileMeta}
-          </Text>
-        </View>
-        <Text style={styles.editLink}>{copy.editProfile}</Text>
       </TouchableOpacity>
 
-      <Text style={styles.sectionTitle}>{copy.language}</Text>
-      <View style={styles.languageRow}>
-        {([
-          { value: 'en' as const, label: 'English' },
-          { value: 'sw' as const, label: 'Kiswahili' },
-        ]).map((option) => {
-          const selected = language === option.value;
-          return (
+      <View style={styles.tileGrid}>
+        <View style={styles.tileRow}>
+          {TILES.map((tile) => (
             <TouchableOpacity
-              key={option.value}
+              key={tile.key}
               activeOpacity={0.88}
-              disabled={languageLoading}
-              style={[styles.languageChip, selected && styles.languageChipSelected]}
-              onPress={() => {
-                void setLanguage(option.value as AppLanguage);
-              }}>
-              <Text style={[styles.languageChipText, selected && styles.languageChipTextSelected]}>{option.label}</Text>
+              style={styles.tile}
+              onPress={() => router.push(tile.route)}>
+              <MaterialCommunityIcons name={tile.icon} size={22} color={cargoTheme.colors.text} />
+              <Text style={styles.tileLabel}>{copy.account[tile.key]}</Text>
             </TouchableOpacity>
-          );
-        })}
+          ))}
+        </View>
       </View>
 
-      <View style={styles.listCard}>
-        <TouchableOpacity activeOpacity={0.88} style={styles.listRow} onPress={() => router.push('/saved-places')}>
-          <View style={styles.listIcon}>
-            <MaterialCommunityIcons name="bookmark-outline" size={20} color={cargoTheme.colors.text} />
-          </View>
-          <Text style={styles.listTitle}>{copy.savedPlaces}</Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          activeOpacity={0.88}
-          style={[styles.listRow, styles.listRowBorder]}
-          onPress={() => router.push('/support-center')}>
-          <View style={styles.listIcon}>
-            <MaterialCommunityIcons name="lifebuoy" size={20} color={cargoTheme.colors.text} />
-          </View>
-          <Text style={styles.listTitle}>{copy.help}</Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          activeOpacity={0.88}
-          style={[styles.listRow, styles.listRowBorder]}
-          onPress={() => router.push('/policies')}>
-          <View style={styles.listIcon}>
-            <MaterialCommunityIcons name="shield-check-outline" size={20} color={cargoTheme.colors.text} />
-          </View>
-          <Text style={styles.listTitle}>{copy.policies}</Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color="#94A3B8" />
-        </TouchableOpacity>
+      <Text style={styles.sectionTitle}>{copy.account.settings}</Text>
+      <View style={styles.group}>
+        <SettingsRow
+          icon="translate"
+          title={copy.account.language}
+          value={languageValue}
+          onPress={() => router.push('/language')}
+        />
+        <View style={styles.rowDivider} />
+        <SettingsRow
+          icon="bell-outline"
+          title={copy.account.notifications}
+          onPress={() => router.push('/notifications')}
+        />
+        <View style={styles.rowDivider} />
+        <SettingsRow
+          icon="map-marker-outline"
+          title={copy.account.savedPlaces}
+          onPress={() => router.push('/saved-places')}
+        />
+        <View style={styles.rowDivider} />
+        <SettingsRow icon="account-edit-outline" title={copy.account.editProfile} onPress={openProfile} />
+        {signedIn ? (
+          <>
+            <View style={styles.rowDivider} />
+            <SettingsRow
+              icon="lock-outline"
+              title={copy.account.changePassword}
+              onPress={() => router.push('/change-password')}
+            />
+          </>
+        ) : null}
+        <View style={styles.rowDivider} />
+        <SettingsRow
+          icon="file-document-outline"
+          title={copy.account.policies}
+          onPress={() => router.push('/policies')}
+        />
+        <View style={styles.rowDivider} />
+        <SettingsRow
+          icon="lifebuoy"
+          title={copy.account.help}
+          onPress={() => router.push('/support-center')}
+        />
       </View>
 
-      {user ? (
-        <TouchableOpacity activeOpacity={0.88} style={styles.signOutButton} onPress={() => void handleSignOut()}>
-          <Text style={styles.signOutText}>{signingOut ? copy.signingOut : copy.signOut}</Text>
-        </TouchableOpacity>
-      ) : (
-        <TouchableOpacity activeOpacity={0.88} style={styles.signOutButton} onPress={() => router.push('/login')}>
-          <Text style={styles.loginText}>{copy.login}</Text>
-        </TouchableOpacity>
-      )}
+      <View style={[styles.group, styles.groupSpaced]}>
+        {signedIn ? (
+          <SettingsRow
+            icon="logout"
+            title={signingOut ? copy.account.signingOut : copy.account.signOut}
+            destructive
+            onPress={() => void handleSignOut()}
+          />
+        ) : (
+          <SettingsRow icon="login" title={copy.account.login} onPress={() => router.push('/login')} />
+        )}
+      </View>
     </CargoScreen>
   );
 }
@@ -157,45 +210,68 @@ const styles = StyleSheet.create({
   content: {
     paddingBottom: 24,
   },
-  profileRow: {
+  identityRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 28,
+    marginTop: 4,
+    marginBottom: 22,
+    gap: 14,
   },
-  avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#ECFDF3',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  avatarText: {
-    fontSize: 16,
-    fontFamily: typography.extrabold,
-    color: cargoTheme.colors.primaryDark,
-  },
-  profileCopy: {
+  identityCopy: {
     flex: 1,
     minWidth: 0,
   },
-  profileName: {
-    fontSize: 18,
-    fontFamily: typography.extrabold,
+  displayName: {
+    fontSize: 30,
+    lineHeight: 36,
+    fontFamily: typography.ident,
     color: cargoTheme.colors.text,
-    letterSpacing: -0.3,
+    letterSpacing: -0.8,
   },
-  profileMeta: {
-    marginTop: 2,
-    fontSize: 13,
+  displayMeta: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
     fontFamily: typography.body,
     color: cargoTheme.colors.subtext,
   },
-  editLink: {
-    fontSize: 13,
-    fontFamily: typography.bold,
-    color: cargoTheme.colors.primaryDark,
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 2,
+    borderColor: cargoTheme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 20,
+    fontFamily: typography.ident,
+    color: cargoTheme.colors.text,
+  },
+  tileGrid: {
+    gap: 10,
+    marginBottom: 22,
+  },
+  tileRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  tile: {
+    flex: 1,
+    minHeight: 88,
+    borderRadius: 18,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  tileLabel: {
+    fontSize: 15,
+    fontFamily: typography.semibold,
+    color: cargoTheme.colors.text,
   },
   sectionTitle: {
     fontSize: 12,
@@ -206,76 +282,40 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginLeft: 4,
   },
-  languageRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 22,
-  },
-  languageChip: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  languageChipSelected: {
-    borderColor: cargoTheme.colors.primary,
-    backgroundColor: '#F0FDF4',
-  },
-  languageChipText: {
-    fontSize: 14,
-    fontFamily: typography.semibold,
-    color: cargoTheme.colors.subtext,
-  },
-  languageChipTextSelected: {
-    color: cargoTheme.colors.primaryDark,
-  },
-  listCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#EDF2F7',
+  group: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 18,
     overflow: 'hidden',
   },
-  listRow: {
+  groupSpaced: {
+    marginTop: 12,
+  },
+  settingsRow: {
     minHeight: 54,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
   },
-  listRowBorder: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E8EEF4',
-  },
-  listIcon: {
-    width: 32,
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  listTitle: {
+  settingsTitle: {
     flex: 1,
     fontSize: 16,
     fontFamily: typography.semibold,
     color: cargoTheme.colors.text,
   },
-  signOutButton: {
-    alignSelf: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: 20,
-    marginTop: 12,
-  },
-  signOutText: {
-    fontSize: 15,
-    fontFamily: typography.bold,
+  settingsTitleDestructive: {
     color: '#DC2626',
   },
-  loginText: {
-    fontSize: 15,
-    fontFamily: typography.bold,
-    color: cargoTheme.colors.primaryDark,
+  settingsValue: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: cargoTheme.colors.subtext,
+    marginRight: 2,
+  },
+  rowDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#E5E7EB',
+    marginLeft: 48,
   },
 });

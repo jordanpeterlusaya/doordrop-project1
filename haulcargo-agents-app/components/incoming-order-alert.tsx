@@ -16,7 +16,7 @@ import { useCarrierSession } from '@/providers/carrier-session';
 
 /** Bottom sheet for a new offer. Sits under the desk rows. Chime stops on action. */
 export function IncomingOrderAlert() {
-  const { offerBanner, dismissOfferBanner, carrier, user } = useCarrierSession();
+  const { offerBanner, dismissOfferBanner, carrier, user, sendParcelOfferAction } = useCarrierSession();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -42,7 +42,10 @@ export function IncomingOrderAlert() {
     stopIncomingOrderAlarm('accept');
     try {
       const shipmentId = offerBanner.shipmentId;
-      await acceptOffer(shipmentId, carrierId, email);
+      const viaWs = await sendParcelOfferAction('carrier_accept', shipmentId);
+      if (!viaWs) {
+        await acceptOffer(shipmentId, carrierId, email);
+      }
       dismissOfferBanner();
       router.push(`/order/${shipmentId}`);
     } catch (err) {
@@ -63,15 +66,20 @@ export function IncomingOrderAlert() {
     if (busy || !offerBanner) return;
     setConfirming(false);
     setBusy(true);
-    void rejectOffer(offerBanner.shipmentId, carrierId, email)
-      .then(() => {
+    void (async () => {
+      try {
+        const viaWs = await sendParcelOfferAction('carrier_reject', offerBanner.shipmentId);
+        if (!viaWs) {
+          await rejectOffer(offerBanner.shipmentId, carrierId, email);
+        }
         dismissOfferBanner();
-      })
-      .catch((err) => {
+      } catch (err) {
         const msg = agentStatusError(err instanceof Error ? err.message : 'Imeshindwa.');
         if (msg) Alert.alert('Imeshindwa', msg);
-      })
-      .finally(() => setBusy(false));
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   return (

@@ -1,2 +1,5 @@
-export { RouteErrorBoundary as ErrorBoundary } from '@/components/ErrorBoundary';
-export { default } from '@/components/screens/book-cargo-screen';
+import BookCargoScreen from '@/components/screens/book-cargo-screen';
+
+export { ErrorBoundary } from '@/components/expo-router-error-boundary';
+
+export default BookCargoScreen;

@@ -22,8 +22,8 @@ type SafePlatformScreenProps = {
 
 export function SafePlatformScreen({ loadNative, loadWeb, screenName }: SafePlatformScreenProps) {
   const router = useRouter();
-  const fallbackRoute = screenName === 'Home' ? '/explore' : '/home';
-  const fallbackLabel = screenName === 'Home' ? 'Open explore' : 'Go to home';
+  const fallbackRoute = '/home';
+  const fallbackLabel = 'Go to home';
   const didLogLoadStart = useRef(false);
   const didLogLoadSuccess = useRef(false);
 

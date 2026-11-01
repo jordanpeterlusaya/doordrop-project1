@@ -10,11 +10,19 @@
     "serve": "firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log --only api",
-    "admin:set-claim": "node scripts/set-admin-claim.js"
+    "admin:set-claim": "node scripts/set-admin-claim.js",
+    "load-test": "node scripts/load-test.js",
+    "capacity-test": "node scripts/production-capacity-test.js",
+    "start": "node server.js",
+    "cargo-ws": "node cargo-offer-ws.js",
+    "start:cargo-ws": "node cargo-offer-ws.js",
+    "parcel-ws": "node parcel-offer-ws.js",
+    "start:parcel-ws": "node parcel-offer-ws.js"
   },
   "dependencies": {
     "@mapbox/polyline": "^1.2.1",
     "firebase-admin": "^13.10.0",
-    "firebase-functions": "^7.2.5"
+    "firebase-functions": "^7.2.5",
+    "ws": "^8.22.0"
   }
 }

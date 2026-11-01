@@ -16,10 +16,16 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 
+import { canonicalCargoVehicleKey, cargoAgreementPhase } from './cargo-order-agreement';
 import { compactFirestoreData } from './firestore-payload';
+import { encodeGeohash } from './geohash';
 import { db } from './firebase';
+import { getAccessBillingPeriodKey, getDriverAccessPlan, getTanzaniaDateKey, isDriverSubscriptionActive, resolveAccessPaymentDuePatch } from './driver-access';
+import { getOutsideParcelDurationSecondsForOrder } from './outside-parcel-eta';
 
-export type DriverVehicleType = 'bodaboda' | 'kirikuu' | 'toyo';
+export { isDriverSubscriptionActive };
+
+export type DriverVehicleType = 'bodaboda' | 'kirikuu' | 'toyo' | 'toyo_electric' | 'canter';
 export type DriverVerificationStatus = 'pending_admin_verification' | 'verified' | 'rejected';
 export type DriverVerificationDocumentKey = 'vehiclePhoto' | 'driverPhoto';
 export type DriverVerificationDocument = {
@@ -32,11 +38,39 @@ export type DriverVerificationDocument = {
   uploadStatus?: 'uploaded' | 'pending_upload' | 'not_submitted';
   uploadNote?: string;
 };
+
+function serializeVerificationDocument(document?: DriverVerificationDocument | null) {
+  if (!document) {
+    return {
+      uploadStatus: 'not_submitted' as const,
+    };
+  }
+
+  return compactFirestoreData({
+    fileName: document.fileName || undefined,
+    mimeType: document.mimeType || undefined,
+    downloadURL: document.downloadURL || '',
+    storagePath: document.storagePath || undefined,
+    uploadedAt: document.uploadedAt || undefined,
+    uploadStatus: document.uploadStatus || (document.downloadURL ? 'uploaded' : 'pending_upload'),
+    uploadNote: document.uploadNote || undefined,
+  });
+}
+
+function serializeVerificationDocuments(
+  documents?: Partial<Record<DriverVerificationDocumentKey, DriverVerificationDocument | null>>
+) {
+  return {
+    vehiclePhoto: serializeVerificationDocument(documents?.vehiclePhoto),
+    driverPhoto: serializeVerificationDocument(documents?.driverPhoto),
+  };
+}
 export type DeliveryOrderStatus =
   | 'pending_assignment'
   | 'driver_assigned'
   | 'driver_at_pickup'
   | 'in_transit'
+  | 'at_hub'
   | 'delivered'
   | 'cancelled';
 
@@ -64,9 +98,31 @@ export type DeliveryOrder = {
   outsideDestinationLatitude?: number;
   outsideDestinationLongitude?: number;
   outsideParcelWeightKg?: string;
+  parcelScope?: string;
+  outsideShippingMode?: string;
+  outsideHandoffMode?: string;
+  outsidePickupAt?: unknown;
+  outsideEtaDeadlineAt?: unknown;
+  parcelCode?: string;
+  logisticsStatus?: string;
+  logisticsEvents?: Array<{ status?: string; note?: string; by?: string; at?: unknown }>;
   etaLabel: string;
   fareLabel: string;
   totalLabel: string;
+  fareType?: 'algorithm' | 'negotiated';
+  customerOffer?: number;
+  driverOffer?: number;
+  minFare?: number;
+  distanceKm?: number;
+  lastOfferBy?: 'customer' | 'driver';
+  negotiationStatus?: 'open' | 'confirmed' | string;
+  driverNegotiationUsed?: number;
+  driverOfferNote?: string;
+  customerOfferNote?: string;
+  cargoSizeLabel?: string;
+  cargoVehicleKey?: string;
+  cargoVehicleLabel?: string;
+  flow?: string;
   scheduleLabel: string;
   recipientName: string;
   recipientPhone: string;
@@ -91,7 +147,13 @@ export type DeliveryOrder = {
   declinedDriverIds?: string[];
   lastDeclinedByDriverId?: string;
   lastDeclinedAt?: unknown;
+  assignmentMode?: string;
   driverGrossEarnings?: number;
+  haulFee?: number;
+  haulFeeRate?: number;
+  commissionPaidTzs?: number;
+  cashStatus?: 'unpaid' | 'reconciled' | string;
+  commissionPaymentId?: string;
   adminCommissionRate?: number;
   adminCommissionDue?: number;
   driverCommissionPaidAt?: unknown;
@@ -126,6 +188,9 @@ export type DriverRecord = {
   verificationRejectedByAdminId?: string;
   verificationRejectedByAdminEmail?: string;
   verificationRejectionReason?: string;
+  latestPushToken?: string;
+  pushTokenPlatform?: string;
+  pushTokenUpdatedAt?: unknown;
   isAvailable: boolean;
   isPriorityDriver?: boolean;
   priorityDriverUpdatedAt?: unknown;
@@ -137,6 +202,7 @@ export type DriverRecord = {
   currentHeading?: number;
   currentSpeedKph?: number;
   currentAccuracyMeters?: number;
+  geohash?: string;
   lastLocationUpdatedAt?: unknown;
   appOpenCount?: number;
   lastActiveAt?: unknown;
@@ -145,12 +211,33 @@ export type DriverRecord = {
   cancellationCount?: number;
   disciplinePoints?: number;
   completedOrderCount?: number;
+  dailyCompletedOrderCount?: number;
+  dailyCompletedDateKey?: string;
+  weeklyCompletedOrderCount?: number;
+  weeklyCompletedWeekKey?: string;
   suspensionUntil?: number;
+  commissionDueDateKey?: string;
+  commissionDueEarningsTzs?: number;
+  commissionDueTzs?: number;
+  unpaidCommissionTzs?: number;
+  commissionPayCeilingTzs?: number;
+  commissionLocked?: boolean;
+  commissionFeeRate?: number;
+  commissionStatus?: string;
+  commissionPaidDateKey?: string;
+  commissionPayment?: {
+    orderId?: string;
+    status?: string;
+    amount?: number;
+  };
+  commissionStatus?: 'due' | 'pending' | 'paid' | string;
+  commissionPaidDateKey?: string;
   lastCommissionPaymentDateKey?: string;
   lastCommissionPaidAt?: unknown;
   lastCommissionPaidAmount?: number;
   totalCommissionPaid?: number;
   subscriptionPaidUntil?: unknown;
+  accessPaymentDuePeriodKey?: string;
   subscriptionTrialStartedAt?: unknown;
   subscriptionTrialEndsAt?: unknown;
   subscriptionStatus?: string;
@@ -202,23 +289,31 @@ const TANZANIA_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
 const DRIVER_SEARCH_TIMEOUT_MS = 1000 * 60 * 10;
 const DRIVER_APP_ONLINE_REFRESH_MS = 1000 * 60 * 15;
 const DRIVER_ORDER_FEED_LIMIT = 80;
+const DRIVER_DOC_HEARTBEAT_MS = 45 * 1000;
 
 function normalizeDriverVehicleType(vehicleType: DriverVehicleType | string): DriverVehicleType {
   const normalized = String(vehicleType || '').trim().toLowerCase();
   const aliases: Record<string, DriverVehicleType> = {
-    bodaboda: 'bodaboda',
-    boda: 'bodaboda',
-    pikipiki: 'bodaboda',
-    motorcycle: 'bodaboda',
-    motorbike: 'bodaboda',
-    bike: 'bodaboda',
+    bodaboda: 'toyo',
+    boda: 'toyo',
+    pikipiki: 'toyo',
+    motorcycle: 'toyo',
+    motorbike: 'toyo',
+    bike: 'toyo',
+    toyo_electric: 'toyo_electric',
+    'toyo-electric': 'toyo_electric',
+    toyoelectric: 'toyo_electric',
+    electric_toyo: 'toyo_electric',
     toyo: 'toyo',
     bajaj: 'toyo',
     bajaji: 'toyo',
     kirikuu: 'kirikuu',
+    canter: 'canter',
+    center: 'canter',
+    fuso: 'canter',
   };
 
-  return aliases[normalized] || 'bodaboda';
+  return aliases[normalized] || 'toyo';
 }
 
 const deliveryOrderStatusLabels: Record<DeliveryOrderStatus, string> = {
@@ -226,9 +321,26 @@ const deliveryOrderStatusLabels: Record<DeliveryOrderStatus, string> = {
   driver_assigned: 'Driver assigned',
   driver_at_pickup: 'Driver at pickup',
   in_transit: 'In transit',
+  at_hub: 'Delivered to DoorDrop office',
   delivered: 'Delivered',
   cancelled: 'Cancelled',
 };
+
+function isOutsideParcelOrder(order: {
+  parcelScope?: string | null;
+  outsideDestinationCity?: string | null;
+  outsideDestinationLabel?: string | null;
+  outsideShippingMode?: string | null;
+}) {
+  if (String(order.parcelScope || '').trim().toLowerCase() === 'outside') {
+    return true;
+  }
+  return Boolean(
+    String(order.outsideDestinationCity || '').trim() ||
+      String(order.outsideDestinationLabel || '').trim() ||
+      String(order.outsideShippingMode || '').trim()
+  );
+}
 
 function orderRef(orderId: string) {
   return doc(db, 'orders', orderId);
@@ -236,6 +348,10 @@ function orderRef(orderId: string) {
 
 function driverRef(driverId: string) {
   return doc(db, 'drivers', driverId);
+}
+
+function driverLocationRef(driverId: string) {
+  return doc(db, 'driverLocations', driverId);
 }
 
 function driverCommissionPaymentRef(driverId: string) {
@@ -318,14 +434,6 @@ function getSnapshotItems<T extends { id: string }>(
 
 function isDriverVerifiedForDispatch(driver: Partial<DriverRecord>) {
   return !driver.verificationStatus || driver.verificationStatus === 'verified';
-}
-
-export function isDriverSubscriptionActive(_driver?: Partial<DriverRecord> | null, _now = Date.now()) {
-  return true;
-}
-
-function assertDriverSubscriptionActive(_driver?: Partial<DriverRecord> | null) {
-  return;
 }
 
 function clearDriverAssignmentFields() {
@@ -481,6 +589,46 @@ export function subscribeToDriverOrders(
   );
 }
 
+export function subscribeToOpenCargoOffers(
+  vehicleType: string,
+  callback: (orders: DeliveryOrder[]) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  const vehicleKey = canonicalCargoVehicleKey(vehicleType);
+  const openOffersQuery = query(
+    ordersCollection,
+    where('status', '==', 'pending_assignment'),
+    firestoreLimit(40)
+  );
+
+  return onSnapshot(
+    openOffersQuery,
+    (snapshot) => {
+      const offers = getSnapshotItems<DeliveryOrder>(snapshot.docs).filter((order) => {
+        if (!vehicleKey) {
+          return false;
+        }
+        // Instant verify flow assigns over WebSocket — do not show in open pool.
+        if (String(order.assignmentMode || '') === 'cargo_ws') {
+          return false;
+        }
+        if (order.fareType !== 'negotiated' || order.negotiationStatus === 'confirmed') {
+          return false;
+        }
+        if (order.driverId) {
+          return false;
+        }
+        if (cargoAgreementPhase(order) !== 'open') {
+          return false;
+        }
+        return canonicalCargoVehicleKey(order.cargoVehicleKey) === vehicleKey;
+      });
+      callback(sortOrders(offers));
+    },
+    (error) => onError?.(error)
+  );
+}
+
 export function subscribeToDeliveryOrder(
   orderId: string,
   callback: (order: DeliveryOrder | null) => void,
@@ -517,7 +665,7 @@ export async function registerDriver(input: RegisterDriverInput) {
     vehicleColor: input.vehicleColor?.trim() || '',
     plateNumber: input.plateNumber.trim().toUpperCase(),
     verificationStatus,
-    verificationDocuments: input.verificationDocuments,
+    verificationDocuments: serializeVerificationDocuments(input.verificationDocuments),
     vehiclePhotoURL,
     driverPhotoURL,
     verificationSubmittedAt: serverTimestamp(),
@@ -575,17 +723,13 @@ export async function recordDriverAppOpen(input: {
 }
 
 export async function setDriverAvailability(driverId: string, isAvailable: boolean) {
+  const driverSnapshot = await getDoc(driverRef(driverId));
+  const driver = driverSnapshot.exists() ? driverSnapshot.data() as DriverRecord : null;
+
   if (isAvailable) {
-    const driverSnapshot = await getDoc(driverRef(driverId));
-    const driver = driverSnapshot.exists() ? driverSnapshot.data() as DriverRecord : null;
     if (driver && !isDriverVerifiedForDispatch(driver)) {
       throw new Error('Your DoorDrop Drive account is waiting for admin verification.');
     }
-
-    if (driver) {
-      assertDriverSubscriptionActive(driver);
-    }
-
   }
 
   await updateDoc(
@@ -593,9 +737,43 @@ export async function setDriverAvailability(driverId: string, isAvailable: boole
     compactFirestoreData({
       isAvailable,
       currentOrderId: isAvailable ? '' : undefined,
+      geohash:
+        isAvailable && driver && Number.isFinite(Number(driver.currentLatitude)) && Number.isFinite(Number(driver.currentLongitude))
+          ? encodeGeohash(Number(driver.currentLatitude), Number(driver.currentLongitude), 6)
+          : undefined,
       appOnline: true,
       appOnlineUntil: isAvailable ? new Date(Date.now() + DRIVER_APP_ONLINE_REFRESH_MS) : undefined,
       lastActiveAt: isAvailable ? serverTimestamp() : undefined,
+      updatedAt: serverTimestamp(),
+    })
+  );
+}
+
+export async function saveDriverPushToken(driverId: string, token: string, platform: string) {
+  await saveDriverPushTokens(driverId, {
+    latestPushToken: token,
+    platform,
+  });
+}
+
+export async function saveDriverPushTokens(
+  driverId: string,
+  tokens: {
+    expoPushToken?: string;
+    fcmToken?: string;
+    latestPushToken: string;
+    platform: string;
+  }
+) {
+  await updateDoc(
+    driverRef(driverId),
+    compactFirestoreData({
+      expoPushToken: tokens.expoPushToken || undefined,
+      fcmToken: tokens.fcmToken || undefined,
+      latestPushToken: tokens.latestPushToken,
+      pushTokenPlatform: tokens.platform,
+      pushPlatform: tokens.platform,
+      pushTokenUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     })
   );
@@ -626,19 +804,132 @@ export async function acceptDriverOrder(driverId: string, orderId: string) {
     throw new Error('This driver account is waiting for admin verification.');
   }
 
-  assertDriverSubscriptionActive(driver);
+  const agreedFare =
+    order.fareType === 'negotiated'
+      ? order.lastOfferBy === 'driver' && typeof order.driverOffer === 'number' && order.driverOffer > 0
+        ? order.driverOffer
+        : typeof order.customerOffer === 'number' && order.customerOffer > 0
+          ? order.customerOffer
+          : undefined
+      : undefined;
+  const agreedFareLabel =
+    typeof agreedFare === 'number' ? `TZS ${Math.round(agreedFare).toLocaleString('en-US')}` : undefined;
 
   const batch = writeBatch(db);
-  batch.update(orderRef(orderId), {
-    acceptedByDriverAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  batch.update(
+    orderRef(orderId),
+    compactFirestoreData({
+      acceptedByDriverAt: serverTimestamp(),
+      status: 'driver_assigned',
+      negotiationStatus: order.fareType === 'negotiated' ? 'confirmed' : order.negotiationStatus,
+      customerOffer: order.fareType === 'negotiated' ? agreedFare : order.customerOffer,
+      driverOffer: order.fareType === 'negotiated' ? agreedFare : order.driverOffer,
+      lastOfferBy: order.fareType === 'negotiated' ? 'driver' : order.lastOfferBy,
+      fareConfirmedAt: order.fareType === 'negotiated' ? serverTimestamp() : undefined,
+      updatedAt: serverTimestamp(),
+      fareLabel: agreedFareLabel || order.fareLabel,
+      totalLabel: agreedFareLabel || order.totalLabel,
+      driverName: driver.fullName || order.driverName,
+      driverPhone: driver.phoneNumber || order.driverPhone,
+      driverVehicleLabel: driver.vehicleLabel || order.driverVehicleLabel,
+      driverPlateNumber: driver.plateNumber || order.driverPlateNumber,
+    })
+  );
   batch.update(driverRef(driverId), {
     isAvailable: false,
     currentOrderId: orderId,
     updatedAt: serverTimestamp(),
   });
 
+  await batch.commit();
+}
+
+export async function updateCargoNegotiation(
+  orderId: string,
+  patch: {
+    customerOffer?: number;
+    driverOffer?: number;
+    lastOfferBy?: 'customer' | 'driver';
+    fareLabel?: string;
+    totalLabel?: string;
+  }
+) {
+  await updateDoc(
+    orderRef(orderId),
+    compactFirestoreData({
+      ...patch,
+      updatedAt: serverTimestamp(),
+    })
+  );
+}
+
+function pilotVehicleLabel(vehicleType: string) {
+  const key = normalizeDriverVehicleType(vehicleType);
+  if (key === 'kirikuu') return 'Kirikuu';
+  if (key === 'canter') return 'Canter';
+  return 'TOYO';
+}
+
+export const DRIVER_NEGOTIATION_CHANCES = 3;
+export const DEFAULT_FARE_NOTE = 'Bei yangu.';
+
+export async function submitDriverFare(driverId: string, orderId: string, amount: number, note?: string) {
+  const [orderSnapshot, driverSnapshot] = await Promise.all([getDoc(orderRef(orderId)), getDoc(driverRef(driverId))]);
+  if (!orderSnapshot.exists()) {
+    throw new Error('Order was not found.');
+  }
+  if (!driverSnapshot.exists()) {
+    throw new Error('Driver profile was not found.');
+  }
+
+  const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
+  const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
+  if (order.driverId && order.driverId !== driverId) {
+    throw new Error('This order is assigned to a different driver.');
+  }
+  if (order.negotiationStatus === 'confirmed') {
+    throw new Error('This fare is already confirmed.');
+  }
+
+  const fareAmount = Math.max(0, Math.round(amount));
+  const customerAmount = Math.max(0, Math.round(Number(order.customerOffer) || 0));
+  const previousDriverAmount = Math.max(0, Math.round(Number(order.driverOffer) || 0));
+  const used = Math.max(0, Math.round(Number(order.driverNegotiationUsed) || 0));
+  const isCounter = fareAmount !== customerAmount;
+  const sameResend = order.lastOfferBy === 'driver' && previousDriverAmount === fareAmount;
+  if (isCounter && !sameResend && used >= DRIVER_NEGOTIATION_CHANCES) {
+    throw new Error('Nafasi za kujadili zimekwisha. Kubali bei ya mteja.');
+  }
+  const nextUsed = isCounter && !sameResend ? used + 1 : used;
+  const offerNote = String(note || '').trim().slice(0, 140) || DEFAULT_FARE_NOTE;
+  const fareLabel = `TZS ${fareAmount.toLocaleString('en-US')}`;
+  const vehicleType = normalizeDriverVehicleType(driver.vehicleType || '');
+
+  const batch = writeBatch(db);
+  batch.update(orderRef(orderId), compactFirestoreData({
+    driverId,
+    driverName: driver.fullName,
+    driverPhone: driver.phoneNumber,
+    driverVehicleType: vehicleType,
+    driverVehicleLabel: driver.vehicleLabel || pilotVehicleLabel(vehicleType),
+    driverPlateNumber: driver.plateNumber,
+    driverVehicleColor: driver.vehicleColor || '',
+    driverPhotoURL: driver.driverPhotoURL || '',
+    driverOffer: fareAmount,
+    driverOfferNote: offerNote,
+    driverNegotiationUsed: nextUsed,
+    lastOfferBy: 'driver',
+    fareLabel,
+    totalLabel: fareLabel,
+    status: order.status === 'pending_assignment' ? 'driver_assigned' : order.status,
+    assignedAt: order.assignedAt || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+  batch.update(driverRef(driverId), compactFirestoreData({
+    currentOrderId: orderId,
+    isAvailable: false,
+    updatedAt: serverTimestamp(),
+  }));
   await batch.commit();
 }
 
@@ -654,9 +945,23 @@ export async function declineDriverOrder(driverId: string, orderId: string, reas
   }
 
   const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
-  assertDriverSubscriptionActive(driver);
 
   const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
+  if (!order.driverId && order.status === 'pending_assignment') {
+    await updateDoc(orderRef(orderId), compactFirestoreData({
+      declinedDriverIds: arrayUnion(driverId),
+      lastDeclinedByDriverId: driverId,
+      lastDeclinedReason: reason?.trim() || 'Driver rejected offer',
+      lastDeclinedAt: serverTimestamp(),
+      driverOffer: deleteField(),
+      lastOfferBy: order.fareType === 'negotiated' ? 'customer' : order.lastOfferBy,
+      negotiationStatus: order.fareType === 'negotiated' ? 'open' : order.negotiationStatus,
+      status: 'pending_assignment',
+      updatedAt: serverTimestamp(),
+    }));
+    return;
+  }
+
   if (order.driverId !== driverId) {
     throw new Error('This order is assigned to a different driver.');
   }
@@ -682,6 +987,9 @@ export async function declineDriverOrder(driverId: string, orderId: string, reas
     lastDeclinedByDriverId: driverId,
     lastDeclinedReason: reason?.trim() || 'Driver rejected assignment',
     lastDeclinedAt: serverTimestamp(),
+    driverOffer: deleteField(),
+    lastOfferBy: order.fareType === 'negotiated' ? 'customer' : order.lastOfferBy,
+    negotiationStatus: order.fareType === 'negotiated' ? 'open' : order.negotiationStatus,
     updatedAt: serverTimestamp(),
     ...clearDriverAssignmentFields(),
   }));
@@ -707,21 +1015,39 @@ export async function updateDriverLocation(driverId: string, location: UpdateDri
   }
 
   const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
-  assertDriverSubscriptionActive(driver);
-  const driverPayload = compactFirestoreData({
-    currentLatitude: location.latitude,
-    currentLongitude: location.longitude,
-    currentHeading: location.heading,
-    currentSpeedKph: location.speedKph,
-    currentAccuracyMeters: location.accuracyMeters,
-    appOnline: true,
-    appOnlineUntil: new Date(Date.now() + DRIVER_APP_ONLINE_REFRESH_MS),
-    lastActiveAt: serverTimestamp(),
-    lastLocationUpdatedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
 
-  await updateDoc(driverRef(driverId), driverPayload);
+  const geohash = encodeGeohash(location.latitude, location.longitude, 6);
+
+  await setDoc(
+    driverLocationRef(driverId),
+    compactFirestoreData({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      heading: location.heading,
+      speedKph: location.speedKph,
+      accuracyMeters: location.accuracyMeters,
+      geohash,
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  await updateDoc(
+    driverRef(driverId),
+    compactFirestoreData({
+      currentLatitude: location.latitude,
+      currentLongitude: location.longitude,
+      currentHeading: location.heading,
+      currentSpeedKph: location.speedKph,
+      currentAccuracyMeters: location.accuracyMeters,
+      geohash,
+      appOnline: true,
+      appOnlineUntil: new Date(Date.now() + DRIVER_APP_ONLINE_REFRESH_MS),
+      lastActiveAt: serverTimestamp(),
+      lastLocationUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+  );
 
   if (!driver.currentOrderId) {
     return;
@@ -752,7 +1078,6 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
   }
 
   const driver = { id: driverSnapshot.id, ...(driverSnapshot.data() as Omit<DriverRecord, 'id'>) };
-  assertDriverSubscriptionActive(driver);
 
   const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
   if (order.driverId !== driverId) {
@@ -788,22 +1113,68 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
   }
 
   const fareAmount = parseAmountFromLabel(order.totalLabel || order.fareLabel);
+  const isOutsideComplete = status === 'delivered' && isOutsideParcelOrder(order);
+  const resolvedStatus: DeliveryOrderStatus = isOutsideComplete ? 'at_hub' : status;
+  const shouldStampOutsidePickup =
+    resolvedStatus === 'in_transit' && isOutsideParcelOrder(order) && !order.outsidePickupAt;
+  const outsideDurationSeconds = shouldStampOutsidePickup
+    ? getOutsideParcelDurationSecondsForOrder(order)
+    : 0;
+  const haulFeeRate = 0.2;
+  const haulFee =
+    resolvedStatus === 'delivered' || isOutsideComplete
+      ? Math.max(0, Math.round(fareAmount * haulFeeRate))
+      : 0;
   const orderPayload = compactFirestoreData({
-    status,
+    status: resolvedStatus,
     acceptedByDriverAt:
-      status === 'driver_at_pickup' || status === 'in_transit' || status === 'delivered'
+      resolvedStatus === 'driver_at_pickup' ||
+      resolvedStatus === 'in_transit' ||
+      resolvedStatus === 'at_hub' ||
+      resolvedStatus === 'delivered'
         ? order.acceptedByDriverAt || serverTimestamp()
         : undefined,
-    deliveredAt: status === 'delivered' ? serverTimestamp() : undefined,
-    cancelledAt: status === 'cancelled' ? serverTimestamp() : undefined,
-    cancelledBy: status === 'cancelled' ? 'driver' : undefined,
-    driverGrossEarnings: status === 'delivered' ? fareAmount : undefined,
+    deliveredAt: resolvedStatus === 'delivered' ? serverTimestamp() : undefined,
+    firstMileCompletedAt: isOutsideComplete ? serverTimestamp() : undefined,
+    ...(shouldStampOutsidePickup
+      ? {
+          outsidePickupAt: serverTimestamp(),
+          outsideCountdownStartedAt: serverTimestamp(),
+          outsideEtaDeadlineAt: new Date(Date.now() + outsideDurationSeconds * 1000),
+        }
+      : {}),
+    cancelledAt: resolvedStatus === 'cancelled' ? serverTimestamp() : undefined,
+    cancelledBy: resolvedStatus === 'cancelled' ? 'driver' : undefined,
+    driverGrossEarnings: resolvedStatus === 'delivered' || isOutsideComplete ? fareAmount : undefined,
+    ...(haulFee > 0
+      ? {
+          haulFee,
+          haulFeeRate,
+          commissionPaidTzs: Number(order.commissionPaidTzs || 0) || 0,
+          cashStatus: String(order.cashStatus || '') === 'reconciled' ? 'reconciled' : 'unpaid',
+        }
+      : {}),
+    ...(isOutsideComplete
+      ? {
+          logisticsStatus: 'awaiting_hub_intake',
+          logisticsEvents: arrayUnion({
+            status: 'awaiting_hub_intake',
+            note: 'Driver delivered parcel to DoorDrop office. Awaiting office intake scan.',
+            by: 'driver',
+            at: new Date(),
+          }),
+        }
+      : {}),
     updatedAt: serverTimestamp(),
   });
 
   batch.update(orderRef(orderId), orderPayload);
 
-  if (status === 'driver_assigned' || status === 'driver_at_pickup' || status === 'in_transit') {
+  if (
+    resolvedStatus === 'driver_assigned' ||
+    resolvedStatus === 'driver_at_pickup' ||
+    resolvedStatus === 'in_transit'
+  ) {
     batch.update(driverRef(driverId), {
       isAvailable: false,
       currentOrderId: orderId,
@@ -811,14 +1182,66 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
     });
   }
 
-  if (status === 'delivered' || status === 'cancelled') {
+  if (resolvedStatus === 'delivered' || resolvedStatus === 'cancelled' || isOutsideComplete) {
+    const now = Date.now();
+    const todayKey = getTanzaniaDateKey(now);
+    const sameDay = String(driver.dailyCompletedDateKey || '') === todayKey;
+    const accessPlan = getDriverAccessPlan(driver);
+    const weekKey = getAccessBillingPeriodKey(accessPlan, now);
+    const sameWeek = String(driver.weeklyCompletedWeekKey || '') === weekKey;
+    const nextDailyCount =
+      resolvedStatus === 'delivered' || isOutsideComplete ? (sameDay ? Number(driver.dailyCompletedOrderCount || 0) + 1 : 1) : undefined;
+    const nextWeeklyCount =
+      resolvedStatus === 'delivered' || isOutsideComplete
+        ? sameWeek
+          ? Number(driver.weeklyCompletedOrderCount || 0) + 1
+          : 1
+        : undefined;
+    const accessDriver = {
+      ...driver,
+      dailyCompletedDateKey: resolvedStatus === 'delivered' || isOutsideComplete ? todayKey : driver.dailyCompletedDateKey,
+      dailyCompletedOrderCount: nextDailyCount,
+      weeklyCompletedWeekKey: resolvedStatus === 'delivered' || isOutsideComplete ? weekKey : driver.weeklyCompletedWeekKey,
+      weeklyCompletedOrderCount: nextWeeklyCount,
+    };
+    const fallbackCount = accessPlan.period === 'week' ? nextWeeklyCount || 0 : nextDailyCount || 0;
+    const duePatch =
+      resolvedStatus === 'delivered' || isOutsideComplete
+        ? resolveAccessPaymentDuePatch(accessDriver, now, fallbackCount)
+        : null;
+    const previousUnpaid = Math.max(0, Math.round(Number(driver.unpaidCommissionTzs) || 0));
+    const nextUnpaid =
+      haulFee > 0 && String(order.cashStatus || '') !== 'reconciled'
+        ? previousUnpaid + haulFee
+        : previousUnpaid;
+    const payCeiling = Math.max(
+      1,
+      Math.round(Number(driver.commissionPayCeilingTzs || 25000))
+    );
     batch.update(
       driverRef(driverId),
       compactFirestoreData({
         isAvailable: true,
         currentOrderId: '',
-        completedOrderCount: status === 'delivered' ? increment(1) : undefined,
-        cancellationCount: status === 'cancelled' ? increment(1) : undefined,
+        completedOrderCount: resolvedStatus === 'delivered' || isOutsideComplete ? increment(1) : undefined,
+        dailyCompletedDateKey: resolvedStatus === 'delivered' || isOutsideComplete ? todayKey : undefined,
+        dailyCompletedOrderCount:
+          resolvedStatus === 'delivered' || isOutsideComplete ? (sameDay ? increment(1) : 1) : undefined,
+        weeklyCompletedWeekKey: resolvedStatus === 'delivered' || isOutsideComplete ? weekKey : undefined,
+        weeklyCompletedOrderCount:
+          resolvedStatus === 'delivered' || isOutsideComplete ? (sameWeek ? increment(1) : 1) : undefined,
+        accessPaymentDuePeriodKey: duePatch?.accessPaymentDuePeriodKey,
+        unpaidCommissionTzs: resolvedStatus === 'delivered' || isOutsideComplete ? nextUnpaid : undefined,
+        commissionPayCeilingTzs: resolvedStatus === 'delivered' || isOutsideComplete ? payCeiling : undefined,
+        commissionLocked:
+          resolvedStatus === 'delivered' || isOutsideComplete ? nextUnpaid >= payCeiling : undefined,
+        commissionStatus:
+          resolvedStatus === 'delivered' || isOutsideComplete
+            ? nextUnpaid > 0
+              ? 'due'
+              : 'clear'
+            : undefined,
+        cancellationCount: resolvedStatus === 'cancelled' ? increment(1) : undefined,
         lastActiveAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       })
@@ -831,9 +1254,30 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
     userId: order.userId,
     orderId: order.id,
     orderNumber: order.orderNumber,
-    status,
+    status: resolvedStatus === 'at_hub' ? 'in_transit' : resolvedStatus,
     driverName: order.driverName,
   });
+}
+
+export async function saveDailyCommissionDue(
+  driverId: string,
+  input: {
+    dateKey: string;
+    earningsTzs: number;
+    commissionTzs: number;
+    status: 'due' | 'pending';
+  }
+) {
+  await updateDoc(
+    driverRef(driverId),
+    compactFirestoreData({
+      commissionDueDateKey: input.dateKey,
+      commissionDueEarningsTzs: Math.max(0, Math.round(input.earningsTzs)),
+      commissionDueTzs: Math.max(0, Math.round(input.commissionTzs)),
+      commissionStatus: input.status,
+      updatedAt: serverTimestamp(),
+    })
+  );
 }
 
 export async function markDriverCommissionPaid(
@@ -899,7 +1343,6 @@ export async function markDriverCommissionPaid(
     lastSubscriptionPaymentStatus: 'pending_admin_verification',
     lastSubscriptionPaymentSubmittedAt: serverTimestamp(),
     lastSubscriptionPaymentId: paymentRef.id,
-    isAvailable: false,
     updatedAt: serverTimestamp(),
   });
 

@@ -35,9 +35,15 @@ export type UserNotification = {
   title: string;
   message: string;
   type: UserNotificationType;
+  driverId?: string;
+  driverName?: string;
+  driverVehicleType?: string;
+  conversationId?: string;
   orderId?: string;
   orderNumber?: string;
   orderStatus?: DeliveryOrderStatus;
+  serviceLabel?: string;
+  flow?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
   readAt?: unknown;
@@ -108,6 +114,45 @@ async function canSendNotification(userId: string, type: UserNotificationType) {
 }
 
 function getOrderStatusNotificationCopy(input: OrderNotificationInput) {
+  const isNinunulie = String(input.serviceLabel || '').trim().toLowerCase() === 'ninunulie';
+
+  if (isNinunulie) {
+    if (input.status === 'pending_assignment') {
+      return {
+        title: 'Ninunulie imepokelewa',
+        message: `${input.orderNumber} imefika ofisini. Tutakupigia simu / WhatsApp.`,
+      };
+    }
+    if (input.status === 'driver_assigned') {
+      return {
+        title: 'Ninunulie inashughulikiwa',
+        message: `${input.orderNumber} · inashughulikiwa Kariakoo.`,
+      };
+    }
+    if (input.status === 'driver_at_pickup') {
+      return {
+        title: 'Bidhaa imenunuliwa',
+        message: `${input.orderNumber} · imenunuliwa. Tutakuarifu wakati inaposafirishwa.`,
+      };
+    }
+    if (input.status === 'in_transit') {
+      return {
+        title: 'Ninunulie inasafirishwa',
+        message: `${input.orderNumber} · mzigo unaelekea kwako.`,
+      };
+    }
+    if (input.status === 'delivered') {
+      return {
+        title: 'Ninunulie imekamilika',
+        message: `${input.orderNumber} imekabidhiwa kwa mafanikio.`,
+      };
+    }
+    return {
+      title: 'Ninunulie imekataliwa',
+      message: `${input.orderNumber} imekataliwa.${input.cancellationReason?.trim() ? ` ${input.cancellationReason.trim()}` : ''}`,
+    };
+  }
+
   if (input.status === 'pending_assignment') {
     return {
       title: 'Order received',
@@ -186,6 +231,8 @@ export async function createOrderStatusNotification(input: OrderNotificationInpu
     orderId: input.orderId,
     orderNumber: input.orderNumber,
     orderStatus: input.status,
+    serviceLabel: input.serviceLabel,
+    flow: String(input.serviceLabel || '').trim().toLowerCase() === 'ninunulie' ? 'ninunulie' : undefined,
     title: copy.title,
     message: copy.message,
     type: input.status === 'pending_assignment' ? 'order_created' : 'order_status',

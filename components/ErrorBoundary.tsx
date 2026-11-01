@@ -117,18 +117,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   button: {
-    minHeight: 48,
+    minHeight: cargoTheme.cta.minHeight,
     minWidth: 150,
-    borderRadius: 18,
-    paddingHorizontal: 18,
+    borderRadius: cargoTheme.cta.borderRadius,
+    paddingHorizontal: cargoTheme.cta.paddingHorizontal,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: cargoTheme.colors.primary,
+    backgroundColor: cargoTheme.cta.backgroundColor,
   },
   buttonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontFamily: typography.extrabold,
+    color: cargoTheme.cta.labelColor,
+    fontSize: cargoTheme.cta.labelSize,
+    lineHeight: cargoTheme.cta.labelLineHeight,
+    fontFamily: typography.bold,
+    letterSpacing: cargoTheme.cta.letterSpacing,
   },
 });
 

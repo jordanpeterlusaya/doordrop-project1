@@ -1,5 +1,17 @@
 {
   "projects": {
     "default": "efootball-app-9d175"
+  },
+  "targets": {
+    "efootball-app-9d175": {
+      "hosting": {
+        "admin": [
+          "efootball-app-9d175"
+        ],
+        "transporters": [
+          "haul-transporters"
+        ]
+      }
+    }
   }
 }

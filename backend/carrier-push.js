@@ -90,19 +90,26 @@ async function sendFcmMessages(tokens, { title, body, data }) {
 async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, destination, score }) {
   if (!carrierId || !orderId) return { skipped: true, reason: 'missing-ids' };
 
+  const carrierSnap = await db.collection('carriers').doc(carrierId).get();
+  const carrier = carrierSnap.exists ? carrierSnap.data() : {};
+  if (carrier.notifyPortal === false) {
+    return { skipped: true, reason: 'notifyPortal_disabled' };
+  }
+
   const title = 'Oda mpya';
   const body = `${orderNumber || orderId}${destination ? ` · ${destination}` : ''}${
     score ? ` · ${score}%` : ''
   }`;
 
-  await db.collection('carriers').doc(carrierId).collection('notifications').doc().set({
+  // Idempotent inbox row per offer so re-offers don't spam unread counts.
+  await db.collection('carriers').doc(carrierId).collection('notifications').doc(`offer_${orderId}`).set({
     title,
     body,
     orderId,
     type: 'carrier_offer',
     createdAt: FieldValue.serverTimestamp(),
     read: false,
-  });
+  }, { merge: true });
 
   const tokens = await collectCarrierPushTokens(db, carrierId);
   if (!tokens.expo.length && !tokens.fcm.length) {

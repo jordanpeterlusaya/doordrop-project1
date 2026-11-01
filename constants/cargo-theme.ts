@@ -2,21 +2,22 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { ComponentProps } from 'react';
 
 export type CargoIcon = ComponentProps<typeof MaterialCommunityIcons>['name'];
-export type AppTabKey = 'home' | 'track' | 'history' | 'account';
+export type AppTabKey = 'home' | 'history' | 'account';
 export type FlowType = 'parcel' | 'cargo';
 export type ParcelScope = 'city' | 'outside';
 
 export const cargoTheme = {
   colors: {
-    primary: '#16A34A',
-    primaryDark: '#14532D',
-    primarySoft: '#DCFCE7',
-    ink: '#0F172A',
+    primary: '#FFE500',
+    primaryDark: '#111827',
+    primarySoft: '#FFF9CC',
+    onPrimary: '#111827',
+    ink: '#111827',
     text: '#111827',
-    subtext: '#64748B',
-    line: '#E2E8F0',
+    subtext: '#6B7280',
+    line: '#E5E7EB',
     surface: '#FFFFFF',
-    canvas: '#F4F7F6',
+    canvas: '#F7F7F5',
     card: '#F8FAFC',
     success: '#22C55E',
     warning: '#EA580C',
@@ -26,9 +27,41 @@ export const cargoTheme = {
     darkSurface: '#0F172A',
   },
   radius: {
-    lg: 22,
+    md: 16,
+    lg: 20,
     xl: 28,
     pill: 999,
+  },
+  /** Page-level proceed/action CTA — matches tickets “Join the waitlist”. */
+  cta: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: '#111827',
+    paddingHorizontal: 20,
+    labelSize: 17,
+    labelLineHeight: 22,
+    labelColor: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  /** Send-parcel PrimaryButton before the tickets unify (black, compact radius/type). */
+  ctaParcel: {
+    minHeight: 56,
+    borderRadius: 18,
+    backgroundColor: '#111827',
+    paddingHorizontal: 16,
+    labelSize: 16,
+    labelLineHeight: 20,
+    labelColor: '#FFFFFF',
+    letterSpacing: 0,
+  },
+  shadow: {
+    card: {
+      shadowColor: '#111827',
+      shadowOpacity: 0.06,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 2,
+    },
   },
 };
 
@@ -36,10 +69,9 @@ export const bottomTabs: {
   key: AppTabKey;
   label: string;
   icon: CargoIcon;
-  route: '/home' | '/track-order' | '/history' | '/account';
+  route: '/home' | '/history' | '/account';
 }[] = [
   { key: 'home', label: 'Home', icon: 'home-variant', route: '/home' },
-  { key: 'track', label: 'Track', icon: 'map-marker-path', route: '/track-order' },
   { key: 'history', label: 'History', icon: 'history', route: '/history' },
   { key: 'account', label: 'Account', icon: 'account-circle-outline', route: '/account' },
 ];
@@ -123,22 +155,32 @@ export const cargoVehicles: {
   accentBg: string;
 }[] = [
   {
+    key: 'toyo_electric',
+    title: 'Toyo Electric',
+    capacity: 'Smaller than TOYO · up to 400 kg',
+    eta: '',
+    price: 'Toa bei',
+    icon: 'rickshaw',
+    accentColor: '#0284C7',
+    accentBg: '#E0F2FE',
+  },
+  {
     key: 'toyo',
     title: 'TOYO',
-    capacity: 'Up to 1 ton',
-    eta: '14-24 min',
-    price: 'TZS 5,000',
+    capacity: 'Bajaji · up to 1 ton',
+    eta: '',
+    price: 'Toa bei',
     icon: 'car-estate',
-    accentColor: '#0284C7',
+    accentColor: '#0369A1',
     accentBg: '#E0F2FE',
   },
   {
     key: 'kirikuu',
     title: 'Kirikuu',
-    capacity: 'Up to 1 ton',
-    eta: '10-18 min',
-    price: 'TZS 3,000',
-    icon: 'motorbike',
+    capacity: 'Pickup · up to 1 ton',
+    eta: '',
+    price: 'Toa bei',
+    icon: 'truck-outline',
     accentColor: '#EA580C',
     accentBg: '#FFF7ED',
   },

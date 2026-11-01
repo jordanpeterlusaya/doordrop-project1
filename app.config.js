@@ -46,19 +46,33 @@ const googleMapsApiKey =
   '';
 
 const doordropApiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
+const cargoOfferWsUrl = (process.env.EXPO_PUBLIC_CARGO_OFFER_WS_URL || '').trim().replace(/\/+$/, '');
+const parcelOfferWsUrl = (process.env.EXPO_PUBLIC_PARCEL_OFFER_WS_URL || '').trim().replace(/\/+$/, '');
 const easBuildProfile = process.env.EAS_BUILD_PROFILE || '';
 const easOwner = process.env.DOORDROP_EAS_OWNER || 'lusayaapeters-team';
 const easProjectId = (
   process.env.DOORDROP_EAS_PROJECT_ID || '7e8f96f2-2fb2-4775-b540-815429462767'
 ).trim();
+const allowLanStandalone =
+  process.env.DOORDROP_ALLOW_LAN_STANDALONE === '1' || easBuildProfile === 'standalone-lan';
+const forceStandalone =
+  process.env.DOORDROP_STANDALONE === '1' ||
+  ['preview', 'production', 'standalone', 'standalone-lan'].includes(easBuildProfile);
 
 const isAndroidBuildContext =
   process.env.EAS_BUILD_PLATFORM === 'android' ||
-  process.argv.some((value) => /android|prebuild|run:android/i.test(value));
-const isStoreReleaseProfile = ['preview', 'production', 'standalone'].includes(easBuildProfile);
-const requiresPublicApiBaseUrl = isAndroidBuildContext && isStoreReleaseProfile;
-const androidUsesCleartextTraffic = !isStoreReleaseProfile;
-const includeDevClient = !isStoreReleaseProfile;
+  process.argv.some((value) => /android|prebuild|run:android|assembleRelease/i.test(value));
+const isStoreReleaseProfile = ['preview', 'production', 'standalone', 'standalone-lan'].includes(
+  easBuildProfile
+);
+const requiresPublicApiBaseUrl =
+  isAndroidBuildContext && isStoreReleaseProfile && !allowLanStandalone;
+const needsCleartextTraffic =
+  doordropApiBaseUrl.startsWith('http://') ||
+  cargoOfferWsUrl.startsWith('ws://') ||
+  parcelOfferWsUrl.startsWith('ws://');
+const androidUsesCleartextTraffic = !isStoreReleaseProfile || allowLanStandalone || needsCleartextTraffic;
+const includeDevClient = !forceStandalone;
 
 function warnConfig(message, details) {
   if (details === undefined) {
@@ -163,11 +177,14 @@ function getApiBaseUrlIssue(apiBaseUrl) {
   }
 
   if (isPrivateOrLocalHostname(parsedUrl.hostname)) {
+    if (allowLanStandalone) {
+      return null;
+    }
     return {
       message:
         'EXPO_PUBLIC_API_BASE_URL points to a private/local network address. That only works on your own Wi-Fi, not for APKs shared to users.',
       buildMessage:
-        'EXPO_PUBLIC_API_BASE_URL points to a private/local network address. Use a deployed public HTTPS backend URL.',
+        'EXPO_PUBLIC_API_BASE_URL points to a private/local network address. Use a deployed public HTTPS backend URL, or set DOORDROP_ALLOW_LAN_STANDALONE=1 for Wi-Fi/WebSocket testing APKs.',
     };
   }
 
@@ -353,6 +370,11 @@ module.exports = {
       androidPackage,
       apiBaseUrl: doordropApiBaseUrl,
       hasApiBaseUrl: Boolean(doordropApiBaseUrl),
+      EXPO_PUBLIC_API_BASE_URL: doordropApiBaseUrl,
+      EXPO_PUBLIC_CARGO_OFFER_WS_URL: cargoOfferWsUrl,
+      EXPO_PUBLIC_PARCEL_OFFER_WS_URL: parcelOfferWsUrl,
+      cargoOfferWsUrl,
+      parcelOfferWsUrl,
       googleMapsApiKey,
       hasGoogleMapsApiKey: Boolean(googleMapsApiKey),
       firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || '',

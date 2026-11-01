@@ -13,24 +13,24 @@ export default function HomeWebScreen() {
   const copy =
     language === 'sw'
       ? {
-          kicker: 'DoorDrop Web',
+          kicker: 'HAUL Web',
           title: 'Kituo cha kazi kwa app ya mteja',
           subtitle:
-            'App ya simu hushughulikia kuweka oda, kufuatilia na historia huku DoorDrop ikiendesha usambazaji na upangaji wa madereva nyuma ya pazia.',
+            'App ya simu hushughulikia kuweka oda, kufuatilia na historia huku HAUL ikiendesha usambazaji na upangaji wa madereva nyuma ya pazia.',
           splashAction: 'Fungua ukurasa wa mwanzo',
           serviceCards: [
             {
               title: 'Tuma kifurushi',
-              subtitle: 'Anzisha usafirishaji wa vifurushi kwenye app ya simu huku DoorDrop ikisimamia ugawaji wa moja kwa moja.',
+              subtitle: 'Anzisha usafirishaji wa vifurushi kwenye app ya simu huku HAUL ikisimamia ugawaji wa moja kwa moja.',
               route: '/send-parcel' as const,
-              image: require('@/assets/images/home-send-parcel.png'),
+              image: require('@/assets/images/10.png'),
               icon: 'package-variant-closed' as const,
             },
             {
               title: 'Omba msafirishaji wa mizigo',
               subtitle: 'Panga usafiri wa mizigo kwa mtiririko rahisi zaidi kueleweka.',
               route: '/book-cargo' as const,
-              image: require('@/assets/images/vehicle-light-truck.png'),
+              image: require('@/assets/images/toyo-medium.png'),
               icon: 'truck-fast-outline' as const,
             },
           ],
@@ -38,24 +38,24 @@ export default function HomeWebScreen() {
             'Kila oda iliyothibitishwa huhifadhiwa mara moja na kushirikiwa kwenye skrini za kuweka oda, historia na ufuatiliaji za app ya mteja.',
         }
       : {
-          kicker: 'DoorDrop Web',
+          kicker: 'HAUL Web',
           title: 'Operations hub for the customer app',
           subtitle:
-            'The native app handles booking, tracking, and history while DoorDrop keeps dispatch and driver assignment running behind the scenes.',
+            'The native app handles booking, tracking, and history while HAUL keeps dispatch and driver assignment running behind the scenes.',
           splashAction: 'Open splash page',
           serviceCards: [
             {
               title: 'Send parcel',
-              subtitle: 'Create parcel deliveries in the mobile app and let the DoorDrop team handle live dispatch in the background.',
+              subtitle: 'Create parcel deliveries in the mobile app and let the HAUL team handle live dispatch in the background.',
               route: '/send-parcel' as const,
-              image: require('@/assets/images/home-send-parcel.png'),
+              image: require('@/assets/images/10.png'),
               icon: 'package-variant-closed' as const,
             },
             {
               title: 'Request cargo carrier',
               subtitle: 'Set up transport for goods in a simpler, easier-to-understand flow.',
               route: '/book-cargo' as const,
-              image: require('@/assets/images/vehicle-light-truck.png'),
+              image: require('@/assets/images/toyo-medium.png'),
               icon: 'truck-fast-outline' as const,
             },
           ],

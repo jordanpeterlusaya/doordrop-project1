@@ -51,6 +51,7 @@ const PICKER_UNAVAILABLE =
   'Gallery inahitaji AAB/APK mpya ya DoorDrop yenye image picker. Endelea bila picha kwa sasa.';
 
 let cachedPicker: ImagePickerModule | null | undefined;
+let pickerProbeDone = false;
 
 /**
  * Android gallery picks use the system Photo Picker / content intent.
@@ -60,11 +61,49 @@ function canUseAndroidSystemPhotoPicker() {
   return Platform.OS === 'android';
 }
 
-function hasNativeImagePicker() {
+/**
+ * Expo Modules (SDK 50+) register via expo-modules-core, NOT classic NativeModules.
+ * Checking NativeModules.ExponentImagePicker falsely reports "missing" on every modern build.
+ */
+function resolveImagePickerModule(): ImagePickerModule | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { requireOptionalNativeModule } = require('expo-modules-core') as {
+      requireOptionalNativeModule?: (name: string) => unknown;
+    };
+    if (typeof requireOptionalNativeModule === 'function') {
+      const native = requireOptionalNativeModule('ExponentImagePicker') as
+        | ImagePickerModule
+        | null
+        | undefined;
+      if (native && typeof native.launchImageLibraryAsync === 'function') {
+        // Prefer the JS wrapper so options mapping / validation stay consistent.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require('expo-image-picker') as ImagePickerModule;
+      }
+    }
+  } catch {
+    // Fall through to JS require / classic NativeModules.
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('expo-image-picker') as ImagePickerModule;
+    if (mod && typeof mod.launchImageLibraryAsync === 'function') {
+      return mod;
+    }
+  } catch {
+    // Continue.
+  }
+
   const modules = NativeModules as Record<string, unknown>;
-  return Boolean(
-    modules.ExponentImagePicker || modules.ExpoImagePicker || modules.ImagePicker
-  );
+  const classic = (modules.ExponentImagePicker ||
+    modules.ExpoImagePicker ||
+    modules.ImagePicker) as ImagePickerModule | undefined;
+  if (classic && typeof classic.launchImageLibraryAsync === 'function') {
+    return classic;
+  }
+  return null;
 }
 
 function getImagePicker(): ImagePickerModule {
@@ -74,26 +113,23 @@ function getImagePicker(): ImagePickerModule {
   if (cachedPicker) {
     return cachedPicker;
   }
-  if (!hasNativeImagePicker()) {
+  const resolved = resolveImagePickerModule();
+  if (!resolved) {
     cachedPicker = null;
     throw new Error(PICKER_UNAVAILABLE);
   }
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    cachedPicker = require('expo-image-picker') as ImagePickerModule;
-    return cachedPicker;
-  } catch {
-    cachedPicker = null;
-    throw new Error(PICKER_UNAVAILABLE);
-  }
+  cachedPicker = resolved;
+  return cachedPicker;
 }
 
 export function isImagePickerAvailable() {
-  if (!hasNativeImagePicker()) return false;
+  if (cachedPicker === null && pickerProbeDone) return false;
   try {
     getImagePicker();
+    pickerProbeDone = true;
     return true;
   } catch {
+    pickerProbeDone = true;
     return false;
   }
 }
@@ -275,13 +311,37 @@ async function compressImageUri(localUri: string) {
 }
 
 async function readUriAsBase64(localUri: string) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const FileSystem = require('expo-file-system') as {
-    readAsStringAsync: (uri: string, options: { encoding: string }) => Promise<string>;
-    EncodingType?: { Base64: string };
+  const uri = String(localUri || '').trim();
+  if (!uri) throw new Error('Imeshindikana kusoma picha.');
+
+  const readLegacy = async () => {
+    // Expo SDK 54+: main package throws on readAsStringAsync; use /legacy.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const LegacyFileSystem = require('expo-file-system/legacy') as {
+      readAsStringAsync: (fileUri: string, options: { encoding: string }) => Promise<string>;
+      EncodingType?: { Base64: string };
+    };
+    const encoding = LegacyFileSystem.EncodingType?.Base64 || 'base64';
+    return LegacyFileSystem.readAsStringAsync(uri, { encoding });
   };
-  const encoding = FileSystem.EncodingType?.Base64 || 'base64';
-  return FileSystem.readAsStringAsync(localUri, { encoding });
+
+  // content:// / ph:// need the legacy SAF-aware reader.
+  if (/^(content|ph|assets-library):/i.test(uri)) {
+    return readLegacy();
+  }
+
+  try {
+    const { File } = await import('expo-file-system');
+    const file = new File(uri);
+    if (typeof file.base64 === 'function') {
+      const encoded = await file.base64();
+      if (encoded) return encoded;
+    }
+  } catch {
+    // Fall through.
+  }
+
+  return readLegacy();
 }
 
 function base64ToUint8Array(base64: string) {
@@ -375,4 +435,13 @@ export async function uploadNinunuliePhoto(params: {
     const clientMsg = clientError instanceof Error ? clientError.message : '';
     throw new Error(apiError || clientMsg || 'Imeshindikana kupakia picha.');
   }
+}
+
+export async function uploadParcelPhoto(params: { userId: string; localUri: string; orderKey?: string }) {
+  // Reuse the live /media/ninunulie path (already provisioned) under a parcel order key.
+  return uploadNinunuliePhoto({
+    userId: params.userId,
+    localUri: params.localUri,
+    orderKey: `parcel-${String(params.orderKey || Date.now())}`,
+  });
 }
