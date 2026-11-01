@@ -2514,8 +2514,17 @@ export default function TrackOrderScreen() {
                   </Text>
                   <Text style={styles.quoteBody}>
                     {language === 'sw'
-                      ? 'Kampuni itaona picha ya mzigo kisha itatuma bei. Utaweza kuthibitisha au kughairi hapa.'
-                      : 'The company will see the cargo photo and send a price. You can confirm or cancel here.'}
+                      ? 'Kampuni itaona mzigo kisha itatuma bei. Utaweza kukubali au kukataa hapa.'
+                      : 'The company will see the cargo and send a price. You can accept or decline here.'}
+                  </Text>
+                </View>
+              ) : null}
+
+              {isBusTrack && order.quoteStatus === 'confirmed' && Number(order.carrierQuoteTzs) > 0 ? (
+                <View style={styles.quoteCard}>
+                  <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei' : 'You accepted the price'}</Text>
+                  <Text style={styles.quoteAmount}>
+                    TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}
                   </Text>
                 </View>
               ) : null}
@@ -2544,7 +2553,7 @@ export default function TrackOrderScreen() {
                           })
                           .finally(() => setQuoteBusy(false));
                       }}>
-                      <Text style={styles.quoteConfirmText}>{language === 'sw' ? 'Thibitisha' : 'Confirm'}</Text>
+                      <Text style={styles.quoteConfirmText}>{language === 'sw' ? 'Kubali' : 'Accept'}</Text>
                     </Pressable>
                     <Pressable
                       accessibilityRole="button"
@@ -2561,7 +2570,7 @@ export default function TrackOrderScreen() {
                           })
                           .finally(() => setQuoteBusy(false));
                       }}>
-                      <Text style={styles.quoteCancelText}>{language === 'sw' ? 'Ghairi' : 'Cancel'}</Text>
+                      <Text style={styles.quoteCancelText}>{language === 'sw' ? 'Kataa' : 'Decline'}</Text>
                     </Pressable>
                   </View>
                 </View>

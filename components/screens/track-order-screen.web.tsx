@@ -11,6 +11,8 @@ import { useAppCopy } from '@/lib/app-copy';
 import {
   canCustomerCancelDeliveryOrder,
   cancelDeliveryOrderByUser,
+  confirmCarrierQuote,
+  declineCarrierQuote,
   getDeliveryOrderStatusLabel,
   hasDeliveryOrderRating,
   isNinunulieOrder,
@@ -70,6 +72,7 @@ export default function TrackOrderWebScreen() {
   const [trackCodeInput, setTrackCodeInput] = useState('');
   const [trackLookupError, setTrackLookupError] = useState('');
   const [trackLookupLoading, setTrackLookupLoading] = useState(false);
+  const [quoteBusy, setQuoteBusy] = useState(false);
 
   useEffect(() => {
     if (placedParam === '1' && notifyRecipientParam !== '1') {
@@ -457,6 +460,58 @@ export default function TrackOrderWebScreen() {
             <Text style={styles.stopLabel}>{copy.common.to}</Text>
             <Text style={styles.stopValue}>{order.dropoffLabel}</Text>
           </View>
+          {isBusTrack && order.quoteStatus === 'awaiting_company' ? (
+            <View style={styles.quoteCard}>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei bado haijatoka' : 'Price not sent yet'}</Text>
+              <Text style={styles.quoteBody}>
+                {language === 'sw'
+                  ? 'Kampuni itaona mzigo kisha itatuma bei. Utaweza kukubali au kukataa hapa.'
+                  : 'The company will see the cargo and send a price. You can accept or decline here.'}
+              </Text>
+            </View>
+          ) : null}
+          {isBusTrack && order.quoteStatus === 'confirmed' && Number(order.carrierQuoteTzs) > 0 ? (
+            <View style={styles.quoteCard}>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei' : 'You accepted the price'}</Text>
+              <Text style={styles.quoteAmount}>TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}</Text>
+            </View>
+          ) : null}
+          {isBusTrack && order.quoteStatus === 'offered' && Number(order.carrierQuoteTzs) > 0 ? (
+            <View style={styles.quoteCard}>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei ya kampuni' : 'Company price'}</Text>
+              <Text style={styles.quoteAmount}>TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}</Text>
+              <View style={styles.quoteActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={quoteBusy}
+                  style={[styles.quoteConfirm, quoteBusy && styles.quoteBusy]}
+                  onPress={() => {
+                    setQuoteBusy(true);
+                    void confirmCarrierQuote(order.id)
+                      .catch((error) => {
+                        Alert.alert(language === 'sw' ? 'Imeshindikana' : 'Could not accept', error instanceof Error ? error.message : 'Try again.');
+                      })
+                      .finally(() => setQuoteBusy(false));
+                  }}>
+                  <Text style={styles.quoteConfirmText}>{language === 'sw' ? 'Kubali' : 'Accept'}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={quoteBusy}
+                  style={[styles.quoteCancel, quoteBusy && styles.quoteBusy]}
+                  onPress={() => {
+                    setQuoteBusy(true);
+                    void declineCarrierQuote(order.id)
+                      .catch((error) => {
+                        Alert.alert(language === 'sw' ? 'Imeshindikana' : 'Could not decline', error instanceof Error ? error.message : 'Try again.');
+                      })
+                      .finally(() => setQuoteBusy(false));
+                  }}>
+                  <Text style={styles.quoteCancelText}>{language === 'sw' ? 'Kataa' : 'Decline'}</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           {isBusTrack ? (
             <>
               <Text style={styles.stopLabel}>{language === 'sw' ? 'Msimbo wa mzigo' : 'Parcel code'}</Text>
@@ -686,6 +741,63 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     gap: 8,
     backgroundColor: '#FFFFFF',
+  },
+  quoteCard: {
+    backgroundColor: '#FFF8D6',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  quoteTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  quoteBody: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#374151',
+  },
+  quoteAmount: {
+    marginTop: 8,
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  quoteActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  quoteConfirm: {
+    flex: 1,
+    backgroundColor: '#111827',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  quoteConfirmText: {
+    color: '#F5E000',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  quoteCancel: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#111827',
+  },
+  quoteCancelText: {
+    color: '#111827',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  quoteBusy: {
+    opacity: 0.6,
   },
   pageBar: {
     height: 28,

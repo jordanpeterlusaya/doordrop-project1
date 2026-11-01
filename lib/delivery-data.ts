@@ -2420,22 +2420,69 @@ export async function confirmCarrierQuote(orderId: string) {
   const shipmentId = String(order.carrierShipmentId || order.id).trim();
   const shipmentSnap = await getDoc(doc(db, 'carrierShipments', shipmentId));
   if (shipmentSnap.exists()) {
+    const shipment = shipmentSnap.data();
     batch.update(doc(db, 'carrierShipments', shipmentId), {
       quoteStatus: 'confirmed',
       cashExpected: amount,
       fareLabel: label,
       updatedAt: serverTimestamp(),
     });
+    const carrierId = String(shipment.offeredCarrierId || shipment.carrierId || '').trim();
+    if (carrierId) {
+      batch.set(doc(collection(db, 'carriers', carrierId, 'notifications')), {
+        title: 'Bei imekubaliwa',
+        body: `${order.orderNumber || orderId} · mteja amekubali bei`,
+        orderId,
+        type: 'quote_confirmed',
+        createdAt: serverTimestamp(),
+        read: false,
+      });
+    }
   }
   await batch.commit();
 }
 
 export async function declineCarrierQuote(orderId: string) {
-  await cancelDeliveryOrderByUser(orderId, 'Customer declined the company price');
-  await updateDoc(orderRef(orderId), {
+  const orderSnapshot = await getDoc(orderRef(orderId));
+  if (!orderSnapshot.exists()) throw new Error('Order was not found.');
+  const order = { id: orderSnapshot.id, ...(orderSnapshot.data() as Omit<DeliveryOrder, 'id'>) };
+  if (order.quoteStatus !== 'offered') {
+    throw new Error('The company price is not ready yet.');
+  }
+  const shipmentId = String(order.carrierShipmentId || order.id).trim();
+  const shipmentSnap = shipmentId ? await getDoc(doc(db, 'carrierShipments', shipmentId)) : null;
+  const shipment = shipmentSnap?.exists() ? shipmentSnap.data() : null;
+  const carrierId = String(shipment?.offeredCarrierId || shipment?.carrierId || '').trim();
+  const batch = writeBatch(db);
+  batch.update(orderRef(orderId), {
     quoteStatus: 'declined',
+    status: 'cancelled',
+    cancellationReason: 'Customer declined the company price',
+    cancelledBy: 'customer',
+    cancelledAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  }).catch(() => undefined);
+  });
+  if (shipmentSnap?.exists()) {
+    batch.update(doc(db, 'carrierShipments', shipmentId), {
+      quoteStatus: 'declined',
+      shipmentStatus: 'cancelled',
+      cancelReason: 'Customer declined the company price',
+      cancelledBy: 'customer',
+      cancelledAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+  if (carrierId) {
+    batch.set(doc(collection(db, 'carriers', carrierId, 'notifications')), {
+      title: 'Bei imekataliwa',
+      body: `${order.orderNumber || orderId} · mteja amekataa bei`,
+      orderId,
+      type: 'quote_declined',
+      createdAt: serverTimestamp(),
+      read: false,
+    });
+  }
+  await batch.commit();
 }
 
 export async function updateDriverLocation(driverId: string, location: UpdateDriverLocationInput) {
