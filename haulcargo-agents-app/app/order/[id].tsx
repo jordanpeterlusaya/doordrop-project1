@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Image, Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DeskRail } from '@/components/desk-rail';
@@ -172,6 +172,19 @@ export default function OrderDetailScreen() {
         </View>
 
         {onRail ? <DeskRail item={item} /> : null}
+
+        {(item.parcelPhotoUrls || []).filter((url) => /^https?:\/\//i.test(String(url || ''))).length ? (
+          <View style={styles.block}>
+            <Text style={styles.kicker}>Picha ya mzigo</Text>
+            {(item.parcelPhotoUrls || [])
+              .map((url) => String(url || '').trim())
+              .filter((url) => /^https?:\/\//i.test(url))
+              .slice(0, 4)
+              .map((url) => (
+                <Image key={url} source={{ uri: url }} style={styles.cargoPhoto} resizeMode="cover" />
+              ))}
+          </View>
+        ) : null}
 
         {pickup || destination || canNavigate ? (
           <View style={styles.block}>
@@ -344,6 +357,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
     color: theme.muted,
+  },
+  cargoPhoto: {
+    width: '100%',
+    height: 220,
+    borderRadius: 14,
+    marginTop: 8,
+    backgroundColor: '#F3F4F6',
   },
   block: {
     borderTopWidth: StyleSheet.hairlineWidth,

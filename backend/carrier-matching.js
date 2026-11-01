@@ -1,8 +1,10 @@
 const { FieldValue } = require('firebase-admin/firestore');
 
 const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
-/** Bronze rate. Higher streak tiers use TIER_RULES. 20% is also the high-cancel rate. */
-const HAUL_FEE_RATE = 0.2;
+/** Company portal must pulse portalOnlineAt within this window to receive new offers. */
+const PORTAL_ONLINE_MS = 3 * 60 * 1000;
+/** High-cancel penalty. Normal streak tiers are lower. */
+const HAUL_FEE_RATE = 0.15;
 /**
  * Unpaid haulFee ceiling before new offers stop. Higher streak tiers can
  * owe more. The 20% cancel punishment uses the Bronze ceiling.
@@ -10,10 +12,10 @@ const HAUL_FEE_RATE = 0.2;
  * Active jobs are not touched.
  */
 const TIER_RULES = [
-  { id: 'bronze', minStreak: 0, feePercent: 20, feeRate: 0.2, priorityBonus: 0, payCeilingTzs: 30_000 },
-  { id: 'silver', minStreak: 100, feePercent: 18, feeRate: 0.18, priorityBonus: 6, payCeilingTzs: 60_000 },
-  { id: 'gold', minStreak: 250, feePercent: 17, feeRate: 0.17, priorityBonus: 16, payCeilingTzs: 100_000 },
-  { id: 'platinum', minStreak: 500, feePercent: 15, feeRate: 0.15, priorityBonus: 40, payCeilingTzs: 150_000 },
+  { id: 'bronze', minStreak: 0, feePercent: 12, feeRate: 0.12, priorityBonus: 0, payCeilingTzs: 30_000 },
+  { id: 'silver', minStreak: 100, feePercent: 10, feeRate: 0.1, priorityBonus: 6, payCeilingTzs: 60_000 },
+  { id: 'gold', minStreak: 250, feePercent: 8, feeRate: 0.08, priorityBonus: 16, payCeilingTzs: 100_000 },
+  { id: 'platinum', minStreak: 500, feePercent: 6, feeRate: 0.06, priorityBonus: 40, payCeilingTzs: 150_000 },
 ];
 const MAX_OFFERS = 3;
 const DAR_TIME_ZONE = 'Africa/Dar_es_Salaam';
@@ -52,6 +54,9 @@ function normalize(value) {
 }
 
 function moneyFromOrder(order) {
+  if (order?.quoteStatus === 'awaiting_company') return 0;
+  const quoted = Math.round(Number(order?.carrierQuoteTzs) || 0);
+  if (order?.quoteStatus === 'offered' || order?.quoteStatus === 'confirmed') return quoted > 0 ? quoted : 0;
   const source = `${order.totalLabel || ''} ${order.fareLabel || ''}`.replace(/,/g, '');
   const match = source.match(/(\d+(?:\.\d+)?)/);
   if (match) return Math.round(Number(match[1]));
@@ -463,6 +468,15 @@ function offerIsOpen(shipment, now = Date.now()) {
   return !expires || expires > now;
 }
 
+/** True when the company portal (or live offer socket) is active right now. */
+function isCarrierLive(carrier, now = Date.now(), preferCarrierIds = null) {
+  if (!carrier) return false;
+  const id = String(carrier.id || '').trim();
+  if (preferCarrierIds && id && preferCarrierIds.has(id)) return true;
+  const onlineAt = expiryMs(carrier.portalOnlineAt);
+  return onlineAt > 0 && now - onlineAt <= PORTAL_ONLINE_MS;
+}
+
 function declinedCarrierIds(shipment) {
   const declined = new Set(shipment?.declinedCarrierIds || []);
   if (shipment?.offeredCarrierId && !offerIsOpen(shipment)) declined.add(shipment.offeredCarrierId);
@@ -548,6 +562,33 @@ async function backfillOpenDeclaredValues(db) {
     if (wrote) filled += 1;
   }
   return filled;
+}
+
+/** Copy the customer cargo photo onto the shipment the portal reads. */
+async function syncParcelPhotos(db, orderId, order, shipmentHint) {
+  const photos = storedParcelPhotoUrls(order);
+  if (!photos.length || !orderId) return false;
+  const ref = db.collection('carrierShipments').doc(orderId);
+  const current = shipmentHint || null;
+  const existing = storedParcelPhotoUrls(current || {});
+  if (existing.length === photos.length && existing[0] === photos[0]) return false;
+  const snap = current ? null : await ref.get();
+  if (!current && (!snap || !snap.exists)) return false;
+  const already = current ? existing : storedParcelPhotoUrls(snap.data() || {});
+  if (already.length === photos.length && already[0] === photos[0]) return false;
+  await ref.set(
+    {
+      parcelPhotoUrls: photos,
+      parcelPhotoUrl: photos[0],
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  if (shipmentHint) {
+    shipmentHint.parcelPhotoUrls = photos;
+    shipmentHint.parcelPhotoUrl = photos[0];
+  }
+  return true;
 }
 
 /** Only URLs the customer order actually stored. Never invent a photo list. */
@@ -655,6 +696,34 @@ async function persistSenderPhone(db, orderId, order, shipment) {
   return phone;
 }
 
+function distanceFieldsFromOrder(order) {
+  const metersRaw = Number(order?.distanceMeters);
+  const distanceMeters = Number.isFinite(metersRaw) && metersRaw > 0 ? Math.round(metersRaw) : 0;
+  const kmRaw = Number(order?.distanceKm);
+  const distanceKm =
+    Number.isFinite(kmRaw) && kmRaw > 0
+      ? Math.round(kmRaw * 10) / 10
+      : distanceMeters > 0
+        ? Math.round((distanceMeters / 1000) * 10) / 10
+        : 0;
+  const durationRaw = Number(order?.durationSeconds);
+  const durationSeconds = Number.isFinite(durationRaw) && durationRaw > 0 ? Math.round(durationRaw) : 0;
+  const labeled = String(order?.distanceLabel || '').trim();
+  const distanceLabel =
+    labeled ||
+    (distanceKm >= 1
+      ? `${distanceKm} km`
+      : distanceMeters > 0
+        ? `${distanceMeters} m`
+        : '');
+  return {
+    ...(distanceMeters > 0 ? { distanceMeters } : {}),
+    ...(distanceKm > 0 ? { distanceKm } : {}),
+    ...(durationSeconds > 0 ? { durationSeconds } : {}),
+    ...(distanceLabel ? { distanceLabel } : {}),
+  };
+}
+
 function shipmentPayload(order, orderId, shipment) {
   const parcelPhotoUrls = storedParcelPhotoUrls(order);
   const senderPhone = directSenderPhone(order);
@@ -663,6 +732,7 @@ function shipmentPayload(order, orderId, shipment) {
   const recipientPhone = directRecipientPhone(order);
   const recipientAddress = directRecipientAddress(order);
   const cargoValue = declaredValueTzs(order);
+  const distance = distanceFieldsFromOrder(order);
   return {
     orderId,
     orderNumber: order.orderNumber || order.parcelCode || orderId.slice(0, 6).toUpperCase(),
@@ -683,7 +753,11 @@ function shipmentPayload(order, orderId, shipment) {
     origin: orderOrigin(order),
     destination: orderDestination(order),
     parcelDescription: order.parcelTypeLabel || order.serviceLabel || 'Parcel',
+    outsideParcelSize: String(order.outsideParcelSize || '').trim(),
+    outsideShippingMode: String(order.outsideShippingMode || '').trim(),
+    quoteStatus: String(order.quoteStatus || '').trim(),
     ...(parcelPhotoUrls.length ? { parcelPhotoUrls } : {}),
+    ...distance,
     quantity: 1,
     weightKg: weightKg(order),
     cashExpected: moneyFromOrder(order),
@@ -927,7 +1001,13 @@ async function evaluateCarrierFraudHold(db, carrierId) {
   return { held: true };
 }
 
-async function offerNext(db, orderId, order, shipmentHint) {
+async function offerNext(db, orderId, order, shipmentHint, options = {}) {
+  const preferCarrierIds =
+    options.preferCarrierIds instanceof Set
+      ? options.preferCarrierIds
+      : options.preferCarrierIds
+        ? new Set([...options.preferCarrierIds].map(String))
+        : null;
   const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db);
   const openCarriers = carriers.filter(
     (carrier) => normalize(carrier.status) === 'verified' && !carrier.offersPaused && !carrier.fraudHold
@@ -935,6 +1015,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
   const stats = await loadDeskStats(db, openCarriers.map((carrier) => carrier.id));
   const standingByCarrier = new Map();
   const eligible = [];
+  const now = Date.now();
   for (const carrier of openCarriers) {
     const standing = standingForCarrier(carrier, stats);
     if (standing.closure) {
@@ -945,20 +1026,28 @@ async function offerNext(db, orderId, order, shipmentHint) {
     }
     const unpaidHaulFee = stats.unpaid?.get(carrier.id) || 0;
     if (unpaidHaulFee >= commissionPayCeiling(standing)) continue;
+    // Offers only reach companies with an active portal/session right now.
+    if (!isCarrierLive(carrier, now, preferCarrierIds)) continue;
     standingByCarrier.set(carrier.id, standing);
     eligible.push(carrier);
   }
-  const ranked = rankCarriers(order, eligible, routesByCarrier, vehiclesByCarrier, {
+  let ranked = rankCarriers(order, eligible, routesByCarrier, vehiclesByCarrier, {
     standingByCarrier,
     unpaidByCarrier: stats.unpaid,
   });
+  if (preferCarrierIds && preferCarrierIds.size) {
+    const live = ranked.filter((entry) => preferCarrierIds.has(entry.carrierId));
+    if (live.length) ranked = live;
+  }
   const ref = db.collection('carrierShipments').doc(orderId);
 
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const shipment = snap.exists ? snap.data() : shipmentHint || null;
     if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
-    if (offerIsOpen(shipment)) return { skipped: true, reason: 'offer-open' };
+    if (offerIsOpen(shipment)) {
+      return { skipped: true, reason: 'offer-open', carrierId: shipment.offeredCarrierId || null };
+    }
 
     const declined = declinedCarrierIds(shipment);
     const chosen = ranked.find((entry) => !declined.has(entry.carrierId)) || null;
@@ -988,8 +1077,9 @@ async function offerNext(db, orderId, order, shipmentHint) {
       ref,
       {
         ...base,
+        // Draft rate only — haulFee counts when the company accepts/takes the order.
         ...(split
-          ? { haulFee: split.haulFee, carrierNet: split.carrierNet, haulFeeRate: split.haulFeeRate }
+          ? { haulFee: 0, carrierNet: split.amount || base.cashExpected || 0, haulFeeRate: split.haulFeeRate }
           : {}),
         shipmentStatus: 'assigned',
         pickupStatus: 'assigned',
@@ -1001,7 +1091,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
         arrivalTime: FieldValue.delete(),
         pickupMode: FieldValue.delete(),
         trackStep: FieldValue.delete(),
-        offerExpiresAt: new Date(Date.now() + OFFER_TIMEOUT_MS),
+        offerExpiresAt: null,
         offeredAt: FieldValue.serverTimestamp(),
         capacityReserved: false,
         declinedCarrierIds: [...declined],
@@ -1064,7 +1154,7 @@ async function offerNext(db, orderId, order, shipmentHint) {
   return result;
 }
 
-async function matchOrderById(db, orderId) {
+async function matchOrderById(db, orderId, options = {}) {
   const orderSnap = await db.collection('orders').doc(orderId).get();
   if (!orderSnap.exists) return { skipped: true };
   const order = { id: orderSnap.id, ...orderSnap.data() };
@@ -1080,6 +1170,8 @@ async function matchOrderById(db, orderId) {
   } catch (error) {
     console.error('order placed SMS failed', orderId, error?.message || error);
   }
+
+  await syncParcelPhotos(db, orderId, order, shipment);
 
   // Backfill party fields on any open / owned shipment that is missing them.
   if (shipment) {
@@ -1110,9 +1202,104 @@ async function matchOrderById(db, orderId) {
     }
   }
 
-  if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
-  if (offerIsOpen(shipment)) return { skipped: true, reason: 'offer-open' };
-  return offerNext(db, orderId, order, shipment);
+  if (shipment?.carrierId) {
+    return { skipped: true, reason: 'accepted', carrierId: shipment.carrierId, matched: true, alreadyAccepted: true };
+  }
+  if (offerIsOpen(shipment)) {
+    return {
+      skipped: true,
+      reason: 'offer-open',
+      matched: true,
+      carrierId: shipment.offeredCarrierId || null,
+      orderNumber: shipment.orderNumber || order.orderNumber || '',
+      destination: shipment.destination || '',
+    };
+  }
+  return offerNext(db, orderId, order, shipment, options);
+}
+
+/** Accept an open parcel offer from the carrier WebSocket (same write as the agents desk). */
+async function acceptCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'carrier-ws') {
+  const ref = db.collection('carrierShipments').doc(orderId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new Error('Mzigo haupatikani.');
+  const current = snap.data() || {};
+  if (current.carrierId) {
+    if (String(current.carrierId) === String(carrierId)) return { already: true };
+    throw new Error('Oda hii si yako tena.');
+  }
+  if (String(current.offeredCarrierId || '') !== String(carrierId) || normalize(current.shipmentStatus) !== 'assigned') {
+    throw new Error('Oda hii si yako tena.');
+  }
+  const expires = expiryMs(current.offerExpiresAt);
+  if (expires && expires <= Date.now()) throw new Error('Muda umeisha.');
+
+  await ref.set(
+    {
+      carrierId,
+      shipmentStatus: 'accepted',
+      trackStep: 'received',
+      pickupStatus: 'assigned',
+      acceptedAt: FieldValue.serverTimestamp(),
+      statusHistory: FieldValue.arrayUnion({
+        status: 'received',
+        label: 'Imekubaliwa',
+        at: new Date().toISOString(),
+        actor: actorEmail || 'carrier-ws',
+      }),
+    },
+    { merge: true }
+  );
+  await db.collection('carriers').doc(carrierId).set({ accepted: FieldValue.increment(1) }, { merge: true });
+  const fresh = await ref.get();
+  await mirrorBusOnOrder(db, orderId, fresh.exists ? fresh.data() : { ...current, carrierId, shipmentStatus: 'accepted', trackStep: 'received' });
+  return { accepted: true, carrierId };
+}
+
+/** Reject an open parcel offer from the carrier WebSocket, then offer the next company. */
+async function rejectCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'carrier-ws', options = {}) {
+  const ref = db.collection('carrierShipments').doc(orderId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new Error('Mzigo haupatikani.');
+  const current = snap.data() || {};
+  if (current.carrierId) throw new Error('Oda imeshakubaliwa.');
+  if (String(current.offeredCarrierId || '') !== String(carrierId) || normalize(current.shipmentStatus) !== 'assigned') {
+    throw new Error('Oda hii si yako tena.');
+  }
+
+  const decisionRef = db.collection('carriers').doc(carrierId).collection('decisions').doc(orderId);
+  await db.runTransaction(async (tx) => {
+    tx.update(ref, {
+      shipmentStatus: 'matching',
+      offeredCarrierId: null,
+      pickupMode: FieldValue.delete(),
+      trackStep: FieldValue.delete(),
+      declinedCarrierIds: FieldValue.arrayUnion(carrierId),
+      statusHistory: FieldValue.arrayUnion({
+        status: 'matching',
+        label: 'Imekataliwa',
+        at: new Date().toISOString(),
+        actor: actorEmail || 'carrier-ws',
+      }),
+    });
+    tx.set(decisionRef, {
+      shipmentId: orderId,
+      decision: 'rejected',
+      parcelCode: String(current.parcelCode || current.orderNumber || ''),
+      destination: String(current.destination || ''),
+      weightKg: Number(current.weightKg) || 0,
+      actor: actorEmail || 'carrier-ws',
+      atIso: new Date().toISOString(),
+      at: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('carriers').doc(carrierId), { rejected: FieldValue.increment(1) }, { merge: true });
+  });
+
+  const orderSnap = await db.collection('orders').doc(orderId).get();
+  const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+  if (!order) return { matched: false, rejected: true };
+  const next = await offerNext(db, orderId, order, { ...current, offeredCarrierId: null, shipmentStatus: 'matching' }, options);
+  return { ...next, rejected: true, previousCarrierId: carrierId };
 }
 
 async function syncCarrierShipment(db, orderId, before, after) {
@@ -1192,31 +1379,8 @@ async function advanceCarrierOffers(db) {
     db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(40).get(),
   ]);
   let advanced = 0;
-  for (const doc of assignedSnap.docs) {
-    const shipment = doc.data();
-    const expires = expiryMs(shipment.offerExpiresAt);
-    if (!expires || expires > Date.now() || shipment.carrierId) continue;
-    const orderSnap = await db.collection('orders').doc(doc.id).get();
-    if (!orderSnap.exists) continue;
-    const declined = declinedCarrierIds(shipment);
-    await doc.ref.set(
-      {
-        declinedCarrierIds: [...declined],
-        shipmentStatus: 'matching',
-        offeredCarrierId: null,
-        capacityReserved: false,
-      },
-      { merge: true }
-    );
-    await offerNext(db, doc.id, { id: orderSnap.id, ...orderSnap.data() }, {
-      ...shipment,
-      shipmentStatus: 'matching',
-      offeredCarrierId: null,
-      declinedCarrierIds: [...declined],
-      capacityReserved: false,
-    });
-    advanced += 1;
-  }
+  // Assigned offers stay with the online company until they accept or reject.
+  // There is no countdown that pulls the order away.
   for (const doc of waitingSnap.docs) {
     const shipment = doc.data();
     if (shipment.carrierId || shipment.offeredCarrierId) continue;
@@ -1268,7 +1432,10 @@ module.exports = {
   CAPACITY_HOLD_STATUSES,
   HAUL_FEE_RATE,
   OFFER_TIMEOUT_MS,
+  PORTAL_ONLINE_MS,
   SHIPMENT_FLOW,
+  acceptCarrierOfferViaWs,
+  isCarrierLive,
   advanceCarrierOffers,
   cashSplit,
   carrierStanding,
@@ -1280,7 +1447,10 @@ module.exports = {
   isBusParcel,
   looksInternational,
   matchOrderById,
+  syncParcelPhotos,
+  offerNext,
   rankCarriers,
+  rejectCarrierOfferViaWs,
   declaredValueTzs,
   backfillOpenDeclaredValues,
   scoreCarrier,

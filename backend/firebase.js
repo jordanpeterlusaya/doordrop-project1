@@ -303,9 +303,14 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
       return;
     }
 
-    const { isBusParcel, matchOrderById } = require('./carrier-matching');
+    const { isBusParcel, matchOrderById, syncParcelPhotos } = require('./carrier-matching');
     const afterOrder = { id: orderId, ...after };
     if (!isBusParcel(afterOrder)) return;
+    try {
+      await syncParcelPhotos(getFirestoreDb(), orderId, afterOrder);
+    } catch (error) {
+      console.error('syncParcelPhotos failed', orderId, error);
+    }
     if (before && isBusParcel({ id: orderId, ...before })) return;
     try {
       await matchOrderById(getFirestoreDb(), orderId);

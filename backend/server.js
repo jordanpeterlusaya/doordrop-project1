@@ -10,7 +10,7 @@ const { readRouteCache, routeCacheKey, writeRouteCache } = require('./route-cach
 const { enforceRateLimit } = require('./rate-limit');
 const { getMetricsSnapshot, recordRequest } = require('./request-metrics');
 const {
-  SUPPORTED_VEHICLE_TYPES,
+  OFFERED_VEHICLE_TYPES,
   calculateEstimatedPrice,
   normalizeCargoSize,
   normalizePricingScope,
@@ -50,6 +50,24 @@ const {
   initiateCarrierCommissionPayment,
   verifyCarrierCommissionPayment,
 } = require('./carrier-commission');
+const {
+  handlePortalAccept,
+  handlePortalDeliver,
+  handlePortalFinance,
+  handlePortalJourney,
+  handlePortalPhotos,
+  handlePortalPresence,
+  handlePortalQuote,
+  handlePortalTrackingLink,
+  handlePortalTransit,
+  handlePortalVerify,
+} = require('./transporter-portal');
+const {
+  getDriverCommissionStatus,
+  handleDriverCommissionWebhook,
+  initiateDriverCommissionPayment,
+  verifyDriverCommissionPayment,
+} = require('./driver-commission');
 
 function sendJson(res, statusCode, data, originHeader, extraHeaders = {}) {
   const allowOrigin = resolveCorsOrigin(originHeader);
@@ -93,6 +111,17 @@ function parseCoordinate(value, name) {
     throw badRequest(`Invalid ${name}.`);
   }
 
+  return parsed;
+}
+
+function parseLatLngCoordinate(value, name, kind) {
+  const parsed = parseCoordinate(value, name);
+  if (kind === 'latitude' && (parsed < -90 || parsed > 90)) {
+    throw badRequest(`Invalid ${name}: latitude out of range.`);
+  }
+  if (kind === 'longitude' && (parsed < -180 || parsed > 180)) {
+    throw badRequest(`Invalid ${name}: longitude out of range.`);
+  }
   return parsed;
 }
 
@@ -177,10 +206,14 @@ function mapPricingResponse(price) {
   return {
     vehicleType: price.vehicleType,
     distanceKm: price.distanceKm,
+    roundTripDistanceKm: price.roundTripDistanceKm ?? null,
+    roundTripMinutes: price.roundTripMinutes ?? null,
     estimatedPrice: price.estimatedPrice,
     currency: price.currency,
     cargoSize: price.cargoSize ?? null,
     cargoMultiplier: price.cargoMultiplier ?? 1,
+    formula: price.formula ?? null,
+    breakdown: price.breakdown ?? null,
     pricing: {
       baseFare: price.baseFare,
       pricePerKm: price.pricePerKm,
@@ -209,13 +242,13 @@ function countPolylineCoordinates(encodedPolyline) {
   }
 }
 
-function buildPricingSnapshot(distanceMeters, cargoSize = null, pricingScope = null) {
+function buildPricingSnapshot(distanceMeters, cargoSize = null, pricingScope = null, durationSeconds = null) {
   if (!Number.isFinite(distanceMeters)) {
     return null;
   }
 
   return Object.fromEntries(
-    SUPPORTED_VEHICLE_TYPES.map((vehicleType) => {
+    OFFERED_VEHICLE_TYPES.map((vehicleType) => {
       try {
         const price = calculateEstimatedPrice({
           distanceMeters,
@@ -223,6 +256,7 @@ function buildPricingSnapshot(distanceMeters, cargoSize = null, pricingScope = n
           pricingTable: config.pricing,
           cargoSize,
           pricingScope,
+          durationSeconds,
         });
 
         return [vehicleType, mapPricingResponse(price)];
@@ -238,7 +272,13 @@ function buildPricingSnapshot(distanceMeters, cargoSize = null, pricingScope = n
   );
 }
 
-function buildRoutePricingEstimate(distanceMeters, vehicleType, cargoSize = null, pricingScope = null) {
+function buildRoutePricingEstimate(
+  distanceMeters,
+  vehicleType,
+  cargoSize = null,
+  pricingScope = null,
+  durationSeconds = null
+) {
   if (!vehicleType || !Number.isFinite(distanceMeters)) {
     return null;
   }
@@ -250,13 +290,20 @@ function buildRoutePricingEstimate(distanceMeters, vehicleType, cargoSize = null
       pricingTable: config.pricing,
       cargoSize,
       pricingScope,
+      durationSeconds,
     })
   );
 }
 
-function buildOptionalRoutePricingEstimate(distanceMeters, vehicleType, cargoSize = null, pricingScope = null) {
+function buildOptionalRoutePricingEstimate(
+  distanceMeters,
+  vehicleType,
+  cargoSize = null,
+  pricingScope = null,
+  durationSeconds = null
+) {
   try {
-    return buildRoutePricingEstimate(distanceMeters, vehicleType, cargoSize, pricingScope);
+    return buildRoutePricingEstimate(distanceMeters, vehicleType, cargoSize, pricingScope, durationSeconds);
   } catch {
     return null;
   }
@@ -415,14 +462,18 @@ async function handleRouteEstimate(req, res) {
   const pricingScope = normalizePricingScope(body.pricingScope || body.scope);
 
   const origin = {
-    latitude: parseCoordinate(body.origin?.latitude, 'origin.latitude'),
-    longitude: parseCoordinate(body.origin?.longitude, 'origin.longitude'),
+    latitude: parseLatLngCoordinate(body.origin?.latitude, 'origin.latitude', 'latitude'),
+    longitude: parseLatLngCoordinate(body.origin?.longitude, 'origin.longitude', 'longitude'),
   };
 
   const destination = {
-    latitude: parseCoordinate(body.destination?.latitude, 'destination.latitude'),
-    longitude: parseCoordinate(body.destination?.longitude, 'destination.longitude'),
+    latitude: parseLatLngCoordinate(body.destination?.latitude, 'destination.latitude', 'latitude'),
+    longitude: parseLatLngCoordinate(body.destination?.longitude, 'destination.longitude', 'longitude'),
   };
+
+  if (origin.latitude === destination.latitude && origin.longitude === destination.longitude) {
+    throw badRequest('origin and destination must be different coordinates.');
+  }
 
   const debugRequestId = createDebugRequestId('routes');
   const debugBasePayload = {
@@ -447,8 +498,16 @@ async function handleRouteEstimate(req, res) {
   });
 
   try {
-    const cacheKey = routeCacheKey(origin, destination, vehicleType, cargoSize);
+    if (!config.googleRoutesApiKey) {
+      const missingKeyError = new Error('Routes API is not configured on this server.');
+      missingKeyError.statusCode = 503;
+      missingKeyError.code = 'ROUTES_NOT_CONFIGURED';
+      throw missingKeyError;
+    }
+
+    const cacheKey = routeCacheKey(origin, destination);
     const cached = readRouteCache(cacheKey);
+    const estimateStartedAt = Date.now();
     const route = cached || await computeRoute({
       apiKey: config.googleRoutesApiKey,
       origin,
@@ -459,14 +518,50 @@ async function handleRouteEstimate(req, res) {
       writeRouteCache(cacheKey, route);
     }
 
+    if (!route?.distanceMeters || !(route.distanceMeters > 0) || !route?.durationSeconds || !(route.durationSeconds > 0)) {
+      const incompleteError = new Error('Google Routes API returned no usable distance/duration.');
+      incompleteError.statusCode = 502;
+      incompleteError.code = 'ROUTES_INCOMPLETE';
+      throw incompleteError;
+    }
+
     const coordinatesCount = countPolylineCoordinates(route.polyline);
-    const routePricingEstimate = buildOptionalRoutePricingEstimate(route.distanceMeters, vehicleType, cargoSize, pricingScope);
-    const pricingResult = routePricingEstimate ?? buildPricingSnapshot(route.distanceMeters, cargoSize, pricingScope);
+    const routePricingEstimate = buildOptionalRoutePricingEstimate(
+      route.distanceMeters,
+      vehicleType,
+      cargoSize,
+      pricingScope,
+      route.durationSeconds
+    );
+    const pricingResult =
+      routePricingEstimate ??
+      buildPricingSnapshot(route.distanceMeters, cargoSize, pricingScope, route.durationSeconds);
+
+    if (process.env.NODE_ENV !== 'production') {
+      const round = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.round(n * 1e4) / 1e4 : null;
+      };
+      console.info('[routes/estimate]', {
+        requestId: debugRequestId,
+        origin: `${round(origin.latitude)},${round(origin.longitude)}`,
+        destination: `${round(destination.latitude)},${round(destination.longitude)}`,
+        preference: 'TRAFFIC_AWARE_OPTIMAL',
+        status: 'ok',
+        distanceMeters: route.distanceMeters,
+        durationSeconds: route.durationSeconds,
+        latencyMs: Date.now() - estimateStartedAt,
+        cached: Boolean(cached),
+        fallback: false,
+        coordinatesCount,
+      });
+    }
 
     void sendDebugWebhook('routes-estimate-response', {
       ...debugBasePayload,
       status: 'success',
       success: true,
+      cached: Boolean(cached),
       distanceMeters: route.distanceMeters,
       durationSeconds: route.durationSeconds,
       coordinatesCount,
@@ -476,13 +571,45 @@ async function handleRouteEstimate(req, res) {
 
     sendJson(res, 200, mapRouteResponse(route, routePricingEstimate), getRequestOrigin(req));
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unexpected route estimate error.';
+    if (process.env.NODE_ENV !== 'production') {
+      const round = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.round(n * 1e4) / 1e4 : null;
+      };
+      console.warn('[routes/estimate] failed', {
+        requestId: debugRequestId,
+        origin: `${round(origin.latitude)},${round(origin.longitude)}`,
+        destination: `${round(destination.latitude)},${round(destination.longitude)}`,
+        preference: 'TRAFFIC_AWARE_OPTIMAL',
+        status: error?.code || 'ROUTES_FAILED',
+        distanceMeters: null,
+        durationSeconds: null,
+        latencyMs: null,
+        cached: false,
+        fallback: true,
+        message: String(errorMessage).slice(0, 240),
+      });
+    } else {
+      console.warn('[routes/estimate] failed', {
+        requestId: debugRequestId,
+        code: error?.code || null,
+        message: String(errorMessage).slice(0, 240),
+      });
+    }
     void sendDebugWebhook('routes-estimate-error', {
       ...debugBasePayload,
       status: 'error',
       success: false,
-      errorMessage: error instanceof Error ? error.message : 'Unexpected route estimate error.',
+      errorMessage,
+      code: error?.code || null,
     });
 
+    // Ensure clients get a clear JSON error (no fake distance) via outer catch.
+    if (!Number.isInteger(error?.statusCode)) {
+      error.statusCode = /timeout|aborted|AbortError/i.test(errorMessage) ? 504 : 502;
+      error.code = error.code || (/timeout|aborted|AbortError/i.test(errorMessage) ? 'ROUTES_TIMEOUT' : 'ROUTES_FAILED');
+    }
     throw error;
   }
 }
@@ -493,6 +620,13 @@ async function handlePricingEstimate(req, res) {
   const cargoSize = normalizeCargoSize(body.cargoSize);
   const pricingScope = normalizePricingScope(body.pricingScope || body.scope);
   const distanceMeters = parseCoordinate(body.distanceMeters, 'distanceMeters');
+  const durationSecondsRaw = Number(body.durationSeconds ?? body.duration_seconds);
+  const durationSeconds =
+    Number.isFinite(durationSecondsRaw) && durationSecondsRaw > 0 ? durationSecondsRaw : null;
+  const durationMinutesRaw = Number(body.durationMinutes ?? body.duration_minutes);
+  const durationMinutes =
+    Number.isFinite(durationMinutesRaw) && durationMinutesRaw > 0 ? durationMinutesRaw : null;
+  const alreadyRoundTrip = Boolean(body.alreadyRoundTrip || body.tripIsRoundTrip);
 
   const debugRequestId = createDebugRequestId('pricing');
   const debugBasePayload = {
@@ -505,7 +639,7 @@ async function handlePricingEstimate(req, res) {
     origin: null,
     destination: null,
     distanceMeters,
-    durationSeconds: null,
+    durationSeconds,
     coordinatesCount: null,
     pricingResult: null,
   };
@@ -523,6 +657,9 @@ async function handlePricingEstimate(req, res) {
       pricingTable: config.pricing,
       cargoSize,
       pricingScope,
+      durationSeconds,
+      durationMinutes,
+      alreadyRoundTrip,
     });
 
     const pricingResult = mapPricingResponse(price);
@@ -629,9 +766,23 @@ async function requestListener(req, res) {
             'POST /carrier/delivery-proof/upload',
             'POST /carrier/delivery-proof/complete',
             'POST /carrier/shipments/arrive',
+            'POST /carrier/portal/quote',
+            'POST /carrier/portal/verify',
+            'POST /carrier/portal/accept',
+            'POST /carrier/portal/transit',
+            'POST /carrier/portal/journey',
+            'POST /carrier/portal/deliver',
+            'POST /carrier/portal/tracking-link',
+            'POST /carrier/portal/presence',
+            'GET /carrier/portal/finance',
+            'GET /carrier/portal/photos',
             'POST /carrier/commission/ussd',
             'POST /carrier/commission/verify',
             'POST /carrier/commission/webhook/trivapesa',
+            'GET /driver/commission/status',
+            'POST /driver/commission/ussd',
+            'POST /driver/commission/verify',
+            'POST /driver/commission/webhook/trivapesa',
             'POST /driver-payments/webhook/mongike',
           ],
         },
@@ -668,7 +819,7 @@ async function requestListener(req, res) {
           smsProvider: smsProvider || null,
           driverAccessFeeTzs,
           mongikeNetworks,
-          supportedVehicleTypes: SUPPORTED_VEHICLE_TYPES,
+          supportedVehicleTypes: OFFERED_VEHICLE_TYPES,
         },
         originHeader
       );
@@ -806,6 +957,47 @@ async function requestListener(req, res) {
       return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/quote') {
+      sendJson(res, 200, await handlePortalQuote(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/verify') {
+      sendJson(res, 200, await handlePortalVerify(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/accept') {
+      sendJson(res, 200, await handlePortalAccept(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/transit') {
+      sendJson(res, 200, await handlePortalTransit(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/journey') {
+      sendJson(res, 200, await handlePortalJourney(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/deliver') {
+      sendJson(res, 200, await handlePortalDeliver(req), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/tracking-link') {
+      sendJson(res, 200, await handlePortalTrackingLink(req), originHeader);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/carrier/portal/finance') {
+      sendJson(res, 200, await handlePortalFinance(req), originHeader);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/carrier/portal/photos') {
+      sendJson(res, 200, await handlePortalPhotos(req, url), originHeader);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/presence') {
+      sendJson(res, 200, await handlePortalPresence(req), originHeader);
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/carrier/commission/ussd') {
       const payload = await initiateCarrierCommissionPayment(req);
       sendJson(res, 200, payload, originHeader);
@@ -820,6 +1012,30 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/carrier/commission/webhook/trivapesa') {
       const payload = await handleCarrierCommissionWebhook(req);
+      sendJson(res, 200, { ok: true, ...payload }, originHeader);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/driver/commission/status') {
+      const payload = await getDriverCommissionStatus(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver/commission/ussd') {
+      const payload = await initiateDriverCommissionPayment(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver/commission/verify') {
+      const payload = await verifyDriverCommissionPayment(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver/commission/webhook/trivapesa') {
+      const payload = await handleDriverCommissionWebhook(req);
       sendJson(res, 200, { ok: true, ...payload }, originHeader);
       return;
     }
