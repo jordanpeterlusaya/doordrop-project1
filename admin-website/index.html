@@ -3,47 +3,51 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DoorDrop Admin</title>
+  <title>HAUL Admin</title>
   <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
-  <meta name="theme-color" content="#16a34a" />
+  <meta name="theme-color" content="#0B0F14" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #f5f7f8;
+      --bg: #f4f5f7;
       --surface: #ffffff;
-      --surface-soft: #f8fafc;
-      --surface-muted: #eef2f6;
-      --ink: #0b1220;
-      --ink-soft: #334155;
-      --muted: #64748b;
-      --line: #e8edf2;
-      --line-soft: #f1f5f9;
+      --surface-soft: #f8f9fb;
+      --surface-muted: #eef0f4;
+      --ink: #0B0F14;
+      --ink-soft: #3a4250;
+      --muted: #6b7280;
+      --line: #e6e8ee;
+      --line-soft: #f0f1f5;
       --green: #16a34a;
       --green-dark: #166534;
       --green-soft: #dcfce7;
       --blue: #2563eb;
       --blue-soft: #eff6ff;
-      --amber: #c2410c;
-      --amber-soft: #fff7ed;
+      --amber: #ca8a04;
+      --amber-soft: #fef9c3;
       --red: #dc2626;
       --red-soft: #fef2f2;
-      --purple: #6d28d9;
-      --purple-soft: #f5f3ff;
-      --sidebar-bg: #0f172a;
-      --sidebar-bg-soft: #1e293b;
+      --yellow: #FFE500;
+      --yellow-ink: #111827;
+      --yellow-soft: #FFF9CC;
+      --purple: #334155;
+      --purple-soft: #f1f5f9;
+      --sidebar-bg: #0B0F14;
+      --sidebar-bg-soft: #151a22;
       --sidebar-ink: #f8fafc;
-      --sidebar-muted: #94a3b8;
-      --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
-      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 16px rgba(15, 23, 42, 0.04);
-      --shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.12);
-      --radius: 14px;
-      --radius-sm: 10px;
-      --sidebar: 260px;
-      --drawer: 400px;
-      --topbar: 72px;
+      --sidebar-muted: #8b93a7;
+      --shadow-xs: 0 1px 2px rgba(11, 15, 20, 0.04);
+      --shadow-sm: 0 1px 2px rgba(11, 15, 20, 0.03), 0 4px 16px rgba(11, 15, 20, 0.04);
+      --shadow-lg: 0 28px 64px rgba(11, 15, 20, 0.18);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --sidebar: 232px;
+      --drawer: 480px;
+      --analytics: 280px;
+      --topbar: 64px;
     }
 
     * {
@@ -214,10 +218,10 @@
     .sidebar {
       min-width: 0;
       height: 100vh;
-      padding: 18px 14px 16px;
+      padding: 16px 12px 14px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 10px;
       overflow: auto;
       background: var(--sidebar-bg);
       color: var(--sidebar-ink);
@@ -226,12 +230,12 @@
     }
 
     .brand {
-      padding: 6px 10px 14px;
+      padding: 4px 8px 12px;
       display: flex;
       align-items: center;
-      gap: 12px;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
-      margin-bottom: 4px;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      margin-bottom: 2px;
     }
 
     .brand-logo,
@@ -251,41 +255,72 @@
     }
 
     .brand-mark {
-      width: 38px;
-      height: 38px;
+      width: 36px;
+      height: 36px;
       display: grid;
       place-items: center;
       flex: 0 0 auto;
-      border-radius: 12px;
-      background: var(--green);
-      color: #fff;
-      font-size: 0.82rem;
+      border-radius: 10px;
+      background: var(--yellow);
+      color: var(--yellow-ink);
+      font-size: 0.78rem;
       font-weight: 800;
       letter-spacing: -0.04em;
     }
 
     .brand strong {
-      font-size: 0.98rem;
+      font-size: 1.05rem;
       color: var(--sidebar-ink);
+      letter-spacing: -0.04em;
     }
 
     .brand small {
       display: block;
       margin-top: 1px;
       color: var(--sidebar-muted);
-      font-size: 0.74rem;
+      font-size: 0.7rem;
       font-weight: 600;
+    }
+
+    .sidebar-search {
+      margin: 2px 4px 8px;
+      height: 38px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--sidebar-muted);
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .sidebar-search kbd {
+      margin-left: auto;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 0.68rem;
+      font-family: inherit;
     }
 
     .nav-section {
       display: grid;
-      gap: 3px;
+      gap: 2px;
+    }
+
+    .nav-section-footer {
+      margin-top: auto;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     .nav-title {
-      padding: 12px 12px 6px;
+      padding: 10px 12px 5px;
       color: #64748b;
-      font-size: 0.66rem;
+      font-size: 0.62rem;
       font-weight: 700;
       letter-spacing: 0.1em;
       text-transform: uppercase;
@@ -293,15 +328,15 @@
 
     .nav-link {
       width: 100%;
-      min-height: 40px;
+      min-height: 38px;
       padding: 0 12px;
       display: flex;
       align-items: center;
-      gap: 11px;
-      border-radius: 12px;
-      color: #cbd5e1;
+      gap: 10px;
+      border-radius: 10px;
+      color: #c5cad6;
       background: transparent;
-      font-size: 0.9rem;
+      font-size: 0.86rem;
       font-weight: 600;
       text-align: left;
       transition: background 140ms ease, color 140ms ease;
@@ -309,13 +344,27 @@
 
     .nav-link:hover {
       color: #fff;
-      background: rgba(148, 163, 184, 0.12);
+      background: rgba(255, 255, 255, 0.06);
     }
 
     .nav-link.active {
       color: #fff;
-      background: rgba(22, 163, 74, 0.22);
-      box-shadow: inset 3px 0 0 var(--green);
+      background: rgba(255, 229, 0, 0.12);
+      box-shadow: inset 3px 0 0 var(--yellow);
+    }
+
+    .nav-badge {
+      margin-left: auto;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 999px;
+      background: #ef4444;
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 800;
     }
 
     .nav-icon {
@@ -612,13 +661,13 @@
     }
 
     .btn.primary {
-      color: #fff;
-      background: var(--green);
-      box-shadow: 0 1px 2px rgba(22, 163, 74, 0.18);
+      color: var(--yellow-ink);
+      background: var(--yellow);
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.12);
     }
 
     .btn.primary:hover {
-      background: #15803d;
+      filter: brightness(0.96);
     }
 
     .btn.dark {
@@ -637,9 +686,19 @@
     }
 
     .admin-auth-tabs .btn.active {
-      color: #fff;
-      background: var(--green);
-      border-color: var(--green);
+      color: var(--yellow-ink);
+      background: var(--yellow);
+      border-color: var(--yellow);
+    }
+
+    .btn.ghost {
+      color: var(--ink-soft);
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+
+    .btn.ghost:hover {
+      background: var(--surface-soft);
     }
 
     .mobile-menu {
@@ -3044,42 +3103,118 @@
 
     .order-drawer {
       position: fixed;
-      top: calc(var(--topbar) + 18px);
-      right: 18px;
-      bottom: 18px;
-      width: var(--drawer);
-      z-index: 25;
+      inset: 0;
+      z-index: 50;
+      display: none;
+      place-items: center;
+      padding: 28px 20px;
+      background: rgba(11, 15, 20, 0.42);
+      backdrop-filter: blur(6px);
+    }
+
+    .order-drawer.is-open,
+    .order-drawer[style*="grid"],
+    .order-drawer[style*="flex"] {
+      display: grid;
+    }
+
+    .order-modal {
+      width: min(560px, 100%);
+      max-height: min(860px, calc(100vh - 48px));
+      display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
       overflow: hidden;
-      border-radius: var(--radius);
+      border-radius: 16px;
       background: var(--surface);
-      border: 1px solid var(--line-soft);
+      border: 1px solid var(--line);
       box-shadow: var(--shadow-lg);
     }
 
     .drawer-head {
-      padding: 18px;
+      padding: 0;
       display: grid;
-      gap: 14px;
+      gap: 0;
       border-bottom: 1px solid var(--line-soft);
-      background: var(--surface-soft);
+      background: var(--ink);
+      color: #fff;
     }
 
     .drawer-title-row {
+      padding: 16px 18px;
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 14px;
     }
 
+    .drawer-head .eyebrow,
+    .drawer-head .muted,
+    .drawer-head h2 {
+      color: #fff;
+    }
+
+    .drawer-head .muted {
+      opacity: 0.72;
+    }
+
     .drawer-close {
-      width: 38px;
-      height: 38px;
+      width: 36px;
+      height: 36px;
       flex: 0 0 auto;
-      border-radius: var(--radius);
-      background: var(--surface-muted);
-      color: var(--ink-soft);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
       font-weight: 800;
+    }
+
+    .drawer-close:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    .drawer-customer {
+      padding: 14px 18px 16px;
+      display: grid;
+      gap: 6px;
+      background: #151a22;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .drawer-customer strong {
+      color: #fff;
+      font-size: 0.95rem;
+    }
+
+    .drawer-customer-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .drawer-tabs {
+      display: flex;
+      gap: 0;
+      padding: 0 18px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .drawer-tab {
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 0;
+      color: var(--muted);
+      background: transparent;
+      font-size: 0.84rem;
+      font-weight: 700;
+      border-bottom: 2px solid transparent;
+    }
+
+    .drawer-tab.active {
+      color: var(--ink);
+      border-bottom-color: var(--ink);
     }
 
     .drawer-body {
@@ -3089,6 +3224,7 @@
       align-content: start;
       gap: 14px;
       overflow: auto;
+      background: var(--surface);
     }
 
     .drawer-section {
@@ -3098,10 +3234,52 @@
 
     .drawer-section-title {
       color: var(--ink);
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       font-weight: 800;
-      letter-spacing: 0;
+      letter-spacing: 0.02em;
       text-transform: uppercase;
+    }
+
+    .modal-line-item {
+      padding: 10px 0;
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .modal-line-item:last-child {
+      border-bottom: 0;
+    }
+
+    .modal-thumb {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: var(--surface-muted);
+      font-size: 1.1rem;
+    }
+
+    .modal-line-item strong {
+      display: block;
+      font-size: 0.88rem;
+    }
+
+    .modal-line-item .mini {
+      color: var(--muted);
+    }
+
+    .modal-total {
+      margin-top: 8px;
+      padding-top: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid var(--line);
+      font-weight: 800;
     }
 
     .detail-row {
@@ -3129,16 +3307,35 @@
     }
 
     .drawer-actions {
-      padding: 14px 18px 18px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
+      padding: 12px 18px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
       border-top: 1px solid var(--line-soft);
       background: var(--surface);
     }
 
-    .drawer-actions .primary {
-      grid-column: 1 / -1;
+    .drawer-actions .btn.primary {
+      margin-right: auto;
+    }
+
+    .drawer-foot-links {
+      display: flex;
+      gap: 14px;
+      margin-right: auto;
+    }
+
+    .drawer-foot-links button {
+      padding: 0;
+      min-height: auto;
+      color: var(--muted);
+      background: transparent;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+
+    .drawer-foot-links button:hover {
+      color: var(--ink);
     }
 
     .quick-grid {
@@ -3439,19 +3636,461 @@
       background: var(--green);
     }
 
+    /* ── Orders workspace (Mute-style) ── */
+    .orders-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--analytics);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .orders-main {
+      min-width: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .orders-page-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .orders-page-head h2 {
+      font-size: 1.55rem;
+      letter-spacing: -0.04em;
+    }
+
+    .orders-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .filter-select {
+      min-height: 38px;
+      padding: 0 32px 0 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%236b7280' d='M1 1l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 12px center;
+      appearance: none;
+      color: var(--ink-soft);
+      font-size: 0.84rem;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .orders-table-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .orders-table-card .table-wrap {
+      border: 0;
+      border-radius: 0;
+      max-height: calc(100vh - 280px);
+      overflow: auto;
+    }
+
+    .orders-table-card table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .orders-table-card th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: #fafbfc;
+      border-bottom: 1px solid var(--line-soft);
+      white-space: nowrap;
+    }
+
+    .orders-table-card td {
+      padding: 14px;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: middle;
+      font-size: 0.88rem;
+    }
+
+    .orders-table-card tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .orders-table-card tbody tr {
+      cursor: pointer;
+      transition: background 120ms ease;
+    }
+
+    .orders-table-card tbody tr:hover,
+    .orders-table-card tbody tr.selected {
+      background: #fafbfc;
+    }
+
+    .orders-table-card tbody tr.selected {
+      background: var(--yellow-soft);
+    }
+
+    .order-id {
+      font-weight: 780;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+    }
+
+    .person-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .avatar-chip {
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: #e8edf5;
+      color: #334155;
+      font-size: 0.7rem;
+      font-weight: 800;
+    }
+
+    .person-cell strong {
+      display: block;
+      font-size: 0.88rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status-dot::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .status-dot.success { color: #16a34a; }
+    .status-dot.danger { color: #dc2626; }
+    .status-dot.warning { color: #ca8a04; }
+    .status-dot.info { color: #2563eb; }
+    .status-dot.neutral,
+    .status-dot.purple { color: #64748b; }
+
+    .type-thumb {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: var(--surface-muted);
+      font-size: 1rem;
+    }
+
+    .money-stack {
+      display: grid;
+      gap: 2px;
+    }
+
+    .money-stack strong {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.88rem;
+    }
+
+    .money-stack .mini {
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
+    .row-actions {
+      display: flex;
+      gap: 4px;
+      justify-content: flex-end;
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--muted);
+      background: transparent;
+    }
+
+    .icon-btn:hover {
+      background: var(--surface-muted);
+      color: var(--ink);
+    }
+
+    .bulk-bar {
+      position: sticky;
+      bottom: 12px;
+      left: 50%;
+      z-index: 15;
+      width: max-content;
+      max-width: calc(100% - 24px);
+      margin: 0 auto;
+      padding: 10px 14px;
+      display: none;
+      align-items: center;
+      gap: 12px;
+      border-radius: 14px;
+      background: var(--ink);
+      color: #fff;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .bulk-bar.visible {
+      display: flex;
+    }
+
+    .bulk-bar .btn {
+      min-height: 34px;
+      padding: 0 12px;
+      font-size: 0.8rem;
+    }
+
+    .bulk-bar .btn.soft {
+      background: rgba(255,255,255,0.1);
+      border-color: transparent;
+      color: #fff;
+    }
+
+    .orders-analytics {
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+    }
+
+    .analytics-card {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .analytics-card h3 {
+      font-size: 0.82rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .gauge-wrap {
+      display: grid;
+      place-items: center;
+      gap: 4px;
+      padding: 8px 0 4px;
+    }
+
+    .gauge {
+      width: 148px;
+      height: 78px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .gauge svg {
+      width: 148px;
+      height: 148px;
+    }
+
+    .gauge-center {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 4px;
+      text-align: center;
+    }
+
+    .gauge-center strong {
+      display: block;
+      font-size: 1.25rem;
+      letter-spacing: -0.03em;
+    }
+
+    .gauge-center span {
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 650;
+    }
+
+    .analytics-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .analytics-stat {
+      padding: 10px;
+      border-radius: 10px;
+      background: var(--surface-soft);
+      display: grid;
+      gap: 2px;
+    }
+
+    .analytics-stat span {
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .analytics-stat strong {
+      font-size: 0.92rem;
+    }
+
+    .status-bars {
+      display: grid;
+      gap: 8px;
+    }
+
+    .status-bar-row {
+      display: grid;
+      gap: 4px;
+    }
+
+    .status-bar-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .status-bar-track {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--surface-muted);
+      overflow: hidden;
+      display: flex;
+    }
+
+    .status-bar-track i {
+      display: block;
+      height: 100%;
+    }
+
+    .status-bar-track i.paid { background: #16a34a; }
+    .status-bar-track i.moving { background: #2563eb; }
+    .status-bar-track i.wait { background: #ca8a04; }
+    .status-bar-track i.cancel { background: #dc2626; }
+
+    .top-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .top-list-item {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .top-list-item strong {
+      display: block;
+      font-size: 0.84rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .top-list-item .mini {
+      color: var(--muted);
+    }
+
+    .fee-editor {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 12px;
+      background: var(--surface-soft);
+      border: 1px solid var(--line-soft);
+    }
+
+    .fee-editor-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .fee-editor input {
+      width: 100%;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .fee-editor label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .value-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .value-pair .detail-row {
+      margin: 0;
+    }
+
     @media (max-width: 1280px) {
       .grid.two,
       .grid.three {
         grid-template-columns: 1fr;
       }
 
-      .order-drawer {
-        top: auto;
-        left: 18px;
-        right: 18px;
-        bottom: 18px;
-        width: auto;
-        max-height: 78vh;
+      .orders-workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .orders-analytics {
+        position: static;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .order-modal {
+        width: min(560px, 100%);
+        max-height: min(86vh, 860px);
       }
     }
 
@@ -3572,9 +4211,9 @@
   <div class="admin-auth-overlay" id="authScreen">
     <div class="admin-auth-card">
       <div class="auth-brand">
-        <img class="auth-logo" src="./assets/doordrop.png" alt="DoorDrop" />
+        <img class="auth-logo" src="./assets/doordrop.png" alt="HAUL" />
         <div>
-          <strong>DoorDrop</strong>
+          <strong>HAUL</strong>
           <small>Admin console</small>
         </div>
       </div>
@@ -3600,29 +4239,35 @@
   <div class="app-shell hidden" id="appScreen">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <img class="brand-logo" src="./assets/doordrop.png" alt="DoorDrop" />
+        <div class="brand-mark">H</div>
         <div>
-          <strong>DoorDrop</strong>
-          <small>Admin panel</small>
+          <strong>HAUL</strong>
+          <small>Admin</small>
         </div>
       </div>
 
+      <div class="sidebar-search" title="Use the top search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span>Search</span>
+        <kbd>⌘F</kbd>
+      </div>
+
       <div class="nav-section nav-section-primary">
-        <p class="nav-title">Kuu</p>
         <button class="nav-link active" data-section="dashboard"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg></span>Dashboard</button>
-        <button class="nav-link" data-section="orders"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M7 7h13M7 12h13M7 17h9"/><circle cx="4" cy="7" r=".8" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r=".8" fill="currentColor" stroke="none"/><circle cx="4" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></span>City orders</button>
-        <button class="nav-link" data-section="otherRegions"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M2 16l8-2.5L21 7l1 2-8.5 5.5L21 17v2l-10-2-5 3H4l2-5-4-1z"/></svg></span>Bus &amp; air parcels</button>
-        <button class="nav-link" data-section="ninunulie"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 6h15l-1.5 9H8L6 6z"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/><path d="M3 3h2l1 3"/></svg></span>Buy for me</button>
-        <button class="nav-link" data-section="dispatch"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.2"/></svg></span>Dispatch</button>
+        <button class="nav-link" data-section="orders"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M7 7h13M7 12h13M7 17h9"/><circle cx="4" cy="7" r=".8" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r=".8" fill="currentColor" stroke="none"/><circle cx="4" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></span>Orders</button>
+        <button class="nav-link" data-section="otherRegions"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M2 16l8-2.5L21 7l1 2-8.5 5.5L21 17v2l-10-2-5 3H4l2-5-4-1z"/></svg></span>Bus &amp; air</button>
         <button class="nav-link" data-section="drivers"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 19.2c.7-3.2 3.4-5 7-5s6.3 1.8 7 5"/></svg></span>Drivers</button>
-        <button class="nav-link" data-section="carrierAgents"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 10h16v8H4z"/><path d="M8 10V7h8v3"/><circle cx="7" cy="18" r="1.5"/><circle cx="17" cy="18" r="1.5"/></svg></span>Uthibitisho wa mawakala</button>
-        <button class="nav-link" data-section="carrierCash"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 19V7m5 12V11m5 8V5m5 14v-6"/></svg></span>Fedha za kampuni</button>
+        <button class="nav-link" data-section="finance"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 19V7m5 12V11m5 8V5m5 14v-6"/></svg></span>Payments</button>
+        <button class="nav-link" data-section="customers"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.7-3 3-4.6 5.5-4.6"/><circle cx="16.5" cy="9" r="2.4"/><path d="M13.2 19c.5-2.5 2.3-3.8 4.3-3.8 2 0 3.8 1.3 4.3 3.8"/></svg></span>Customers</button>
       </div>
 
       <div class="nav-section">
-        <p class="nav-title">Huduma</p>
+        <p class="nav-title">Ops</p>
+        <button class="nav-link" data-section="dispatch"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.2"/></svg></span>Dispatch</button>
+        <button class="nav-link" data-section="ninunulie"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 6h15l-1.5 9H8L6 6z"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/><path d="M3 3h2l1 3"/></svg></span>Buy for me</button>
+        <button class="nav-link" data-section="carrierAgents"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 10h16v8H4z"/><path d="M8 10V7h8v3"/><circle cx="7" cy="18" r="1.5"/><circle cx="17" cy="18" r="1.5"/></svg></span>Agents</button>
+        <button class="nav-link" data-section="carrierCash"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 19V7m5 12V11m5 8V5m5 14v-6"/></svg></span>Carrier cash</button>
         <button class="nav-link" data-section="airTransport"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M2 16l8-2.5L21 7l1 2-8.5 5.5L21 17v2l-10-2-5 3H4l2-5-4-1z"/></svg></span>Air schedules</button>
-        <button class="nav-link" data-section="finance"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 19V7m5 12V11m5 8V5m5 14v-6"/></svg></span>Finance</button>
       </div>
 
       <div class="nav-section nav-section-advanced hidden" id="advancedNav">
@@ -3649,33 +4294,31 @@
       </div>
 
       <div class="nav-section">
-        <p class="nav-title">System</p>
+        <p class="nav-title">More</p>
         <button class="nav-link" data-section="payments"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/></svg></span>Subscriptions</button>
         <button class="nav-link" data-section="history"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.2-5.5"/><path d="M4 5v5h5"/><path d="M12 8v5l3 2"/></svg></span>History</button>
         <button class="nav-link" data-section="data"><span class="nav-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>Data</button>
+      </div>
+
+      <div class="nav-section nav-section-footer">
+        <form class="sidebar-lookup" data-form="order-lookup" autocomplete="off">
+          <label for="sidebarOrderLookup">Find order</label>
+          <div class="sidebar-lookup-row">
+            <input id="sidebarOrderLookup" name="orderLookupId" type="text" placeholder="Order ID" />
+            <button type="submit">Find</button>
+          </div>
+        </form>
+        <button class="nav-link" type="button" data-section="myAttention"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5"/><path d="M9.5 17a2.5 2.5 0 0 0 5 0"/></svg></span>Notifications<span class="nav-badge" id="sidebarNotifyBadge" hidden>0</span></button>
+        <a class="nav-link" href="./terms/index.html"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></svg></span>Help</a>
         <button class="nav-link" data-section="settings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7.8 7.8 0 0 0 .1-2l2-1.5-2-3.5-2.4.5a8 8 0 0 0-1.7-1L15 5h-4l-.4 2.5a8 8 0 0 0-1.7 1L6.5 8 4.5 11.5 6.5 13a7.8 7.8 0 0 0 .1 2l-2 1.5 2 3.5 2.4-.5a8 8 0 0 0 1.7 1L11 21h4l.4-2.5a8 8 0 0 0 1.7-1l2.4.5 2-3.5z"/></svg></span>Settings</button>
-      </div>
-
-      <form class="sidebar-lookup" data-form="order-lookup" autocomplete="off">
-        <label for="sidebarOrderLookup">Find order</label>
-        <div class="sidebar-lookup-row">
-          <input id="sidebarOrderLookup" name="orderLookupId" type="text" placeholder="Order ID" />
-          <button type="submit">Find</button>
+        <div class="sidebar-profile" id="sidebarProfile">
+          <div class="sidebar-avatar" id="sidebarAvatar">AD</div>
+          <div>
+            <strong id="sidebarProfileName">Admin</strong>
+            <small id="sidebarProfileEmail">Signed in</small>
+          </div>
         </div>
-      </form>
-
-      <div class="sidebar-card">
-        <span class="pill success" id="sidebarSystemStatus">Connecting...</span>
-        <a href="./terms/index.html">Terms</a>
-        <a href="./privacy.html">Privacy</a>
-      </div>
-
-      <div class="sidebar-profile" id="sidebarProfile">
-        <div class="sidebar-avatar" id="sidebarAvatar">AD</div>
-        <div>
-          <strong id="sidebarProfileName">Admin</strong>
-          <small id="sidebarProfileEmail">Signed in</small>
-        </div>
+        <p class="mini" style="padding:4px 12px;color:var(--sidebar-muted)"><span id="sidebarSystemStatus">Connecting...</span></p>
       </div>
     </aside>
 
@@ -3697,7 +4340,7 @@
 
       <main class="content" id="content"></main>
 
-      <aside class="order-drawer" id="orderDrawer" style="display: none"></aside>
+      <div class="order-drawer" id="orderDrawer" style="display: none" role="dialog" aria-modal="true"></div>
     </section>
   </div>
 

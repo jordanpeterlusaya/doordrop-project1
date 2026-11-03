@@ -644,7 +644,10 @@ function buildCompanyOfferBody(order, shipment, orderId, carrier) {
       .join(' '),
     40
   );
-  const price = moneyLabel(shipment?.cashExpected || shipment?.carrierNet || order?.declaredValueTzs);
+  // Shipping fee only — never fall back to declared cargo value (thamani).
+  const price = moneyLabel(
+    shipment?.cashExpected || shipment?.carrierNet || order?.carrierQuoteTzs || order?.shippingFeeTzs
+  );
   const company = clipSms(carrier?.tradingName || carrier?.companyName || 'Kampuni', 24);
   let body = `HAUL oda ${code}`;
   if (company) body += ` · ${company}`;

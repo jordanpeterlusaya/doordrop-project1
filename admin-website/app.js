@@ -411,6 +411,10 @@ const state = {
   currentPage: 'dashboard',
   query: '',
   orderFilter: 'all',
+  orderTypeFilter: 'all',
+  orderDateFilter: 'all',
+  orderDrawerTab: 'items',
+  selectedOrderIds: [],
   driverFilter: 'all',
   paymentFilter: 'all',
   paymentPage: 1,
@@ -735,12 +739,83 @@ function decodePolyline(encoded, precision = 5) {
   return coordinates;
 }
 
-function getOrderAmount(order) {
-  // Ninunulie seller purchase is not DoorDrop delivery revenue.
-  if (isNinunulieOrder(order)) {
+function getCargoDeclaredValue(order) {
+  // Customer-submitted goods value (thamani ya mzigo) — never a shipping fee.
+  return parseAmount(order?.declaredValueTzs ?? order?.declaredValue ?? order?.cargoValueTzs ?? order?.goodsValueTzs);
+}
+
+function getShippingFee(order) {
+  // Transport fee (bei ya usafirishaji) only — never declared cargo value.
+  if (!order || isNinunulieOrder(order)) {
     return 0;
   }
-  return parseAmount(order.totalAmount ?? order.amount ?? order.price ?? order.totalLabel ?? order.deliveryFee);
+  const quoted = parseAmount(
+    order.carrierQuoteTzs ?? order.shippingFeeTzs ?? order.deliveryFeeTzs ?? order.deliveryFee
+  );
+  if (safeText(order.quoteStatus) === 'awaiting_company') {
+    return quoted;
+  }
+  if (quoted > 0) {
+    return quoted;
+  }
+  const labelSource = `${safeText(order.totalLabel)} ${safeText(order.fareLabel)}`;
+  if (/baada|awaiting|kampuni|quote/i.test(labelSource)) {
+    return 0;
+  }
+  return parseAmount(
+    order.totalAmount ?? order.fareAmount ?? order.amount ?? order.price ?? order.totalLabel ?? order.fareLabel
+  );
+}
+
+function getOrderAmount(order) {
+  // Revenue / shipping price column — never thamani ya mzigo.
+  return getShippingFee(order);
+}
+
+function formatShortDate(value) {
+  const millis = toMillis(value);
+  if (!millis) return '—';
+  return new Date(millis).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function getInitials(name, fallback = 'CU') {
+  const parts = safeText(name, fallback)
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '');
+  return parts.join('') || fallback;
+}
+
+function orderMatchesTypeFilter(order) {
+  const filter = state.orderTypeFilter || 'all';
+  if (filter === 'all') return true;
+  return serviceKeyFromOrder(order) === filter;
+}
+
+function orderMatchesDateFilter(order) {
+  const filter = state.orderDateFilter || 'all';
+  if (filter === 'all') return true;
+  const millis = toMillis(order.createdAt || order.updatedAt);
+  if (!millis) return false;
+  const ageMs = Date.now() - millis;
+  if (filter === 'today') return isToday(order.createdAt || order.updatedAt);
+  if (filter === '7d') return ageMs <= 7 * 24 * 60 * 60 * 1000;
+  if (filter === '30d') return ageMs <= 30 * 24 * 60 * 60 * 1000;
+  return true;
+}
+
+function getOrderTypeLabel(order) {
+  const key = serviceKeyFromOrder(order);
+  if (key === 'parcel') return 'Parcel';
+  if (key === 'toyo') return 'Cargo · TOYO';
+  if (key === 'kirikuu') return 'Cargo · Kirikuu';
+  if (key === 'ninunulie') return 'Buy for me';
+  return getServiceLabel(order);
+}
+
+function getOrderTypeIcon(order) {
+  return getServiceConfig(serviceKeyFromOrder(order))?.icon || '📦';
 }
 
 function getNinunuliePurchaseAmount(order) {
@@ -2268,7 +2343,8 @@ async function createManualOrder(form) {
   const orderVehicleKey = service.key === 'parcel' ? 'bodaboda' : service.key;
   const orderVehicleLabel = service.key === 'parcel' ? 'Bodaboda / Motorcycle' : service.title;
   const orderDocument = doc(col.orders);
-  const amount = parseAmount(formData.get('amount'));
+  const shippingFee = parseAmount(formData.get('shippingFeeTzs') ?? formData.get('amount'));
+  const declaredValue = parseAmount(formData.get('declaredValueTzs'));
   const timingMode = safeText(formData.get('timingMode'), 'now') === 'later' ? 'later' : 'now';
   const scheduleDate = safeText(formData.get('scheduleDate'));
   const scheduleTime = safeText(formData.get('scheduleTime'));
@@ -2281,8 +2357,9 @@ async function createManualOrder(form) {
   const customerEmail = safeText(formData.get('customerEmail'), linkedUser?.email || '');
   const recipientName = safeText(formData.get('recipientName'), customerName);
   const recipientPhone = safeText(formData.get('recipientPhone'), customerPhone);
-  const totalLabel = amount > 0 ? formatMoney(amount) : 'To be quoted';
-  const fareLabel = amount > 0 ? formatMoney(amount) : 'To be quoted';
+  // Shipping fee only — never write cargo value into fare/total fields.
+  const totalLabel = shippingFee > 0 ? formatMoney(shippingFee) : 'To be quoted';
+  const fareLabel = shippingFee > 0 ? formatMoney(shippingFee) : 'To be quoted';
 
   const order = compact({
     id: orderDocument.id,
@@ -2307,6 +2384,9 @@ async function createManualOrder(form) {
     etaLabel: timingMode === 'later' ? 'Scheduled dispatch' : 'Dispatch assigning',
     fareLabel,
     totalLabel,
+    shippingFeeTzs: shippingFee > 0 ? shippingFee : undefined,
+    carrierQuoteTzs: shippingFee > 0 ? shippingFee : undefined,
+    declaredValueTzs: declaredValue > 0 ? String(Math.round(declaredValue)) : undefined,
     timingMode,
     scheduleDate,
     scheduleTime,
@@ -2777,8 +2857,14 @@ function openCreateOrderModal() {
           <input name="recipientPhone" />
         </div>
         <div class="field">
-          <label>Estimated total</label>
-          <input name="amount" type="number" min="0" step="1" placeholder="42000" />
+          <label>Bei ya usafirishaji (TZS)</label>
+          <input name="shippingFeeTzs" type="number" min="0" step="100" placeholder="15000" />
+          <small>Shipping/transport fee set by admin — not cargo value.</small>
+        </div>
+        <div class="field">
+          <label>Thamani ya mzigo (TZS)</label>
+          <input name="declaredValueTzs" type="number" min="0" step="100" placeholder="50000" />
+          <small>Customer-declared goods value. Never used as shipping price.</small>
         </div>
         <div class="field">
           <label>Dispatch timing</label>
@@ -3322,11 +3408,25 @@ function renderFilterBar(filters, current, datasetKey) {
 }
 
 const ORDER_FILTERS = [
-  { id: 'all', label: 'All' },
+  { id: 'all', label: 'All statuses' },
   { id: 'pending_assignment', label: 'Waiting' },
   { id: 'moving', label: 'On the road' },
   { id: 'delivered', label: 'Delivered' },
   { id: 'cancelled', label: 'Cancelled' },
+];
+
+const ORDER_TYPE_FILTERS = [
+  { id: 'all', label: 'All types' },
+  { id: 'parcel', label: 'Parcel' },
+  { id: 'toyo', label: 'TOYO / Cargo' },
+  { id: 'kirikuu', label: 'Kirikuu' },
+];
+
+const ORDER_DATE_FILTERS = [
+  { id: 'all', label: 'All dates' },
+  { id: 'today', label: 'Today' },
+  { id: '7d', label: 'Last 7 days' },
+  { id: '30d', label: 'Last 30 days' },
 ];
 
 const DRIVER_FILTERS = [
@@ -3455,8 +3555,26 @@ function paymentMatchesStatusFilter(payment) {
   return true;
 }
 
+function renderFilterSelect(filters, current, datasetKey, ariaLabel) {
+  const attr = datasetKey.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+  return `
+    <select class="filter-select" data-${attr}-select="true" aria-label="${escapeHtml(ariaLabel)}">
+      ${filters.map((filter) => `
+        <option value="${escapeHtml(filter.id)}" ${current === filter.id ? 'selected' : ''}>${escapeHtml(filter.label)}</option>
+      `).join('')}
+    </select>
+  `;
+}
+
 function renderOrderFilters() {
-  return renderFilterBar(ORDER_FILTERS, state.orderFilter, 'orderFilter');
+  return `
+    <div class="orders-filters">
+      ${renderFilterSelect(ORDER_TYPE_FILTERS, state.orderTypeFilter || 'all', 'orderTypeFilter', 'Type')}
+      ${renderFilterSelect(ORDER_FILTERS, state.orderFilter || 'all', 'orderFilter', 'Status')}
+      ${renderFilterSelect(ORDER_DATE_FILTERS, state.orderDateFilter || 'all', 'orderDateFilter', 'Order date')}
+      <span class="mini">${escapeHtml(String((state.selectedOrderIds || []).length))} selected</span>
+    </div>
+  `;
 }
 
 function serviceCard(service) {
@@ -3475,23 +3593,43 @@ function serviceCard(service) {
 
 function orderRow(order) {
   const status = getOrderStatus(order);
+  const statusClass = getStatusClass(status);
+  const selected = (state.selectedOrderIds || []).includes(order.id);
+  const shippingFee = getShippingFee(order);
+  const cargoValue = getCargoDeclaredValue(order);
+  const name = getCustomerName(order);
   return `
-    <tr data-order="${escapeHtml(order.id)}">
+    <tr data-order="${escapeHtml(order.id)}" class="${selected ? 'selected' : ''}">
+      <td onclick="event.stopPropagation()">
+        <input type="checkbox" data-select-order="${escapeHtml(order.id)}" ${selected ? 'checked' : ''} aria-label="Select order" />
+      </td>
       <td><span class="order-id">${escapeHtml(getOrderNumber(order))}</span></td>
       <td>
-        <div class="person">
-          <strong>${escapeHtml(getCustomerName(order))}</strong>
-          <span class="mini">${escapeHtml(getCustomerContact(order))}</span>
+        <div class="person-cell">
+          <div class="avatar-chip">${escapeHtml(getInitials(name))}</div>
+          <div>
+            <strong>${escapeHtml(name)}</strong>
+            <span class="mini">${escapeHtml(getCustomerContact(order))}</span>
+          </div>
         </div>
       </td>
-      <td>${escapeHtml(getServiceLabel(order))}</td>
-      <td>${escapeHtml(getPickup(order))} → ${escapeHtml(getDropoff(order))}</td>
-      <td>${escapeHtml(getDriverName(order))}</td>
+      <td>${escapeHtml(getOrderTypeLabel(order))}</td>
+      <td><span class="status-dot ${escapeHtml(statusClass)}">${escapeHtml(getOrderStatusLabel(order))}</span></td>
+      <td><div class="type-thumb" title="${escapeHtml(getOrderItemDescription(order))}">${escapeHtml(getOrderTypeIcon(order))}</div></td>
       <td>
-        ${pill(getOrderStatusLabel(order), getStatusClass(status))}
-        ${status === 'pending_assignment' || order.autoCancelledReason ? `<span class="mini">${escapeHtml(getDriverSearchMessage(order))}</span>` : ''}
+        <div class="money-stack">
+          <strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong>
+          <span class="mini">Bei ya usafirishaji</span>
+          ${cargoValue > 0 ? `<span class="mini">Thamani: ${escapeHtml(formatMoney(cargoValue))}</span>` : ''}
+        </div>
       </td>
-      <td>${escapeHtml(formatMoney(getOrderAmount(order)))}</td>
+      <td>${escapeHtml(formatShortDate(order.createdAt))}</td>
+      <td onclick="event.stopPropagation()">
+        <div class="row-actions">
+          <button class="icon-btn" type="button" title="Open pickup map" data-open-pickup-map="${escapeHtml(order.id)}">🗺️</button>
+          <button class="icon-btn" type="button" title="Order details" data-open-order="${escapeHtml(order.id)}">⋯</button>
+        </div>
+      </td>
     </tr>
   `;
 }
@@ -4929,39 +5067,182 @@ function formatShortDashDate(value) {
   });
 }
 
-function renderOrders() {
-  const section = getOrCreateSection('orders');
-  const visible = sortByRecent(
-    state.orders.filter(
+function getCityOrdersPool() {
+  return state.orders.filter((order) => !isOutsideParcelOrder(order) && !isNinunulieOrder(order));
+}
+
+function getFilteredCityOrders() {
+  return sortByRecent(
+    getCityOrdersPool().filter(
       (order) =>
-        !isOutsideParcelOrder(order) &&
-        !isNinunulieOrder(order) &&
         orderMatchesQuery(order) &&
-        orderMatchesStatusFilter(order)
+        orderMatchesStatusFilter(order) &&
+        orderMatchesTypeFilter(order) &&
+        orderMatchesDateFilter(order)
     )
   );
+}
 
-  section.innerHTML = `
-    <div class="page-panel">
-    <article class="card">
-      <div class="table-toolbar">
-        ${renderOrderFilters()}
-        <div class="admin-inline-actions">
-          <span class="mini">${visible.length} shown</span>
-          <button class="btn primary" data-action="create-order">New order</button>
+function renderOrdersAnalytics(pool) {
+  const total = pool.length;
+  const delivered = pool.filter((order) => getOrderStatus(order) === 'delivered');
+  const cancelled = pool.filter((order) => getOrderStatus(order) === 'cancelled');
+  const pending = pool.filter((order) => getOrderStatus(order) === 'pending_assignment');
+  const moving = pool.filter((order) =>
+    ['driver_assigned', 'driver_at_pickup', 'in_transit', 'at_hub'].includes(getOrderStatus(order))
+  );
+  const revenue = delivered.reduce((sum, order) => sum + getShippingFee(order), 0);
+  const avgOrder = delivered.length ? Math.round(revenue / delivered.length) : 0;
+  const pipeline = [...pending, ...moving].reduce((sum, order) => sum + getShippingFee(order), 0);
+  const pct = (count) => (total ? Math.round((count / total) * 100) : 0);
+  const gaugePct = Math.max(0, Math.min(100, pct(delivered.length)));
+  const dash = 220;
+  const offset = dash - (dash * gaugePct) / 100;
+
+  const routeCounts = new Map();
+  pool.forEach((order) => {
+    const route = `${getPickup(order)} → ${getDropoff(order)}`.slice(0, 48);
+    routeCounts.set(route, (routeCounts.get(route) || 0) + 1);
+  });
+  const topRoutes = [...routeCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+
+  const driverCounts = new Map();
+  delivered.forEach((order) => {
+    const name = getDriverName(order);
+    if (!name || name === 'Not assigned') return;
+    driverCounts.set(name, (driverCounts.get(name) || 0) + 1);
+  });
+  const topDrivers = [...driverCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+
+  return `
+    <aside class="orders-analytics">
+      <div class="analytics-card">
+        <h3>Order overview</h3>
+        <div class="gauge-wrap">
+          <div class="gauge">
+            <svg viewBox="0 0 160 160" aria-hidden="true">
+              <path d="M20 120 A60 60 0 1 1 140 120" fill="none" stroke="#eef0f4" stroke-width="14" stroke-linecap="round"/>
+              <path d="M20 120 A60 60 0 1 1 140 120" fill="none" stroke="#FFE500" stroke-width="14" stroke-linecap="round"
+                stroke-dasharray="${dash}" stroke-dashoffset="${offset}" />
+            </svg>
+            <div class="gauge-center">
+              <strong>${escapeHtml(formatMoney(revenue).replace(/^TZS\s*/, 'TZS '))}</strong>
+              <span>${escapeHtml(String(total))} orders</span>
+            </div>
+          </div>
+        </div>
+        <div class="analytics-split">
+          <div class="analytics-stat"><span>Delivered</span><strong>${escapeHtml(String(delivered.length))}</strong></div>
+          <div class="analytics-stat"><span>Pipeline</span><strong>${escapeHtml(formatMoney(pipeline))}</strong></div>
         </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Order</th><th>Customer</th><th>Service</th><th>Route</th><th>Driver</th><th>Status</th><th>Value</th></tr>
-          </thead>
-          <tbody>
-            ${visible.length ? visible.map(orderRow).join('') : `<tr><td colspan="7">${emptyState('No orders match your search or filter.')}</td></tr>`}
-          </tbody>
-        </table>
+
+      <div class="analytics-card">
+        <h3>Orders status</h3>
+        <div class="status-bars">
+          <div class="status-bar-row">
+            <div class="status-bar-meta"><span>Delivered</span><span>${pct(delivered.length)}%</span></div>
+            <div class="status-bar-track"><i class="paid" style="width:${pct(delivered.length)}%"></i></div>
+          </div>
+          <div class="status-bar-row">
+            <div class="status-bar-meta"><span>On the road</span><span>${pct(moving.length)}%</span></div>
+            <div class="status-bar-track"><i class="moving" style="width:${pct(moving.length)}%"></i></div>
+          </div>
+          <div class="status-bar-row">
+            <div class="status-bar-meta"><span>Waiting</span><span>${pct(pending.length)}%</span></div>
+            <div class="status-bar-track"><i class="wait" style="width:${pct(pending.length)}%"></i></div>
+          </div>
+          <div class="status-bar-row">
+            <div class="status-bar-meta"><span>Cancelled</span><span>${pct(cancelled.length)}%</span></div>
+            <div class="status-bar-track"><i class="cancel" style="width:${pct(cancelled.length)}%"></i></div>
+          </div>
+        </div>
       </div>
-    </article>
+
+      <div class="analytics-card">
+        <h3>Overview</h3>
+        <div class="analytics-split">
+          <div class="analytics-stat"><span>Avg. order</span><strong>${escapeHtml(formatMoney(avgOrder))}</strong></div>
+          <div class="analytics-stat"><span>Revenue</span><strong>${escapeHtml(formatMoney(revenue))}</strong></div>
+          <div class="analytics-stat"><span>Waiting</span><strong>${escapeHtml(String(pending.length))}</strong></div>
+          <div class="analytics-stat"><span>Moving</span><strong>${escapeHtml(String(moving.length))}</strong></div>
+        </div>
+      </div>
+
+      <div class="analytics-card">
+        <h3>${topDrivers.length ? 'Top drivers' : 'Top routes'}</h3>
+        <div class="top-list">
+          ${(topDrivers.length ? topDrivers : topRoutes).length
+            ? (topDrivers.length ? topDrivers : topRoutes).map(([label, count]) => `
+              <div class="top-list-item">
+                <div class="type-thumb">${topDrivers.length ? '🛵' : '📍'}</div>
+                <div>
+                  <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+                  <span class="mini">${escapeHtml(String(count))} orders</span>
+                </div>
+                <strong>${escapeHtml(String(count))}</strong>
+              </div>
+            `).join('')
+            : `<p class="muted">No route or driver stats yet.</p>`}
+        </div>
+      </div>
+    </aside>
+  `;
+}
+
+function renderOrders() {
+  const section = getOrCreateSection('orders');
+  const pool = getCityOrdersPool();
+  const visible = getFilteredCityOrders();
+  const selectedCount = (state.selectedOrderIds || []).length;
+
+  section.innerHTML = `
+    <div class="orders-workspace">
+      <div class="orders-main">
+        <div class="orders-page-head">
+          <div>
+            <h2>Orders</h2>
+            <p class="muted">${escapeHtml(String(visible.length))} city orders · shipping fee ≠ cargo value</p>
+          </div>
+          <div class="admin-inline-actions">
+            <button class="btn dark" data-action="create-order">+ New order</button>
+            <button class="btn ghost" data-action="export-orders-csv" type="button">Export</button>
+          </div>
+        </div>
+        ${renderOrderFilters()}
+        <div class="orders-table-card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th><input type="checkbox" data-select-all-orders="true" aria-label="Select all" ${selectedCount && selectedCount === visible.length ? 'checked' : ''} /></th>
+                  <th>Order ID</th>
+                  <th>Customer</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Cargo</th>
+                  <th>Bei ya usafirishaji</th>
+                  <th>Date</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${visible.length ? visible.map(orderRow).join('') : `<tr><td colspan="9">${emptyState('No orders match your search or filter.')}</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="bulk-bar ${selectedCount ? 'visible' : ''}" id="ordersBulkBar">
+          <strong>Selected: ${escapeHtml(String(selectedCount))}</strong>
+          <button class="btn soft" type="button" data-action="export-selected-orders">Export</button>
+          <button class="btn soft" type="button" data-action="clear-order-selection">Clear</button>
+        </div>
+      </div>
+      ${renderOrdersAnalytics(pool)}
     </div>
   `;
 }
@@ -6985,9 +7266,9 @@ function renderOtherRegionsDetail(order) {
               ${renderOutsideFact('Lengo', safeText(order.outsideDestinationLabel, getDropoff(order)))}
               ${renderOutsideFact('Standi / hub', safeText(order.outsideDestinationStand, '—'))}
               ${renderOutsideFact('Uzito (kg)', safeText(order.outsideParcelWeightKg))}
-              ${renderOutsideFact('Thamani', formatDeclaredValueAdmin(order.declaredValueTzs) || '—')}
+              ${renderOutsideFact('Thamani ya mzigo', formatDeclaredValueAdmin(order.declaredValueTzs) || '—')}
               ${renderOutsideFact('Tamko la sheria', order.contentsDeclarationAccepted === true ? 'Limekubaliwa' : 'Halijarekodiwa')}
-              ${renderOutsideFact('Nauli', formatMoney(getOrderAmount(order)))}
+              ${renderOutsideFact('Bei ya usafirishaji', getShippingFee(order) > 0 ? formatMoney(getShippingFee(order)) : 'Bado haijawekwa')}
               ${renderOutsideFact('Imeundwa', formatDateTime(order.createdAt))}
             </div>
           </div>
@@ -7137,9 +7418,9 @@ function renderOtherRegions() {
               <th>Mzigo</th>
               <th>Njia</th>
               <th>Aina</th>
-              <th>Thamani</th>
+              <th>Thamani ya mzigo</th>
               <th>Hatua</th>
-              <th>Nauli</th>
+              <th>Bei ya usafirishaji</th>
               <th></th>
             </tr>
           </thead>
@@ -7168,7 +7449,7 @@ function renderOtherRegions() {
                           <td>${escapeHtml(mode)}<span class="mini">${escapeHtml(safeText(order.outsideHandoffMode))}${order.outsideParcelWeightKg ? ` · ${escapeHtml(String(order.outsideParcelWeightKg))} kg` : ''}</span></td>
                           <td>${escapeHtml(declared || '—')}${order.contentsDeclarationAccepted === true ? `<span class="mini">Tamko ✓</span>` : ''}</td>
                           <td>${pill(getOutsideLogisticsLabel(logistics), logistics === 'completed' ? 'success' : logistics === 'cancelled' ? 'danger' : logistics === 'in_transit_carrier' ? 'warning' : 'info')}</td>
-                          <td>${escapeHtml(formatMoney(getOrderAmount(order)))}</td>
+                          <td>${escapeHtml(getShippingFee(order) > 0 ? formatMoney(getShippingFee(order)) : '—')}</td>
                           <td><button class="btn primary" type="button" data-action="outside-open" data-order-id="${escapeHtml(order.id)}">Fungua</button></td>
                         </tr>
                       `;
@@ -8882,8 +9163,9 @@ function getSelectedOrder() {
 
 function openOrderDrawer(orderId) {
   state.selectedOrderId = orderId;
+  state.orderDrawerTab = state.orderDrawerTab || 'items';
   if (ui.orderDrawer) ui.orderDrawer.style.display = 'grid';
-  if (ui.content) ui.content.classList.add('has-drawer');
+  if (ui.content) ui.content.classList.remove('has-drawer');
   renderDrawer();
 }
 
@@ -8893,6 +9175,65 @@ function closeOrderDrawer(options = {}) {
   }
   if (ui.orderDrawer) ui.orderDrawer.style.display = 'none';
   if (ui.content) ui.content.classList.remove('has-drawer');
+}
+
+function openPickupMapForOrder(orderId) {
+  const order = state.orders.find((item) => item.id === orderId) || getSelectedOrder();
+  if (!order) {
+    setFeedback('Order not found.', 'error');
+    return;
+  }
+  const point = getOrderPickupPoint(order);
+  if (!point || !Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) {
+    setFeedback('Pickup coordinates missing for this order.', 'error');
+    return;
+  }
+  const url = `https://www.google.com/maps?q=${encodeURIComponent(`${point.latitude},${point.longitude}`)}`;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+async function updateShippingFee(orderId, amountRaw) {
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order) {
+    throw new Error('Order not found.');
+  }
+  const amount = Math.round(parseAmount(amountRaw));
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error('Enter a valid shipping fee in TZS.');
+  }
+  if (amount > 0 && amount < 500) {
+    throw new Error('Shipping fee looks too low. Enter the full TZS amount.');
+  }
+  const label = amount > 0 ? formatMoney(amount) : 'Bei baada ya kampuni';
+  const patch = compact({
+    shippingFeeTzs: amount,
+    carrierQuoteTzs: amount,
+    deliveryFee: amount,
+    fareLabel: label,
+    totalLabel: label,
+    // Never write cargo declared value into shipping fields.
+    quoteStatus: amount > 0
+      ? (safeText(order.quoteStatus) === 'confirmed' ? 'confirmed' : 'offered')
+      : (isOutsideParcelOrder(order) ? 'awaiting_company' : safeText(order.quoteStatus) || undefined),
+    shippingFeeSetAt: serverTimestamp(),
+    shippingFeeSetBy: state.user?.email || state.user?.uid || 'admin',
+    updatedAt: serverTimestamp(),
+  });
+  await updateDoc(orderRef(orderId), patch);
+
+  const shipmentId = safeText(order.carrierShipmentId || (isOutsideParcelOrder(order) ? order.id : ''));
+  if (shipmentId) {
+    try {
+      await updateDoc(doc(db, 'carrierShipments', shipmentId), compact({
+        cashExpected: amount,
+        fareLabel: label,
+        quoteStatus: amount > 0 ? 'offered' : 'awaiting_company',
+        updatedAt: serverTimestamp(),
+      }));
+    } catch {
+      // Shipment doc may not exist for city orders.
+    }
+  }
 }
 
 function renderTimelineStep(step, index, currentStatus, order) {
@@ -9000,105 +9341,144 @@ function renderDrawer() {
   }
 
   drawer.style.display = 'grid';
-  ui.content?.classList.add('has-drawer');
+  ui.content?.classList.remove('has-drawer');
   if (ui.drawerOrderId) ui.drawerOrderId.textContent = getOrderNumber(order);
 
   const status = getOrderStatus(order);
   const driver = getDriverById(order.driverId);
   const availableDrivers = status === 'pending_assignment' ? getNearbyDriverMatches(order).slice(0, 6) : [];
+  const tab = state.orderDrawerTab || 'items';
+  const shippingFee = getShippingFee(order);
+  const cargoValue = getCargoDeclaredValue(order);
+  const customerName = getCustomerName(order);
+  const customerContact = getCustomerContact(order);
+  const customerEmail = safeText(order.customerEmail || order.email);
+
+  const itemsTab = `
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Line items</h3>
+      <div class="modal-line-item">
+        <div class="modal-thumb">${escapeHtml(getOrderTypeIcon(order))}</div>
+        <div>
+          <strong>${escapeHtml(getOrderItemDescription(order))}</strong>
+          <span class="mini">${escapeHtml(getOrderTypeLabel(order))} · qty 1</span>
+        </div>
+        <strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong>
+      </div>
+      <div class="value-pair">
+        ${detailRow('Thamani ya mzigo', cargoValue > 0 ? formatMoney(cargoValue) : 'Haijatajwa')}
+        ${detailRow('Bei ya usafirishaji', shippingFee > 0 ? formatMoney(shippingFee) : 'Bado haijawekwa')}
+      </div>
+      <div class="modal-total">
+        <span>Total shipping</span>
+        <strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong>
+      </div>
+    </section>
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Set shipping fee</h3>
+      <form class="fee-editor" data-form="set-shipping-fee" data-order-id="${escapeHtml(order.id)}">
+        <div class="fee-editor-row">
+          <div>
+            <label for="shippingFeeInput">Bei ya usafirishaji (TZS)</label>
+            <input id="shippingFeeInput" name="shippingFeeTzs" type="number" min="0" step="100" value="${shippingFee > 0 ? escapeHtml(String(shippingFee)) : ''}" placeholder="e.g. 15000" required />
+          </div>
+          <button class="btn primary" type="submit">Save fee</button>
+        </div>
+        <p class="mini">Thamani ya mzigo (${escapeHtml(cargoValue > 0 ? formatMoney(cargoValue) : '—')}) stays customer-declared and is never copied into shipping price.</p>
+      </form>
+    </section>
+  `;
+
+  const deliveryTab = `
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Delivery route</h3>
+      <div class="detail-list">
+        ${detailRow('Pickup', getPickup(order))}
+        ${detailRow('Drop-off', getDropoff(order))}
+        ${optionalDetailRow('Route', order.routeLabel)}
+        ${optionalDetailRow('Distance', order.distanceLabel || (order.distanceMeters ? formatDistance(order.distanceMeters) : ''))}
+        ${optionalDetailRow('Travel time', order.durationLabel || (order.durationSeconds ? formatDuration(order.durationSeconds) : ''))}
+      </div>
+      <div class="admin-inline-actions">
+        <button class="btn soft" type="button" data-open-pickup-map="${escapeHtml(order.id)}">Open pickup map</button>
+      </div>
+    </section>
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Driver</h3>
+      <div class="detail-list">
+        ${detailRow('Assigned driver', driver ? safeText(driver.fullName || driver.email, 'Driver') : getDriverName(order))}
+        ${detailRow('Assignment search', getDriverSearchMessage(order))}
+        ${detailRow('Vehicle', safeText(driver?.vehicleLabel || order.driverVehicleLabel || order.driverVehicleType, 'Vehicle not assigned'))}
+        ${detailRow('Driver phone', safeText(driver?.phoneNumber || order.driverPhone, 'No phone'))}
+      </div>
+    </section>
+    ${status === 'pending_assignment' ? `
+      <section class="drawer-section">
+        <h3 class="drawer-section-title">Assign driver</h3>
+        <div class="detail-list">
+          ${availableDrivers.length ? availableDrivers.map((driverMatch) => `
+            <div class="list-card">
+              <div class="list-head"><strong>${escapeHtml(safeText(driverMatch.fullName || driverMatch.email, 'Driver'))}</strong>${pill(driverMatch.distanceLabel, driverMatch.badgeType)}${driverMatch.isPriorityMatch ? pill('Priority match', 'warning') : ''}</div>
+              <p class="muted">${escapeHtml(safeText(driverMatch.vehicleLabel || driverMatch.vehicleType, 'Vehicle'))} · ${escapeHtml(safeText(driverMatch.phoneNumber, 'No phone'))}</p>
+              <button class="btn primary" data-assign-driver="${escapeHtml(driverMatch.id)}" data-order-id="${escapeHtml(order.id)}">Assign this driver</button>
+            </div>
+          `).join('') : emptyState(`No nearby online ${safeText(order.cargoVehicleLabel || order.serviceLabel, 'HAUL')} driver right now.`)}
+        </div>
+      </section>
+    ` : ''}
+  `;
+
+  const statsTab = `
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Order stats</h3>
+      <div class="value-pair">
+        ${detailRow('Status', getOrderStatusLabel(order))}
+        ${detailRow('Payment', getOrderPaymentLabel(order))}
+        ${detailRow('Thamani ya mzigo', cargoValue > 0 ? formatMoney(cargoValue) : '—')}
+        ${detailRow('Bei ya usafirishaji', shippingFee > 0 ? formatMoney(shippingFee) : '—')}
+        ${detailRow('Created', formatDateTime(order.createdAt))}
+        ${detailRow('Updated', formatDateTime(order.updatedAt || order.createdAt))}
+      </div>
+    </section>
+    <section class="drawer-section">
+      <h3 class="drawer-section-title">Progress timeline</h3>
+      <div class="timeline">
+        ${STATUS_FLOW.map((step, index) => renderTimelineStep(step, index, status, order)).join('')}
+      </div>
+    </section>
+  `;
 
   drawer.innerHTML = `
-    <div class="drawer-head">
-      <div class="drawer-title-row">
-        <div>
-          <span class="eyebrow">Selected order</span>
-          <h2 id="drawerOrderId">${escapeHtml(getOrderNumber(order))}</h2>
-          <p class="muted">${escapeHtml(getServiceLabel(order))} · ${escapeHtml(safeText(order.scheduleLabel || order.schedule || 'Dispatch now'))}</p>
-        </div>
-        <button class="drawer-close" id="closeDrawer" data-close-drawer="true">×</button>
-      </div>
-      <div class="quick-grid">
-        <div class="quick-card"><span>Status</span><strong>${escapeHtml(getOrderStatusLabel(order))}</strong></div>
-        <div class="quick-card"><span>Value</span><strong>${escapeHtml(formatMoney(getOrderAmount(order)))}</strong></div>
-      </div>
-    </div>
-
-    <div class="drawer-body">
-      <section class="drawer-section">
-        <h3 class="drawer-section-title">Customer information</h3>
-        <div class="detail-list">
-          ${detailRow('Sender name', getCustomerName(order))}
-          ${detailRow('Sender contact', getCustomerContact(order))}
-          ${detailRow('Recipient name', getRecipientName(order))}
-          ${detailRow('Recipient phone', getRecipientContact(order))}
-          ${optionalDetailRow('Customer email', order.customerEmail || order.email)}
-        </div>
-      </section>
-
-      <section class="drawer-section">
-        <h3 class="drawer-section-title">Delivery route</h3>
-        <div class="detail-list">
-          ${detailRow('Pickup', getPickup(order))}
-          ${detailRow('Drop-off', getDropoff(order))}
-          ${optionalDetailRow('Route', order.routeLabel)}
-          ${optionalDetailRow('Distance', order.distanceLabel || (order.distanceMeters ? formatDistance(order.distanceMeters) : ''))}
-          ${optionalDetailRow('Travel time', order.durationLabel || (order.durationSeconds ? formatDuration(order.durationSeconds) : ''))}
-        </div>
-      </section>
-
-      <section class="drawer-section">
-        <h3 class="drawer-section-title">Driver</h3>
-        <div class="detail-list">
-          ${detailRow('Assigned driver', driver ? safeText(driver.fullName || driver.email, 'Driver') : getDriverName(order))}
-          ${detailRow('Assignment search', getDriverSearchMessage(order))}
-          ${detailRow('Vehicle', safeText(driver?.vehicleLabel || order.driverVehicleLabel || order.driverVehicleType, 'Vehicle not assigned'))}
-          ${detailRow('Driver phone', safeText(driver?.phoneNumber || order.driverPhone, 'No phone'))}
-        </div>
-      </section>
-
-      <section class="drawer-section">
-        <h3 class="drawer-section-title">Order details</h3>
-        <div class="detail-list">
-          ${detailRow('Order number', getOrderNumber(order))}
-          ${detailRow('Firestore ID', order.id)}
-          ${optionalDetailRow('Linked user ID', order.userId || order.customerId)}
-          ${detailRow('Service', getServiceLabel(order))}
-          ${detailRow('Status', getOrderStatusLabel(order))}
-          ${detailRow('Payment', getOrderPaymentLabel(order))}
-          ${detailRow('Schedule', getOrderScheduleLabel(order))}
-          ${detailRow('Package or cargo', getOrderItemDescription(order))}
-          ${detailRow('Created', formatDateTime(order.createdAt))}
-          ${detailRow('Updated', formatDateTime(order.updatedAt || order.createdAt))}
-          ${optionalDetailRow('Cancellation reason', order.cancellationReason || order.autoCancelledReason)}
-        </div>
-      </section>
-
-      <section class="drawer-section">
-        <h3 class="drawer-section-title">Progress timeline</h3>
-        <div class="timeline">
-          ${STATUS_FLOW.map((step, index) => renderTimelineStep(step, index, status, order)).join('')}
-        </div>
-      </section>
-
-      ${status === 'pending_assignment' ? `
-        <section class="drawer-section">
-          <h3 class="drawer-section-title">Assign driver</h3>
-          <div class="detail-list">
-            ${availableDrivers.length ? availableDrivers.map((driverMatch) => `
-              <div class="list-card">
-                <div class="list-head"><strong>${escapeHtml(safeText(driverMatch.fullName || driverMatch.email, 'Driver'))}</strong>${pill(driverMatch.distanceLabel, driverMatch.badgeType)}${driverMatch.isPriorityMatch ? pill('Priority match', 'warning') : ''}</div>
-                <p class="muted">${escapeHtml(safeText(driverMatch.vehicleLabel || driverMatch.vehicleType, 'Vehicle'))} · ${escapeHtml(safeText(driverMatch.phoneNumber, 'No phone'))}</p>
-                <span class="mini">${escapeHtml(driverMatch.etaLabel)}${driverMatch.supportsOrder === false ? ' · Vehicle check needed' : ''}${driverMatch.isPriorityMatch ? ' · priority within 4 km' : ''} · fair score ${escapeHtml(String(Math.round(driverMatch.matchScore)))}</span>
-                <button class="btn primary" data-assign-driver="${escapeHtml(driverMatch.id)}" data-order-id="${escapeHtml(order.id)}">Assign this driver</button>
-              </div>
-            `).join('') : emptyState(`No nearby online ${safeText(order.cargoVehicleLabel || order.serviceLabel, 'doordrop')} driver right now. The order will auto-cancel if no match appears in time.`)}
+    <div class="order-modal" data-stop-drawer-backdrop="true">
+      <div class="drawer-head">
+        <div class="drawer-title-row">
+          <div>
+            <span class="eyebrow">Order</span>
+            <h2 id="drawerOrderId">${escapeHtml(getOrderNumber(order))}</h2>
+            <p class="muted">${escapeHtml(getOrderTypeLabel(order))} · ${escapeHtml(getOrderStatusLabel(order))}</p>
           </div>
-        </section>
-      ` : ''}
-    </div>
-
-    <div class="drawer-actions">
-      ${renderStatusButtons(order)}
+          <button class="drawer-close" id="closeDrawer" data-close-drawer="true">×</button>
+        </div>
+        <div class="drawer-customer">
+          <strong>${escapeHtml(customerName)}</strong>
+          <div class="drawer-customer-meta">
+            <span>${escapeHtml(customerContact)}</span>
+            ${customerEmail ? `<span>${escapeHtml(customerEmail)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="drawer-tabs">
+        <button class="drawer-tab ${tab === 'items' ? 'active' : ''}" type="button" data-drawer-tab="items">Order items</button>
+        <button class="drawer-tab ${tab === 'delivery' ? 'active' : ''}" type="button" data-drawer-tab="delivery">Delivery</button>
+        <button class="drawer-tab ${tab === 'stats' ? 'active' : ''}" type="button" data-drawer-tab="stats">Stats</button>
+      </div>
+      <div class="drawer-body">
+        ${tab === 'delivery' ? deliveryTab : tab === 'stats' ? statsTab : itemsTab}
+      </div>
+      <div class="drawer-actions">
+        <button class="btn soft" type="button" data-open-pickup-map="${escapeHtml(order.id)}">Map</button>
+        ${renderStatusButtons(order)}
+      </div>
     </div>
   `;
 }
@@ -9888,6 +10268,46 @@ function bindEvents() {
       setOutsideCityActive(cityKey, enabled)
         .catch((error) => setFeedback(error.message || 'Could not update region listing.', 'error'))
         .finally(() => setBusy(false));
+      return;
+    }
+
+    if (target.matches('[data-order-filter-select]')) {
+      state.orderFilter = target.value || 'all';
+      renderCurrentPage();
+      return;
+    }
+
+    if (target.matches('[data-order-type-filter-select]')) {
+      state.orderTypeFilter = target.value || 'all';
+      renderCurrentPage();
+      return;
+    }
+
+    if (target.matches('[data-order-date-filter-select]')) {
+      state.orderDateFilter = target.value || 'all';
+      renderCurrentPage();
+      return;
+    }
+
+    if (target.matches('[data-select-order]')) {
+      const orderId = target.dataset.selectOrder;
+      if (!orderId) return;
+      const selected = new Set(state.selectedOrderIds || []);
+      if (target instanceof HTMLInputElement && target.checked) {
+        selected.add(orderId);
+      } else {
+        selected.delete(orderId);
+      }
+      state.selectedOrderIds = [...selected];
+      renderCurrentPage();
+      return;
+    }
+
+    if (target.matches('[data-select-all-orders]')) {
+      const visible = getFilteredCityOrders();
+      const checked = target instanceof HTMLInputElement && target.checked;
+      state.selectedOrderIds = checked ? visible.map((order) => order.id) : [];
+      renderCurrentPage();
     }
   });
 
@@ -9923,6 +10343,28 @@ function bindEvents() {
         setFeedback('Manual order created successfully.', 'success');
       } catch (error) {
         setFeedback(error.message || 'Could not create the manual order.', 'error');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    if (form.dataset.form === 'set-shipping-fee') {
+      event.preventDefault();
+      const orderId = safeText(form.dataset.orderId || new FormData(form).get('orderId'));
+      const amount = new FormData(form).get('shippingFeeTzs');
+      if (!orderId) {
+        setFeedback('Order not found.', 'error');
+        return;
+      }
+      try {
+        setBusy(true);
+        await updateShippingFee(orderId, amount);
+        setFeedback('Bei ya usafirishaji imehifadhiwa.', 'success');
+        scheduleRenderAll();
+        renderDrawer();
+      } catch (error) {
+        setFeedback(error.message || 'Could not save shipping fee.', 'error');
       } finally {
         setBusy(false);
       }
@@ -10229,6 +10671,22 @@ function bindEvents() {
       return;
     }
 
+    if (target.dataset.drawerTab) {
+      state.orderDrawerTab = target.dataset.drawerTab;
+      renderDrawer();
+      return;
+    }
+
+    if (target.dataset.openPickupMap) {
+      openPickupMapForOrder(target.dataset.openPickupMap);
+      return;
+    }
+
+    if (target.closest?.('.order-drawer') && !target.closest?.('[data-stop-drawer-backdrop]')) {
+      closeOrderDrawer();
+      return;
+    }
+
     if (target.dataset.driverFilter) {
       state.driverFilter = target.dataset.driverFilter;
       renderCurrentPage();
@@ -10525,6 +10983,15 @@ function bindEvents() {
     }
     if (action === 'create-order') {
       openCreateOrderModal();
+      return;
+    }
+    if (action === 'clear-order-selection') {
+      state.selectedOrderIds = [];
+      renderCurrentPage();
+      return;
+    }
+    if (action === 'export-orders-csv' || action === 'export-selected-orders') {
+      exportOrdersCsv(action === 'export-selected-orders');
       return;
     }
     if (action === 'add-driver') {
@@ -11071,9 +11538,68 @@ function copyTextToClipboard(text) {
   return Promise.resolve();
 }
 
+function exportOrdersCsv(selectedOnly = false) {
+  const selected = new Set(state.selectedOrderIds || []);
+  const source = selectedOnly
+    ? getFilteredCityOrders().filter((order) => selected.has(order.id))
+    : getFilteredCityOrders();
+  if (!source.length) {
+    setFeedback(selectedOnly ? 'No selected orders to export.' : 'No orders to export.', 'info');
+    return;
+  }
+  const rows = [
+    [
+      'Order ID',
+      'Customer',
+      'Type',
+      'Status',
+      'Driver',
+      'Pickup',
+      'Drop-off',
+      'Thamani ya mzigo',
+      'Bei ya usafirishaji',
+      'Date',
+    ],
+    ...source.map((order) => [
+      getOrderNumber(order),
+      getCustomerName(order),
+      getOrderTypeLabel(order),
+      getOrderStatusLabel(order),
+      getDriverName(order),
+      getPickup(order),
+      getDropoff(order),
+      getCargoDeclaredValue(order) > 0 ? formatMoney(getCargoDeclaredValue(order)) : '',
+      getShippingFee(order) > 0 ? formatMoney(getShippingFee(order)) : '',
+      formatDateTime(order.createdAt),
+    ]),
+  ];
+  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `haul-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setFeedback(`Exported ${source.length} order${source.length === 1 ? '' : 's'}.`, 'success');
+}
+
 function exportReportCsv() {
   const rows = [
-    ['Order ID', 'Customer', 'Service', 'Status', 'Driver', 'Pickup', 'Drop-off', 'Value', 'Updated'],
+    [
+      'Order ID',
+      'Customer',
+      'Service',
+      'Status',
+      'Driver',
+      'Pickup',
+      'Drop-off',
+      'Thamani ya mzigo',
+      'Bei ya usafirishaji',
+      'Updated',
+    ],
     ...sortByRecent(state.orders).map((order) => [
       getOrderNumber(order),
       getCustomerName(order),
@@ -11082,6 +11608,7 @@ function exportReportCsv() {
       getDriverName(order),
       getPickup(order),
       getDropoff(order),
+      getCargoDeclaredValue(order) > 0 ? formatMoney(getCargoDeclaredValue(order)) : '',
       formatMoney(getOrderAmount(order)),
       formatDateTime(order.updatedAt || order.createdAt),
     ]),

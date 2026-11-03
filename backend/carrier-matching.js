@@ -54,14 +54,17 @@ function normalize(value) {
 }
 
 function moneyFromOrder(order) {
-  if (order?.quoteStatus === 'awaiting_company') return 0;
-  const quoted = Math.round(Number(order?.carrierQuoteTzs) || 0);
+  // Shipping/transport fee only — never customer-declared cargo value (thamani ya mzigo).
+  const quoted = Math.round(Number(order?.carrierQuoteTzs || order?.shippingFeeTzs || order?.deliveryFeeTzs) || 0);
+  if (order?.quoteStatus === 'awaiting_company') return quoted > 0 ? quoted : 0;
   if (order?.quoteStatus === 'offered' || order?.quoteStatus === 'confirmed') return quoted > 0 ? quoted : 0;
+  if (quoted > 0) return quoted;
   const source = `${order.totalLabel || ''} ${order.fareLabel || ''}`.replace(/,/g, '');
+  if (/baada|awaiting|kampuni|quote/i.test(source)) return 0;
   const match = source.match(/(\d+(?:\.\d+)?)/);
   if (match) return Math.round(Number(match[1]));
-  const offer = Number(order.customerOffer || order.declaredValueTzs || 0);
-  return Number.isFinite(offer) ? Math.round(offer) : 0;
+  const offer = Number(order.customerOffer || 0);
+  return Number.isFinite(offer) && offer > 0 ? Math.round(offer) : 0;
 }
 
 function weightKg(order) {
