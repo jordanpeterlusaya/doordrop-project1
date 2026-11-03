@@ -172,7 +172,7 @@ const SERVICE_CATALOG = [
 
 const PAGE_META = {
   dashboard: ['Dashboard', 'Orders, drivers, and revenue at a glance.'],
-  orders: ['Orders', 'Track requests from booking to delivery.'],
+  orders: ['Orders', 'HAUL order desk'],
   dispatch: ['Dispatch', 'Assign waiting orders to nearby drivers.'],
   services: ['Services', 'Parcel, TOYO, and Kirikuu performance.'],
   customers: ['Customers', 'Profiles, activity, and support.'],
@@ -3320,6 +3320,7 @@ function setPage(page, options = {}) {
   if (ui.pageTitle) ui.pageTitle.textContent = PAGE_META[page][0];
   if (ui.pageSubtitle) ui.pageSubtitle.textContent = PAGE_META[page][1];
   if (ui.sidebar) ui.sidebar.classList.remove('open');
+  document.body.classList.toggle('orders-desk', page === 'orders');
   closeOrderDrawer({ preserveSelection: !!options.preserveSelection });
 
   renderCurrentPage();
@@ -3408,7 +3409,7 @@ function renderFilterBar(filters, current, datasetKey) {
 }
 
 const ORDER_FILTERS = [
-  { id: 'all', label: 'All statuses' },
+  { id: 'all', label: 'Status' },
   { id: 'pending_assignment', label: 'Waiting' },
   { id: 'moving', label: 'On the road' },
   { id: 'delivered', label: 'Delivered' },
@@ -3416,14 +3417,14 @@ const ORDER_FILTERS = [
 ];
 
 const ORDER_TYPE_FILTERS = [
-  { id: 'all', label: 'All types' },
+  { id: 'all', label: 'Type' },
   { id: 'parcel', label: 'Parcel' },
   { id: 'toyo', label: 'TOYO / Cargo' },
   { id: 'kirikuu', label: 'Kirikuu' },
 ];
 
 const ORDER_DATE_FILTERS = [
-  { id: 'all', label: 'All dates' },
+  { id: 'all', label: 'Order date' },
   { id: 'today', label: 'Today' },
   { id: '7d', label: 'Last 7 days' },
   { id: '30d', label: 'Last 30 days' },
@@ -3567,12 +3568,23 @@ function renderFilterSelect(filters, current, datasetKey, ariaLabel) {
 }
 
 function renderOrderFilters() {
+  const typeFilter = state.orderTypeFilter || 'all';
+  const statusFilter = state.orderFilter || 'all';
+  const dateFilter = state.orderDateFilter || 'all';
+  const activeCount = [typeFilter, statusFilter, dateFilter].filter((value) => value !== 'all').length;
+  const typeFilters = ORDER_TYPE_FILTERS.map((filter) =>
+    filter.id === 'all'
+      ? { ...filter, label: typeFilter !== 'all' ? 'Type (1)' : 'Type' }
+      : filter
+  );
   return `
     <div class="orders-filters">
-      ${renderFilterSelect(ORDER_TYPE_FILTERS, state.orderTypeFilter || 'all', 'orderTypeFilter', 'Type')}
-      ${renderFilterSelect(ORDER_FILTERS, state.orderFilter || 'all', 'orderFilter', 'Status')}
-      ${renderFilterSelect(ORDER_DATE_FILTERS, state.orderDateFilter || 'all', 'orderDateFilter', 'Order date')}
-      <span class="mini">${escapeHtml(String((state.selectedOrderIds || []).length))} selected</span>
+      ${renderFilterSelect(typeFilters, typeFilter, 'orderTypeFilter', 'Type')}
+      ${renderFilterSelect(ORDER_FILTERS, statusFilter, 'orderFilter', 'Status')}
+      ${renderFilterSelect(ORDER_DATE_FILTERS, dateFilter, 'orderDateFilter', 'Order date')}
+      <button class="filter-chip ${activeCount ? 'active' : ''}" type="button" data-action="clear-order-filters" title="Reset filters">
+        All filters${activeCount ? ` · ${activeCount}` : ''}
+      </button>
     </div>
   `;
 }
@@ -3598,35 +3610,37 @@ function orderRow(order) {
   const shippingFee = getShippingFee(order);
   const cargoValue = getCargoDeclaredValue(order);
   const name = getCustomerName(order);
+  const orderNo = getOrderNumber(order);
+  const shortNo = orderNo.startsWith('#') ? orderNo : `#${orderNo.replace(/^order[_-]?/i, '').slice(-5) || orderNo}`;
   return `
     <tr data-order="${escapeHtml(order.id)}" class="${selected ? 'selected' : ''}">
       <td onclick="event.stopPropagation()">
         <input type="checkbox" data-select-order="${escapeHtml(order.id)}" ${selected ? 'checked' : ''} aria-label="Select order" />
       </td>
-      <td><span class="order-id">${escapeHtml(getOrderNumber(order))}</span></td>
+      <td><span class="order-id" title="${escapeHtml(orderNo)}">${escapeHtml(shortNo)}</span></td>
       <td>
         <div class="person-cell">
           <div class="avatar-chip">${escapeHtml(getInitials(name))}</div>
-          <div>
-            <strong>${escapeHtml(name)}</strong>
-            <span class="mini">${escapeHtml(getCustomerContact(order))}</span>
-          </div>
+          <strong>${escapeHtml(name)}</strong>
         </div>
       </td>
-      <td>${escapeHtml(getOrderTypeLabel(order))}</td>
-      <td><span class="status-dot ${escapeHtml(statusClass)}">${escapeHtml(getOrderStatusLabel(order))}</span></td>
-      <td><div class="type-thumb" title="${escapeHtml(getOrderItemDescription(order))}">${escapeHtml(getOrderTypeIcon(order))}</div></td>
+      <td><span class="type-label">${escapeHtml(getOrderTypeLabel(order))}</span></td>
+      <td><span class="status-chip ${escapeHtml(statusClass)}">${escapeHtml(getOrderStatusLabel(order))}</span></td>
+      <td>
+        <div class="product-thumbs" title="${escapeHtml(getOrderItemDescription(order))}">
+          <span class="product-thumb">${escapeHtml(getOrderTypeIcon(order))}</span>
+        </div>
+      </td>
       <td>
         <div class="money-stack">
           <strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong>
-          <span class="mini">Bei ya usafirishaji</span>
-          ${cargoValue > 0 ? `<span class="mini">Thamani: ${escapeHtml(formatMoney(cargoValue))}</span>` : ''}
+          ${cargoValue > 0 ? `<span class="mini">Thamani ${escapeHtml(formatMoney(cargoValue))}</span>` : ''}
         </div>
       </td>
-      <td>${escapeHtml(formatShortDate(order.createdAt))}</td>
+      <td class="date-cell">${escapeHtml(formatShortDate(order.createdAt))}</td>
       <td onclick="event.stopPropagation()">
         <div class="row-actions">
-          <button class="icon-btn" type="button" title="Open pickup map" data-open-pickup-map="${escapeHtml(order.id)}">🗺️</button>
+          <button class="icon-btn" type="button" title="Open pickup map" data-open-pickup-map="${escapeHtml(order.id)}">↗</button>
           <button class="icon-btn" type="button" title="Order details" data-open-order="${escapeHtml(order.id)}">⋯</button>
         </div>
       </td>
@@ -5094,14 +5108,19 @@ function renderOrdersAnalytics(pool) {
   const revenue = delivered.reduce((sum, order) => sum + getShippingFee(order), 0);
   const avgOrder = delivered.length ? Math.round(revenue / delivered.length) : 0;
   const pipeline = [...pending, ...moving].reduce((sum, order) => sum + getShippingFee(order), 0);
+  const cargoVolume = pool.reduce((sum, order) => sum + getCargoDeclaredValue(order), 0);
   const pct = (count) => (total ? Math.round((count / total) * 100) : 0);
-  const gaugePct = Math.max(0, Math.min(100, pct(delivered.length)));
+  const deliveredPct = pct(delivered.length);
+  const movingPct = pct(moving.length);
+  const waitingPct = pct(pending.length);
+  const cancelPct = Math.max(0, 100 - deliveredPct - movingPct - waitingPct);
+  const gaugePct = Math.max(0, Math.min(100, deliveredPct || (total ? 12 : 0)));
   const dash = 220;
   const offset = dash - (dash * gaugePct) / 100;
 
   const routeCounts = new Map();
   pool.forEach((order) => {
-    const route = `${getPickup(order)} → ${getDropoff(order)}`.slice(0, 48);
+    const route = `${getPickup(order)} → ${getDropoff(order)}`.slice(0, 42);
     routeCounts.set(route, (routeCounts.get(route) || 0) + 1);
   });
   const topRoutes = [...routeCounts.entries()]
@@ -5117,11 +5136,13 @@ function renderOrdersAnalytics(pool) {
   const topDrivers = [...driverCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4);
+  const topList = topDrivers.length ? topDrivers : topRoutes;
+  const topTitle = topDrivers.length ? 'Top drivers' : 'Top routes';
 
   return `
     <aside class="orders-analytics">
       <div class="analytics-card">
-        <h3>Order overview</h3>
+        <h3>Receipt of goods</h3>
         <div class="gauge-wrap">
           <div class="gauge">
             <svg viewBox="0 0 160 160" aria-hidden="true">
@@ -5130,61 +5151,68 @@ function renderOrdersAnalytics(pool) {
                 stroke-dasharray="${dash}" stroke-dashoffset="${offset}" />
             </svg>
             <div class="gauge-center">
-              <strong>${escapeHtml(formatMoney(revenue).replace(/^TZS\s*/, 'TZS '))}</strong>
-              <span>${escapeHtml(String(total))} orders</span>
+              <strong>${escapeHtml(formatMoney(revenue))}</strong>
+              <span>from ${escapeHtml(String(total))} orders</span>
             </div>
           </div>
         </div>
-        <div class="analytics-split">
-          <div class="analytics-stat"><span>Delivered</span><strong>${escapeHtml(String(delivered.length))}</strong></div>
-          <div class="analytics-stat"><span>Pipeline</span><strong>${escapeHtml(formatMoney(pipeline))}</strong></div>
+        <div class="analytics-split receipt-split">
+          <div class="analytics-stat">
+            <strong>${escapeHtml(formatMoney(revenue))}</strong>
+            <span>${escapeHtml(String(delivered.length))} delivered</span>
+          </div>
+          <div class="analytics-stat">
+            <strong>${escapeHtml(formatMoney(pipeline))}</strong>
+            <span>${escapeHtml(String(pending.length + moving.length))} in pipeline</span>
+          </div>
         </div>
       </div>
 
       <div class="analytics-card">
         <h3>Orders status</h3>
-        <div class="status-bars">
-          <div class="status-bar-row">
-            <div class="status-bar-meta"><span>Delivered</span><span>${pct(delivered.length)}%</span></div>
-            <div class="status-bar-track"><i class="paid" style="width:${pct(delivered.length)}%"></i></div>
+        <div class="status-segment">
+          <div class="status-segment-track" aria-hidden="true">
+            <i class="paid" style="width:${deliveredPct}%"></i>
+            <i class="moving" style="width:${movingPct}%"></i>
+            <i class="wait" style="width:${waitingPct}%"></i>
+            <i class="cancel" style="width:${cancelPct}%"></i>
           </div>
-          <div class="status-bar-row">
-            <div class="status-bar-meta"><span>On the road</span><span>${pct(moving.length)}%</span></div>
-            <div class="status-bar-track"><i class="moving" style="width:${pct(moving.length)}%"></i></div>
-          </div>
-          <div class="status-bar-row">
-            <div class="status-bar-meta"><span>Waiting</span><span>${pct(pending.length)}%</span></div>
-            <div class="status-bar-track"><i class="wait" style="width:${pct(pending.length)}%"></i></div>
-          </div>
-          <div class="status-bar-row">
-            <div class="status-bar-meta"><span>Cancelled</span><span>${pct(cancelled.length)}%</span></div>
-            <div class="status-bar-track"><i class="cancel" style="width:${pct(cancelled.length)}%"></i></div>
+          <div class="status-segment-legend">
+            <span><i class="paid"></i>Delivered ${deliveredPct}%</span>
+            <span><i class="moving"></i>Moving ${movingPct}%</span>
+            <span><i class="wait"></i>Waiting ${waitingPct}%</span>
+            <span><i class="cancel"></i>Cancelled ${pct(cancelled.length)}%</span>
           </div>
         </div>
       </div>
 
       <div class="analytics-card">
-        <h3>Overview</h3>
-        <div class="analytics-split">
-          <div class="analytics-stat"><span>Avg. order</span><strong>${escapeHtml(formatMoney(avgOrder))}</strong></div>
-          <div class="analytics-stat"><span>Revenue</span><strong>${escapeHtml(formatMoney(revenue))}</strong></div>
-          <div class="analytics-stat"><span>Waiting</span><strong>${escapeHtml(String(pending.length))}</strong></div>
-          <div class="analytics-stat"><span>Moving</span><strong>${escapeHtml(String(moving.length))}</strong></div>
+        <div class="analytics-card-head">
+          <h3>Overview</h3>
+          <span class="mini">This month</span>
+        </div>
+        <div class="overview-grid">
+          <div class="overview-stat"><strong>${escapeHtml(formatMoney(avgOrder))}</strong><span>Average order</span></div>
+          <div class="overview-stat"><strong>${escapeHtml(formatMoney(revenue))}</strong><span>Total revenue</span></div>
+          <div class="overview-stat"><strong>${escapeHtml(String(pending.length))}</strong><span>Waiting</span></div>
+          <div class="overview-stat"><strong>${escapeHtml(String(moving.length))}</strong><span>On the road</span></div>
+          <div class="overview-stat"><strong>${escapeHtml(formatMoney(cargoVolume))}</strong><span>Declared cargo</span></div>
+          <div class="overview-stat"><strong>${escapeHtml(`${pct(cancelled.length)}%`)}</strong><span>Cancel rate</span></div>
         </div>
       </div>
 
       <div class="analytics-card">
-        <h3>${topDrivers.length ? 'Top drivers' : 'Top routes'}</h3>
+        <h3>${escapeHtml(topTitle)}</h3>
         <div class="top-list">
-          ${(topDrivers.length ? topDrivers : topRoutes).length
-            ? (topDrivers.length ? topDrivers : topRoutes).map(([label, count]) => `
+          ${topList.length
+            ? topList.map(([label, count]) => `
               <div class="top-list-item">
-                <div class="type-thumb">${topDrivers.length ? '🛵' : '📍'}</div>
+                <div class="product-thumb">${topDrivers.length ? '🛵' : '📍'}</div>
                 <div>
                   <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
                   <span class="mini">${escapeHtml(String(count))} orders</span>
                 </div>
-                <strong>${escapeHtml(String(count))}</strong>
+                <span class="top-count">${escapeHtml(String(count))}</span>
               </div>
             `).join('')
             : `<p class="muted">No route or driver stats yet.</p>`}
@@ -5204,12 +5232,9 @@ function renderOrders() {
     <div class="orders-workspace">
       <div class="orders-main">
         <div class="orders-page-head">
-          <div>
-            <h2>Orders</h2>
-            <p class="muted">${escapeHtml(String(visible.length))} city orders · shipping fee ≠ cargo value</p>
-          </div>
-          <div class="admin-inline-actions">
-            <button class="btn dark" data-action="create-order">+ New order</button>
+          <h2>Orders</h2>
+          <div class="orders-head-actions">
+            <button class="btn dark" data-action="create-order" type="button" title="Create order">+ Import</button>
             <button class="btn ghost" data-action="export-orders-csv" type="button">Export</button>
           </div>
         </div>
@@ -5219,13 +5244,13 @@ function renderOrders() {
             <table>
               <thead>
                 <tr>
-                  <th><input type="checkbox" data-select-all-orders="true" aria-label="Select all" ${selectedCount && selectedCount === visible.length ? 'checked' : ''} /></th>
-                  <th>Order ID</th>
+                  <th class="col-check"><input type="checkbox" data-select-all-orders="true" aria-label="Select all" ${selectedCount && selectedCount === visible.length ? 'checked' : ''} /></th>
+                  <th>Order #</th>
                   <th>Customer</th>
                   <th>Type</th>
                   <th>Status</th>
-                  <th>Cargo</th>
-                  <th>Bei ya usafirishaji</th>
+                  <th>Product</th>
+                  <th>Total</th>
                   <th>Date</th>
                   <th></th>
                 </tr>
@@ -5240,6 +5265,7 @@ function renderOrders() {
           <strong>Selected: ${escapeHtml(String(selectedCount))}</strong>
           <button class="btn soft" type="button" data-action="export-selected-orders">Export</button>
           <button class="btn soft" type="button" data-action="clear-order-selection">Clear</button>
+          <button class="btn soft danger-ghost" type="button" data-action="clear-order-selection" title="Clear selection">⌫</button>
         </div>
       </div>
       ${renderOrdersAnalytics(pool)}
@@ -9356,7 +9382,6 @@ function renderDrawer() {
 
   const itemsTab = `
     <section class="drawer-section">
-      <h3 class="drawer-section-title">Line items</h3>
       <div class="modal-line-item">
         <div class="modal-thumb">${escapeHtml(getOrderTypeIcon(order))}</div>
         <div>
@@ -9370,19 +9395,18 @@ function renderDrawer() {
         ${detailRow('Bei ya usafirishaji', shippingFee > 0 ? formatMoney(shippingFee) : 'Bado haijawekwa')}
       </div>
       <div class="modal-total">
-        <span>Total shipping</span>
+        <span>Total</span>
         <strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong>
       </div>
     </section>
     <section class="drawer-section">
-      <h3 class="drawer-section-title">Set shipping fee</h3>
       <form class="fee-editor" data-form="set-shipping-fee" data-order-id="${escapeHtml(order.id)}">
         <div class="fee-editor-row">
           <div>
             <label for="shippingFeeInput">Bei ya usafirishaji (TZS)</label>
             <input id="shippingFeeInput" name="shippingFeeTzs" type="number" min="0" step="100" value="${shippingFee > 0 ? escapeHtml(String(shippingFee)) : ''}" placeholder="e.g. 15000" required />
           </div>
-          <button class="btn primary" type="submit">Save fee</button>
+          <button class="btn dark" type="submit">Save fee</button>
         </div>
         <p class="mini">Thamani ya mzigo (${escapeHtml(cargoValue > 0 ? formatMoney(cargoValue) : '—')}) stays customer-declared and is never copied into shipping price.</p>
       </form>
@@ -9391,7 +9415,6 @@ function renderDrawer() {
 
   const deliveryTab = `
     <section class="drawer-section">
-      <h3 class="drawer-section-title">Delivery route</h3>
       <div class="detail-list">
         ${detailRow('Pickup', getPickup(order))}
         ${detailRow('Drop-off', getDropoff(order))}
@@ -9400,7 +9423,7 @@ function renderDrawer() {
         ${optionalDetailRow('Travel time', order.durationLabel || (order.durationSeconds ? formatDuration(order.durationSeconds) : ''))}
       </div>
       <div class="admin-inline-actions">
-        <button class="btn soft" type="button" data-open-pickup-map="${escapeHtml(order.id)}">Open pickup map</button>
+        <button class="btn dark" type="button" data-open-pickup-map="${escapeHtml(order.id)}">Open Google Maps</button>
       </div>
     </section>
     <section class="drawer-section">
@@ -9430,14 +9453,13 @@ function renderDrawer() {
 
   const statsTab = `
     <section class="drawer-section">
-      <h3 class="drawer-section-title">Order stats</h3>
-      <div class="value-pair">
-        ${detailRow('Status', getOrderStatusLabel(order))}
-        ${detailRow('Payment', getOrderPaymentLabel(order))}
-        ${detailRow('Thamani ya mzigo', cargoValue > 0 ? formatMoney(cargoValue) : '—')}
-        ${detailRow('Bei ya usafirishaji', shippingFee > 0 ? formatMoney(shippingFee) : '—')}
-        ${detailRow('Created', formatDateTime(order.createdAt))}
-        ${detailRow('Updated', formatDateTime(order.updatedAt || order.createdAt))}
+      <div class="overview-grid modal-stats-grid">
+        <div class="overview-stat"><strong>${escapeHtml(getOrderStatusLabel(order))}</strong><span>Status</span></div>
+        <div class="overview-stat"><strong>${escapeHtml(getOrderPaymentLabel(order))}</strong><span>Payment</span></div>
+        <div class="overview-stat"><strong>${escapeHtml(cargoValue > 0 ? formatMoney(cargoValue) : '—')}</strong><span>Thamani ya mzigo</span></div>
+        <div class="overview-stat"><strong>${escapeHtml(shippingFee > 0 ? formatMoney(shippingFee) : '—')}</strong><span>Bei ya usafirishaji</span></div>
+        <div class="overview-stat"><strong>${escapeHtml(formatShortDate(order.createdAt))}</strong><span>Created</span></div>
+        <div class="overview-stat"><strong>${escapeHtml(formatShortDate(order.updatedAt || order.createdAt))}</strong><span>Updated</span></div>
       </div>
     </section>
     <section class="drawer-section">
@@ -9448,22 +9470,27 @@ function renderDrawer() {
     </section>
   `;
 
+  const orderNo = getOrderNumber(order);
   drawer.innerHTML = `
     <div class="order-modal" data-stop-drawer-backdrop="true">
       <div class="drawer-head">
         <div class="drawer-title-row">
-          <div>
-            <span class="eyebrow">Order</span>
-            <h2 id="drawerOrderId">${escapeHtml(getOrderNumber(order))}</h2>
-            <p class="muted">${escapeHtml(getOrderTypeLabel(order))} · ${escapeHtml(getOrderStatusLabel(order))}</p>
+          <h2 id="drawerOrderId">Order ${escapeHtml(orderNo.startsWith('#') ? orderNo : `#${orderNo}`)}</h2>
+          <div class="drawer-head-actions">
+            <button class="icon-btn" type="button" title="Open pickup map" data-open-pickup-map="${escapeHtml(order.id)}">↗</button>
+            <button class="drawer-close" id="closeDrawer" data-close-drawer="true" aria-label="Close">×</button>
           </div>
-          <button class="drawer-close" id="closeDrawer" data-close-drawer="true">×</button>
         </div>
         <div class="drawer-customer">
-          <strong>${escapeHtml(customerName)}</strong>
-          <div class="drawer-customer-meta">
-            <span>${escapeHtml(customerContact)}</span>
-            ${customerEmail ? `<span>${escapeHtml(customerEmail)}</span>` : ''}
+          <div class="person-cell">
+            <div class="avatar-chip">${escapeHtml(getInitials(customerName))}</div>
+            <div>
+              <strong>${escapeHtml(customerName)}</strong>
+              <div class="drawer-customer-meta">
+                ${customerEmail ? `<span class="meta-chip">✉ ${escapeHtml(customerEmail)}</span>` : ''}
+                <span class="meta-chip">☎ ${escapeHtml(customerContact)}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -9476,7 +9503,11 @@ function renderDrawer() {
         ${tab === 'delivery' ? deliveryTab : tab === 'stats' ? statsTab : itemsTab}
       </div>
       <div class="drawer-actions">
-        <button class="btn soft" type="button" data-open-pickup-map="${escapeHtml(order.id)}">Map</button>
+        <div class="drawer-foot-links">
+          <button type="button" data-action="export-orders-csv">Export</button>
+          <button type="button" data-open-pickup-map="${escapeHtml(order.id)}">Map</button>
+          <button type="button" data-close-drawer="true">Close</button>
+        </div>
         ${renderStatusButtons(order)}
       </div>
     </div>
@@ -10987,6 +11018,13 @@ function bindEvents() {
     }
     if (action === 'clear-order-selection') {
       state.selectedOrderIds = [];
+      renderCurrentPage();
+      return;
+    }
+    if (action === 'clear-order-filters') {
+      state.orderTypeFilter = 'all';
+      state.orderFilter = 'all';
+      state.orderDateFilter = 'all';
       renderCurrentPage();
       return;
     }
