@@ -44,7 +44,13 @@ import { createOrderStatusNotification } from '@/lib/user-notifications';
 export type DeliveryFlow = 'parcel' | 'cargo' | 'ninunulie';
 export type DeliveryTimingMode = 'now' | 'later';
 export type DeliveryCancellationActor = 'customer' | 'driver' | 'dispatch';
-export type DriverSearchStatus = 'searching' | 'waiting_for_driver' | 'assigned' | 'auto_cancelled' | 'ops_desk';
+export type DriverSearchStatus =
+  | 'searching'
+  | 'waiting_for_driver'
+  | 'assigned'
+  | 'auto_cancelled'
+  | 'ops_desk'
+  | 'cancelled';
 type CanonicalDriverVehicleType = 'bodaboda' | 'toyo' | 'kirikuu' | 'canter';
 export type DeliveryOrderStatus =
   | 'pending_assignment'
@@ -130,6 +136,9 @@ export type DeliveryOrder = {
   carrierRouteLabel?: string;
   carrierPickupMode?: string;
   carrierTrackStep?: string;
+  /** Forward-only stage: new, verified, in_transit, delivered. */
+  haulStage?: 'new' | 'verified' | 'in_transit' | 'delivered' | string;
+  statusVersion?: number;
   carrierJourneyAt?: unknown;
   carrierJourneyStatus?: string;
   carrierJourneyMessage?: string;
@@ -2412,6 +2421,8 @@ export async function confirmCarrierQuote(orderId: string) {
   const batch = writeBatch(db);
   batch.update(orderRef(orderId), {
     quoteStatus: 'confirmed',
+    customerAcceptedQuote: true,
+    shippingFeeTzs: amount,
     fareLabel: label,
     totalLabel: label,
     fareConfirmedAt: serverTimestamp(),
@@ -2423,6 +2434,9 @@ export async function confirmCarrierQuote(orderId: string) {
     const shipment = shipmentSnap.data();
     batch.update(doc(db, 'carrierShipments', shipmentId), {
       quoteStatus: 'confirmed',
+      customerAcceptedQuote: true,
+      carrierQuoteTzs: amount,
+      shippingFeeTzs: amount,
       cashExpected: amount,
       fareLabel: label,
       updatedAt: serverTimestamp(),

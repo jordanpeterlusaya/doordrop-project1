@@ -436,7 +436,8 @@ function isLiveTrackableOrder(order: DeliveryOrder) {
 }
 
 function shouldHideOrderOnTrack(order: DeliveryOrder | null) {
-  return !!order && (order.status === 'cancelled' || isNinunulieOrder(order) || isCargoNegotiationOpen(order));
+  // Keep cancelled orders on screen so tracking stops without closing the app.
+  return !!order && (isNinunulieOrder(order) || isCargoNegotiationOpen(order));
 }
 
 function getDriverSearchStatusText(order: DeliveryOrder) {
@@ -531,6 +532,7 @@ export default function TrackOrderScreen() {
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [trackLookupLoading, setTrackLookupLoading] = useState(false);
   const trackLookupAttemptRef = useRef('');
+  const pinnedTrackOrderIdRef = useRef('');
   const countdownAnchorAttemptRef = useRef('');
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingReview, setRatingReview] = useState('');
@@ -702,14 +704,17 @@ export default function TrackOrderScreen() {
       const unsubscribe = subscribeToUserOrders(
         user.uid,
         (orders) => {
-          const trackableOrder = orders.find(isLiveTrackableOrder) ?? null;
+          const pinned = orders.find((item) => item.id === pinnedTrackOrderIdRef.current) ?? null;
+          const trackableOrder =
+            pinned?.status === 'cancelled' ? pinned : (orders.find(isLiveTrackableOrder) ?? null);
 
           logAsyncSuccess(screenScope, 'subscribeToUserOrders.latestForTracking.update', {
             userId: user.uid,
             orderId: trackableOrder?.id ?? null,
             totalOrders: orders.length,
           });
-          if (trackableOrder) {
+          if (trackableOrder && trackableOrder.status !== 'cancelled') {
+            pinnedTrackOrderIdRef.current = trackableOrder.id;
             void autoAssignDriverToOrder(trackableOrder).catch(() => {
               logWarning(screenScope, 'autoAssignDriverToOrder.latest', {
                 orderId: trackableOrder.id,
@@ -747,10 +752,14 @@ export default function TrackOrderScreen() {
           setLoading(false);
           return;
         }
-        if (nextOrder) {
+        if (nextOrder && nextOrder.status !== 'cancelled' && nextOrder.status !== 'delivered') {
+          pinnedTrackOrderIdRef.current = nextOrder.id;
           void autoAssignDriverToOrder(nextOrder).catch(() => {
             logWarning(screenScope, 'autoAssignDriverToOrder', { orderId });
           });
+        }
+        if (nextOrder?.status === 'cancelled') {
+          pinnedTrackOrderIdRef.current = nextOrder.id;
         }
         setOrder(nextOrder);
         setLoading(false);
@@ -1280,7 +1289,9 @@ export default function TrackOrderScreen() {
     ? getTrackingTitle(order, language)
     : copy.track.cancelled;
   const statusDetail =
-    order && isOutsideParcelOrder(order)
+    order?.status === 'cancelled'
+      ? getDriverSearchStatusText(order)
+      : order && isOutsideParcelOrder(order)
       ? (() => {
           const logisticsLabel = getOutsideLogisticsStatusLabel(order.logisticsStatus, language);
           const logistics = String(order.logisticsStatus || 'awaiting_dispatch');
@@ -1322,7 +1333,11 @@ export default function TrackOrderScreen() {
   const outsideTransportIcon = getOutsideTransportIconName(order?.outsideShippingMode, order?.outsideHandoffMode);
   const outsideTransportLabel = getOutsideTransportLabel(order?.outsideShippingMode, order?.outsideHandoffMode);
   const routeDisplay = useMemo(() => getOrderRouteDisplay(order), [order]);
-  const liveStatusLabel = isOutsideWaitingOffice
+  const liveStatusLabel = order?.status === 'cancelled'
+    ? language === 'sw'
+      ? 'Imesimama'
+      : 'Tracking closed'
+    : isOutsideWaitingOffice
     ? 'Office desk'
     : isWaitingForDriver
     ? 'Searching live'
@@ -1333,7 +1348,9 @@ export default function TrackOrderScreen() {
         : order?.driverId
           ? 'Waiting for driver GPS'
       : 'Order channel active';
-  const liveStatusDetail = isOutsideWaitingOffice
+  const liveStatusDetail = order?.status === 'cancelled'
+    ? getDriverSearchStatusText(order)
+    : isOutsideWaitingOffice
     ? 'Central office will assign a rider to bring your parcel to the DoorDrop hub.'
     : hasDriverGpsPoint
     ? `${driverTelemetryLabel} from ${order?.driverName || 'driver'}`
@@ -1354,7 +1371,11 @@ export default function TrackOrderScreen() {
   const busCarrierPhone = isBusTrack ? readablePhone(order?.carrierPhone) : '';
   const hasBusCarrierPhone = busCarrierPhone.length > 0;
   const isBusSearching =
-    isBusTrack && order?.carrierMatchStatus !== 'offered' && order?.carrierMatchStatus !== 'accepted';
+    isBusTrack &&
+    order?.status !== 'cancelled' &&
+    order?.status !== 'delivered' &&
+    order?.carrierMatchStatus !== 'offered' &&
+    order?.carrierMatchStatus !== 'accepted';
   const busAgentLabel = language === 'sw' ? 'Wakala' : 'Agent';
   const busNameLabel = language === 'sw' ? 'Basi' : 'Bus';
   const canCancelOrder =
@@ -1857,8 +1878,23 @@ export default function TrackOrderScreen() {
         setShowCancelConfirm(false);
         setCancelReason('not_closer');
         setOtherReasonText('');
-        setOrder(null);
-        router.replace('/home');
+        setLiveDrivers([]);
+        pinnedTrackOrderIdRef.current = order.id;
+        setOrder((current) =>
+          current
+            ? {
+                ...current,
+                status: 'cancelled',
+                cancelledBy: 'customer',
+                cancelledAt: new Date(),
+                driverSearchStatus: 'cancelled',
+                driverSearchMessage:
+                  language === 'sw'
+                    ? 'Umesitisha oda hii. Haifuatiliwi tena.'
+                    : 'You cancelled this order. It is no longer tracked live.',
+              }
+            : current
+        );
         logAsyncSuccess(screenScope, 'cancelDeliveryOrderByUser', { orderId: order.id });
         void recordAppActivity({
           userId: user?.uid,
@@ -2052,6 +2088,7 @@ export default function TrackOrderScreen() {
   const showMap =
     hasLiveMap &&
     !!order &&
+    order.status !== 'cancelled' &&
     Boolean(NativeMapView && Marker && Polyline) &&
     Boolean(validPickupPoint || validDropoffPoint || validDriverPoint || routeLinePoints.length >= 2);
   const shipmentSteps = order ? buildShipmentSteps(order, language) : [];
@@ -2510,19 +2547,19 @@ export default function TrackOrderScreen() {
               {isBusTrack && order.quoteStatus === 'awaiting_company' ? (
                 <View style={styles.quoteCard}>
                   <Text style={styles.quoteTitle}>
-                    {language === 'sw' ? 'Bei bado haijatoka' : 'Price not sent yet'}
+                    {language === 'sw' ? 'Bei ya usafirishaji bado haijatoka' : 'Shipping price not sent yet'}
                   </Text>
                   <Text style={styles.quoteBody}>
                     {language === 'sw'
-                      ? 'Kampuni itaona mzigo kisha itatuma bei. Utaweza kukubali au kukataa hapa.'
-                      : 'The company will see the cargo and send a price. You can accept or decline here.'}
+                      ? 'Kampuni itaweka bei ya usafirishaji. Thamani ya bidhaa si bei ya usafirishaji. Utaweza kukubali hapa.'
+                      : 'The company will set the shipping price. Goods value is not the shipping fee. You can accept it here.'}
                   </Text>
                 </View>
               ) : null}
 
               {isBusTrack && order.quoteStatus === 'confirmed' && Number(order.carrierQuoteTzs) > 0 ? (
                 <View style={styles.quoteCard}>
-                  <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei' : 'You accepted the price'}</Text>
+                  <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei ya usafirishaji' : 'You accepted the shipping price'}</Text>
                   <Text style={styles.quoteAmount}>
                     TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}
                   </Text>
@@ -2532,7 +2569,7 @@ export default function TrackOrderScreen() {
               {isBusTrack && order.quoteStatus === 'offered' && Number(order.carrierQuoteTzs) > 0 ? (
                 <View style={styles.quoteCard}>
                   <Text style={styles.quoteTitle}>
-                    {language === 'sw' ? 'Bei ya kampuni' : 'Company price'}
+                    {language === 'sw' ? 'Bei ya usafirishaji' : 'Shipping price'}
                   </Text>
                   <Text style={styles.quoteAmount}>
                     TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}

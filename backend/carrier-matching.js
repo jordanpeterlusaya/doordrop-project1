@@ -54,17 +54,19 @@ function normalize(value) {
 }
 
 function moneyFromOrder(order) {
-  // Shipping/transport fee only — never customer-declared cargo value (thamani ya mzigo).
-  const quoted = Math.round(Number(order?.carrierQuoteTzs || order?.shippingFeeTzs || order?.deliveryFeeTzs) || 0);
-  if (order?.quoteStatus === 'awaiting_company') return quoted > 0 ? quoted : 0;
-  if (order?.quoteStatus === 'offered' || order?.quoteStatus === 'confirmed') return quoted > 0 ? quoted : 0;
-  if (quoted > 0) return quoted;
+  // Shipping fee only. declaredValueTzs is goods value and must not become the fare.
+  const declared = declaredValueTzs(order);
+  const quoted = Math.round(Number(order?.carrierQuoteTzs || order?.shippingFeeTzs) || 0);
+  const status = String(order?.quoteStatus || '').trim();
+  if (status === 'awaiting_company') return 0;
+  if (status === 'offered' || status === 'confirmed') return quoted > 0 ? quoted : 0;
+  if (quoted > 0 && quoted !== declared) return quoted;
   const source = `${order.totalLabel || ''} ${order.fareLabel || ''}`.replace(/,/g, '');
   if (/baada|awaiting|kampuni|quote/i.test(source)) return 0;
   const match = source.match(/(\d+(?:\.\d+)?)/);
-  if (match) return Math.round(Number(match[1]));
-  const offer = Number(order.customerOffer || 0);
-  return Number.isFinite(offer) && offer > 0 ? Math.round(offer) : 0;
+  if (!match) return 0;
+  const parsed = Math.round(Number(match[1]));
+  return parsed > 0 && parsed !== declared ? parsed : 0;
 }
 
 function weightKg(order) {
@@ -850,30 +852,40 @@ async function resolveCustomerCarrierContact(db, shipment) {
 }
 
 async function mirrorBusOnOrder(db, orderId, shipment) {
-  const orderSnap = await db.collection('orders').doc(orderId).get();
-  if (!orderSnap.exists || !isBusParcel({ id: orderSnap.id, ...orderSnap.data() })) return;
-  const view = customerBusView(shipment);
+  const orderRef = db.collection('orders').doc(orderId);
   const carrierContact = await resolveCustomerCarrierContact(db, shipment);
-  const patch = {
-    carrierShipmentId: orderId,
-    carrierMatchStatus: view.matchStatus,
-    carrierRouteLabel: view.routeLabel,
-    carrierPickupMode: view.pickupMode || FieldValue.delete(),
-    carrierTrackStep: view.trackStep || FieldValue.delete(),
-    ...carrierContact,
-  };
-  if (view.matchStatus === 'matching') {
-    patch.carrierName = FieldValue.delete();
-    patch.carrierAgentName = FieldValue.delete();
-    patch.carrierPhone = FieldValue.delete();
-    patch.carrierBusName = FieldValue.delete();
-  }
-  if (view.done && orderSnap.data().status !== 'cancelled') {
-    patch.status = 'delivered';
-    patch.logisticsStatus = 'completed';
-    patch.deliveredAt = FieldValue.serverTimestamp();
-  }
-  await orderSnap.ref.set(patch, { merge: true });
+  const { forwardStage, trackStepForStage } = require('./order-stage');
+  await db.runTransaction(async (tx) => {
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists || !isBusParcel({ id: orderSnap.id, ...orderSnap.data() })) return;
+    const order = orderSnap.data() || {};
+    const view = customerBusView(shipment);
+    const stage = forwardStage(order, shipment);
+    const trackStep = trackStepForStage(stage.haulStage, shipment);
+    const patch = {
+      carrierShipmentId: orderId,
+      carrierMatchStatus: view.matchStatus,
+      carrierRouteLabel: view.routeLabel,
+      carrierPickupMode: view.pickupMode || FieldValue.delete(),
+      haulStage: stage.haulStage,
+      statusVersion: stage.statusVersion,
+      stageUpdatedAt: FieldValue.serverTimestamp(),
+      ...carrierContact,
+    };
+    if (trackStep) patch.carrierTrackStep = trackStep;
+    if (view.matchStatus === 'matching' && stage.haulStage === 'new') {
+      patch.carrierName = FieldValue.delete();
+      patch.carrierAgentName = FieldValue.delete();
+      patch.carrierPhone = FieldValue.delete();
+      patch.carrierBusName = FieldValue.delete();
+    }
+    if (stage.haulStage === 'delivered' && order.status !== 'cancelled') {
+      patch.status = 'delivered';
+      patch.logisticsStatus = 'completed';
+      patch.deliveredAt = FieldValue.serverTimestamp();
+    }
+    tx.set(orderRef, patch, { merge: true });
+  });
 }
 
 let deskCache = { at: 0, stats: null };

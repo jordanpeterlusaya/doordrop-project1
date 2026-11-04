@@ -58,8 +58,27 @@ function normalizePhone(value) {
 }
 
 function deliveryFeeOf(shipment) {
+  const explicit = Math.round(Number(shipment?.shippingFeeTzs || shipment?.carrierQuoteTzs) || 0);
+  if (explicit > 0) return explicit;
   const fee = Math.round(Number(shipment?.cashExpected) || 0);
+  const goods = Math.round(Number(shipment?.declaredValueTzs) || 0);
+  if (fee > 0 && fee === goods && !shipment?.quotedAt && String(shipment?.quoteStatus || '') !== 'confirmed') return 0;
   return fee > 0 ? fee : 0;
+}
+
+function quoteStillOpen(shipment) {
+  if (!shipment || shipment.customerAcceptedQuote === true) return false;
+  const qs = String(shipment.quoteStatus || '').trim();
+  if (qs === 'confirmed' || qs === 'declined') return false;
+  const status = String(shipment.shipmentStatus || '');
+  if (['in_transit', 'arrived', 'delivered', 'cancelled'].includes(status)) return false;
+  return qs === 'awaiting_company' || qs === 'offered';
+}
+
+function assertQuoteAccepted(shipment) {
+  if (quoteStillOpen(shipment)) {
+    throw conflict('The customer has not accepted the shipping price yet.');
+  }
 }
 
 function standingFor(carrier) {
@@ -142,39 +161,49 @@ function customerMatchStatus(shipment) {
 async function mirrorCustomer(db, shipment) {
   const orderId = String(shipment.orderId || shipment.id || '').trim();
   if (!orderId) return;
-  const latest = shipment.latestJourney || {};
-  const matchStatus = customerMatchStatus(shipment);
-  const trackStep = String(shipment.trackStep || '').trim();
-  const pickupMode = String(shipment.pickupMode || '').trim();
-  const patch = {
-    carrierShipmentId: orderId,
-    carrierMatchStatus: matchStatus,
-    carrierRouteLabel: String(shipment.routeLabel || '').trim(),
-    carrierPickupMode: pickupMode || FieldValue.delete(),
-    carrierTrackStep: trackStep || FieldValue.delete(),
-    carrierJourneyStatus: latest.status || shipment.journeyStatus || shipment.shipmentStatus || '',
-    carrierJourneyMessage: latest.message || '',
-    carrierLocationLabel: latest.locationName || '',
-    carrierLocationSource: latest.locationSource || '',
-    carrierLatitude: Number.isFinite(Number(latest.latitude)) ? Number(latest.latitude) : FieldValue.delete(),
-    carrierLongitude: Number.isFinite(Number(latest.longitude)) ? Number(latest.longitude) : FieldValue.delete(),
-    carrierEtaLabel: latest.eta || '',
-    carrierJourneyAt: latest.at || new Date().toISOString(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (matchStatus === 'matching') {
-    patch.carrierName = FieldValue.delete();
-    patch.carrierAgentName = FieldValue.delete();
-    patch.carrierPhone = FieldValue.delete();
-    patch.carrierBusName = FieldValue.delete();
-  }
-  if (shipment.shipmentStatus === 'delivered' || trackStep === 'handed') {
-    patch.status = 'delivered';
-    patch.logisticsStatus = 'completed';
-    patch.carrierMatchStatus = 'accepted';
-    patch.deliveredAt = FieldValue.serverTimestamp();
-  }
-  await db.collection('orders').doc(orderId).set(patch, { merge: true });
+  const { forwardStage, trackStepForStage } = require('./order-stage');
+  const orderRef = db.collection('orders').doc(orderId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    const order = snap.exists ? snap.data() || {} : {};
+    const stage = forwardStage(order, shipment);
+    const latest = shipment.latestJourney || {};
+    const matchStatus = customerMatchStatus(shipment);
+    const trackStep = trackStepForStage(stage.haulStage, shipment);
+    const pickupMode = String(shipment.pickupMode || '').trim();
+    const patch = {
+      carrierShipmentId: orderId,
+      carrierMatchStatus: matchStatus,
+      carrierRouteLabel: String(shipment.routeLabel || '').trim(),
+      carrierPickupMode: pickupMode || FieldValue.delete(),
+      haulStage: stage.haulStage,
+      statusVersion: stage.statusVersion,
+      stageUpdatedAt: FieldValue.serverTimestamp(),
+      carrierJourneyStatus: latest.status || shipment.journeyStatus || shipment.shipmentStatus || '',
+      carrierJourneyMessage: latest.message || '',
+      carrierLocationLabel: latest.locationName || '',
+      carrierLocationSource: latest.locationSource || '',
+      carrierLatitude: Number.isFinite(Number(latest.latitude)) ? Number(latest.latitude) : FieldValue.delete(),
+      carrierLongitude: Number.isFinite(Number(latest.longitude)) ? Number(latest.longitude) : FieldValue.delete(),
+      carrierEtaLabel: latest.eta || '',
+      carrierJourneyAt: latest.at || new Date().toISOString(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (trackStep) patch.carrierTrackStep = trackStep;
+    if (matchStatus === 'matching' && stage.haulStage === 'new') {
+      patch.carrierName = FieldValue.delete();
+      patch.carrierAgentName = FieldValue.delete();
+      patch.carrierPhone = FieldValue.delete();
+      patch.carrierBusName = FieldValue.delete();
+    }
+    if (stage.haulStage === 'delivered') {
+      patch.status = 'delivered';
+      patch.logisticsStatus = 'completed';
+      patch.carrierMatchStatus = 'accepted';
+      patch.deliveredAt = FieldValue.serverTimestamp();
+    }
+    tx.set(orderRef, patch, { merge: true });
+  });
 }
 
 async function requireCarrierContext(req) {
@@ -203,6 +232,7 @@ async function handlePortalVerify(req) {
   const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  assertQuoteAccepted(shipment);
   if (shipment.shipmentStatus !== 'assigned' || shipment.offeredCarrierId !== carrierId || shipment.carrierId) {
     throw conflict('Only a new offer can be verified.');
   }
@@ -231,6 +261,7 @@ async function handlePortalAccept(req) {
   const gate = eligibilityFor(carrier, owned);
   if (!gate.eligible) throw forbidden('Commission limit reached. Pay the outstanding balance before accepting new orders.');
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  assertQuoteAccepted(shipment);
   assertCanAccept(shipment, carrierId);
   const at = new Date().toISOString();
   const rate = gate.feeRate;
@@ -330,9 +361,7 @@ async function handlePortalTransit(req) {
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
   if (shipment.carrierId !== carrierId) throw forbidden('Accept the order before starting the journey.');
-  if (shipment.quoteStatus && shipment.quoteStatus !== 'confirmed') {
-    throw conflict('The customer has not confirmed the price yet.');
-  }
+  assertQuoteAccepted(shipment);
   if (shipment.shipmentStatus === 'in_transit') return { ok: true, already: true, shipmentId: shipment.id };
   if (!OWNED_BEFORE_TRANSIT.includes(String(shipment.shipmentStatus || ''))) {
     throw conflict('This order cannot move to In Transit from its current status.');
@@ -544,6 +573,9 @@ async function handlePortalQuote(req) {
   await ref.set(
     {
       cashExpected: amount,
+      carrierQuoteTzs: amount,
+      shippingFeeTzs: amount,
+      customerAcceptedQuote: false,
       quoteDraftCommissionTzs: draftCommission,
       quoteDraftFeeRate: rate,
       quoteStatus: 'offered',
@@ -559,7 +591,9 @@ async function handlePortalQuote(req) {
     await db.collection('orders').doc(orderId).set(
       {
         quoteStatus: 'offered',
+        customerAcceptedQuote: false,
         carrierQuoteTzs: amount,
+        shippingFeeTzs: amount,
         fareLabel: label,
         totalLabel: label,
         carrierQuoteAt: FieldValue.serverTimestamp(),

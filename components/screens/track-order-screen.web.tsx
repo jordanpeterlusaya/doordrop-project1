@@ -462,23 +462,23 @@ export default function TrackOrderWebScreen() {
           </View>
           {isBusTrack && order.quoteStatus === 'awaiting_company' ? (
             <View style={styles.quoteCard}>
-              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei bado haijatoka' : 'Price not sent yet'}</Text>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei ya usafirishaji bado haijatoka' : 'Shipping price not sent yet'}</Text>
               <Text style={styles.quoteBody}>
                 {language === 'sw'
-                  ? 'Kampuni itaona mzigo kisha itatuma bei. Utaweza kukubali au kukataa hapa.'
-                  : 'The company will see the cargo and send a price. You can accept or decline here.'}
+                  ? 'Kampuni itaweka bei ya usafirishaji. Thamani ya bidhaa si bei ya usafirishaji.'
+                  : 'The company will set the shipping price. Goods value is not the shipping fee.'}
               </Text>
             </View>
           ) : null}
           {isBusTrack && order.quoteStatus === 'confirmed' && Number(order.carrierQuoteTzs) > 0 ? (
             <View style={styles.quoteCard}>
-              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei' : 'You accepted the price'}</Text>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Umekubali bei ya usafirishaji' : 'You accepted the shipping price'}</Text>
               <Text style={styles.quoteAmount}>TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}</Text>
             </View>
           ) : null}
           {isBusTrack && order.quoteStatus === 'offered' && Number(order.carrierQuoteTzs) > 0 ? (
             <View style={styles.quoteCard}>
-              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei ya kampuni' : 'Company price'}</Text>
+              <Text style={styles.quoteTitle}>{language === 'sw' ? 'Bei ya usafirishaji' : 'Shipping price'}</Text>
               <Text style={styles.quoteAmount}>TZS {Math.round(Number(order.carrierQuoteTzs)).toLocaleString('en-US')}</Text>
               <View style={styles.quoteActions}>
                 <Pressable
