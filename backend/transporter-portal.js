@@ -289,12 +289,7 @@ async function handlePortalAccept(req) {
     const orderSnap = await db.collection('orders').doc(orderId).get();
     if (orderSnap.exists) {
       const order = orderSnap.data() || {};
-      const photos = Array.isArray(order.parcelPhotoUrls)
-        ? order.parcelPhotoUrls.map((url) => String(url || '').trim()).filter((url) => /^https?:\/\//i.test(url)).slice(0, 6)
-        : [];
-      if (photos.length && !(Array.isArray(shipment.parcelPhotoUrls) && shipment.parcelPhotoUrls.length)) {
-        orderExtras.parcelPhotoUrls = photos;
-      }
+      orderExtras = partyExtrasFromOrder(shipment, order);
       const meters = Number(order.distanceMeters);
       if ((!shipment.distanceMeters || Number(shipment.distanceMeters) <= 0) && Number.isFinite(meters) && meters > 0) {
         orderExtras.distanceMeters = Math.round(meters);
@@ -355,7 +350,17 @@ async function handlePortalAccept(req) {
     }
   });
   await mirrorCustomer(db, { ...shipment, carrierId, shipmentStatus: 'accepted', trackStep: 'received', cashExpected: fee });
-  return { ok: true, shipmentId: shipment.id, amountTzs: fee, commissionTzs: haulFee };
+  const party = {
+    senderName: String(orderExtras.senderName || shipment.senderName || shipment.customerName || '').trim(),
+    senderPhone: String(orderExtras.senderPhone || shipment.senderPhone || shipment.customerPhone || '').trim(),
+    recipientName: String(orderExtras.recipientName || shipment.recipientName || '').trim(),
+    recipientPhone: String(orderExtras.recipientPhone || shipment.recipientPhone || '').trim(),
+    pickupLabel: String(orderExtras.pickupLabel || shipment.pickupLabel || '').trim(),
+    pickupLatitude: orderExtras.pickupLatitude ?? shipment.pickupLatitude ?? null,
+    pickupLongitude: orderExtras.pickupLongitude ?? shipment.pickupLongitude ?? null,
+    parcelPhotoUrls: orderExtras.parcelPhotoUrls || photoUrlsFrom(shipment),
+  };
+  return { ok: true, shipmentId: shipment.id, amountTzs: fee, commissionTzs: haulFee, party };
 }
 
 async function handlePortalTransit(req) {
@@ -620,6 +625,48 @@ function photoUrlsFrom(doc) {
   return [...new Set(urls)].slice(0, 6);
 }
 
+function hasPickupCoords(doc) {
+  const lat = Number(doc?.pickupLatitude ?? doc?.pickupLat);
+  const lng = Number(doc?.pickupLongitude ?? doc?.pickupLng);
+  return Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+}
+
+/** Copy sender/receiver phones + pickup coords from the customer order onto the shipment. */
+function partyExtrasFromOrder(shipment, order) {
+  if (!order || typeof order !== 'object') return {};
+  const extras = {};
+  const senderPhone = String(order.senderPhone || order.customerPhone || order.phoneNumber || '').trim();
+  const senderName = String(order.senderName || order.customerName || order.fullName || '').trim();
+  const recipientName = String(order.recipientName || order.receiverName || '').trim();
+  const recipientPhone = String(order.recipientPhone || order.receiverPhone || '').trim();
+  if (senderPhone && !String(shipment?.senderPhone || shipment?.customerPhone || '').trim()) {
+    extras.senderPhone = senderPhone;
+    extras.customerPhone = senderPhone;
+  }
+  if (senderName && !String(shipment?.senderName || shipment?.customerName || '').trim()) {
+    extras.senderName = senderName;
+    extras.customerName = senderName;
+  }
+  if (recipientName && !String(shipment?.recipientName || '').trim()) extras.recipientName = recipientName;
+  if (recipientPhone && !String(shipment?.recipientPhone || '').trim()) extras.recipientPhone = recipientPhone;
+  const lat = Number(order.pickupLatitude ?? order.pickupLat);
+  const lng = Number(order.pickupLongitude ?? order.pickupLng);
+  if (!hasPickupCoords(shipment) && Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
+    extras.pickupLatitude = lat;
+    extras.pickupLongitude = lng;
+  }
+  if (order.pickupLabel && !String(shipment?.pickupLabel || '').trim()) {
+    extras.pickupLabel = String(order.pickupLabel).trim();
+  }
+  const photos = photoUrlsFrom(order);
+  if (photos.length && !photoUrlsFrom(shipment).length) {
+    extras.parcelPhotoUrls = photos;
+    extras.parcelPhotoUrl = photos[0];
+    extras.cargoPhotos = photos;
+  }
+  return extras;
+}
+
 /** Ensures parcel photos are on the shipment (from order) and returns them to the portal. */
 async function handlePortalPhotos(req, url) {
   const { db, carrierId } = await requireCarrierContext(req);
@@ -627,29 +674,38 @@ async function handlePortalPhotos(req, url) {
   if (!shipmentId) throw badRequest('shipmentId is required.');
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, shipmentId);
   let photos = photoUrlsFrom(shipment);
-  if (!photos.length) {
-    const orderId = String(shipment.orderId || shipment.id || shipmentId).trim();
+  const orderId = String(shipment.orderId || shipment.id || shipmentId).trim();
+  let order = null;
+  if (orderId) {
     const orderSnap = await db.collection('orders').doc(orderId).get();
-    if (orderSnap.exists) {
-      photos = photoUrlsFrom(orderSnap.data() || {});
-      if (photos.length) {
-        await ref.set(
-          {
-            parcelPhotoUrls: photos,
-            parcelPhotoUrl: photos[0],
-            cargoPhotos: photos,
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-      }
-    }
+    if (orderSnap.exists) order = orderSnap.data() || {};
   }
+  const partyOwned = Boolean(shipment.carrierId && shipment.carrierId === carrierId);
+  const partyPatch = partyOwned && order ? partyExtrasFromOrder(shipment, order) : {};
+  if (!photos.length && order) photos = photoUrlsFrom(order);
+  const patch = { ...partyPatch };
+  if (photos.length && !photoUrlsFrom(shipment).length) {
+    patch.parcelPhotoUrls = photos;
+    patch.parcelPhotoUrl = photos[0];
+    patch.cargoPhotos = photos;
+  }
+  if (Object.keys(patch).length) {
+    patch.updatedAt = FieldValue.serverTimestamp();
+    await ref.set(patch, { merge: true });
+  }
+  const merged = { ...shipment, ...patch };
   return {
     ok: true,
     shipmentId,
-    parcelPhotoUrls: photos,
-    parcelPhotoUrl: photos[0] || '',
+    parcelPhotoUrls: photoUrlsFrom(merged),
+    parcelPhotoUrl: photoUrlsFrom(merged)[0] || '',
+    senderName: String(merged.senderName || merged.customerName || '').trim(),
+    senderPhone: String(merged.senderPhone || merged.customerPhone || '').trim(),
+    recipientName: String(merged.recipientName || '').trim(),
+    recipientPhone: String(merged.recipientPhone || '').trim(),
+    pickupLabel: String(merged.pickupLabel || '').trim(),
+    pickupLatitude: hasPickupCoords(merged) ? Number(merged.pickupLatitude ?? merged.pickupLat) : null,
+    pickupLongitude: hasPickupCoords(merged) ? Number(merged.pickupLongitude ?? merged.pickupLng) : null,
   };
 }
 
