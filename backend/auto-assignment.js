@@ -517,6 +517,17 @@ function isOutsideParcelOrder(order) {
   );
 }
 
+function isCompanyDeskOrder(order) {
+  if (!order) return false;
+  if (isOutsideParcelOrder(order)) return true;
+  if (safeText(order.driverSearchStatus) === 'ops_desk') return true;
+  if (safeText(order.assignmentMode) === 'ops_desk') return true;
+  const quote = safeText(order.quoteStatus);
+  if (['awaiting_company', 'offered', 'confirmed', 'declined'].includes(quote)) return true;
+  if (safeText(order.carrierMatchStatus) || safeText(order.carrierShipmentId) || safeText(order.haulStage)) return true;
+  return false;
+}
+
 function isAutoAssignableOrder(order) {
   if (isOutsideParcelOrder(order)) return false;
   if (safeText(order.fareType) === 'negotiated') return false;
@@ -578,11 +589,16 @@ async function markOrderWaitingForDriver(db, order, reason = 'No online nearby d
 }
 
 async function autoCancelOrderIfDriverSearchExpired(db, order) {
-  if (isOutsideParcelOrder(order) || safeText(order.driverSearchStatus) === 'ops_desk') {
+  if (isCompanyDeskOrder(order)) {
     return false;
   }
   if (!isImmediatePendingWithoutDriver(order) || !isDriverSearchExpired(order)) {
     return false;
+  }
+  const shipmentSnap = await db.collection('carrierShipments').doc(order.id).get();
+  if (shipmentSnap.exists) {
+    const shipmentStatus = safeText(shipmentSnap.data()?.shipmentStatus);
+    if (shipmentStatus && shipmentStatus !== 'cancelled') return false;
   }
 
   await db.collection('orders').doc(order.id).set(compact({

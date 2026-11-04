@@ -122,7 +122,6 @@ function assertCanAccept(current, carrierId) {
   if (current.offeredCarrierId !== carrierId || current.shipmentStatus !== 'assigned') {
     throw conflict('This order is no longer available to accept.');
   }
-  if (!current.transporterVerifiedAt) throw badRequest('Verify the order before accepting it.');
 }
 
 function financeRow(shipment, feePercent) {
@@ -233,24 +232,30 @@ async function handlePortalVerify(req) {
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
   assertQuoteAccepted(shipment);
-  if (shipment.shipmentStatus !== 'assigned' || shipment.offeredCarrierId !== carrierId || shipment.carrierId) {
-    throw conflict('Only a new offer can be verified.');
+  if (shipment.carrierId !== carrierId) throw forbidden('Accept the order before verifying it.');
+  const status = String(shipment.shipmentStatus || '');
+  if (['in_transit', 'arrived', 'delivered'].includes(status) || String(shipment.trackStep || '') === 'transit') {
+    return { ok: true, already: true, shipmentId: shipment.id, shipmentStatus: status || 'in_transit' };
   }
-  if (shipment.transporterVerifiedAt) return { ok: true, already: true, shipmentId: shipment.id };
   const at = new Date().toISOString();
+  const latest = { status: 'in_transit', message: 'In transit', at, locationSource: '' };
   await ref.set(
     {
+      shipmentStatus: 'in_transit',
+      trackStep: 'transit',
+      journeyStatus: 'in_transit',
+      portalStage: 'in_transit',
       transporterVerifiedAt: FieldValue.serverTimestamp(),
       transporterVerifiedBy: decoded.email || decoded.uid,
-      portalStage: 'verified',
-      latestJourney: { status: 'verified', message: 'Order verified by the transport company.', at, locationSource: '' },
-      statusHistory: FieldValue.arrayUnion({ status: 'verified', label: 'Verified', at, actor: decoded.email || decoded.uid }),
+      inTransitAt: FieldValue.serverTimestamp(),
+      latestJourney: latest,
+      statusHistory: FieldValue.arrayUnion({ status: 'in_transit', label: 'In transit', at, actor: decoded.email || decoded.uid }),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
-  await mirrorCustomer(db, { ...shipment, latestJourney: { status: 'verified', message: 'Order verified by the transport company.', at } });
-  return { ok: true, shipmentId: shipment.id, verifiedAt: at };
+  await mirrorCustomer(db, { ...shipment, carrierId, shipmentStatus: 'in_transit', trackStep: 'transit', latestJourney: latest });
+  return { ok: true, shipmentId: shipment.id, shipmentStatus: 'in_transit', verifiedAt: at };
 }
 
 async function handlePortalAccept(req) {
@@ -276,15 +281,7 @@ async function handlePortalAccept(req) {
   if (needsQuote && (fee < 1000 || fee > 50000000)) {
     throw badRequest('Enter the delivery price in TZS before taking this order.');
   }
-  const requestedCommission = body.commissionTzs != null && body.commissionTzs !== ''
-    ? Math.round(Number(body.commissionTzs) || 0)
-    : null;
-  const haulFee =
-    requestedCommission != null
-      ? Math.max(0, Math.min(fee, requestedCommission))
-      : shipment.haulFee != null && Number(shipment.haulFee) > 0
-        ? Math.round(Number(shipment.haulFee) || 0)
-        : Math.round(fee * rate);
+  const haulFee = Math.round(fee * 0.15);
   const label = fee > 0 ? `TZS ${fee.toLocaleString('en-US')}` : String(shipment.fareLabel || '').trim();
   const orderId = String(shipment.orderId || shipment.id || '').trim();
   let orderExtras = {};
@@ -318,11 +315,12 @@ async function handlePortalAccept(req) {
       shipmentStatus: 'accepted',
       trackStep: 'received',
       portalStage: 'accepted',
+      agentAcceptedAt: FieldValue.serverTimestamp(),
       pickupStatus: 'assigned',
       acceptedAt: FieldValue.serverTimestamp(),
       cashExpected: fee,
       haulFee,
-      haulFeeRate: fee > 0 ? haulFee / fee : rate,
+      haulFeeRate: fee > 0 ? 0.15 : rate,
       carrierNet: Math.max(0, fee - haulFee),
       commissionCountedAt: FieldValue.serverTimestamp(),
       statusHistory: FieldValue.arrayUnion({ status: 'accepted', label: 'Accepted', at, actor: decoded.email || decoded.uid }),
@@ -331,13 +329,17 @@ async function handlePortalAccept(req) {
     };
     if (fee > 0) {
       patch.fareLabel = label;
-      if (String(shipment.quoteStatus || '') === 'awaiting_company' || String(shipment.quoteStatus || '') === 'offered') {
-        patch.quoteStatus = 'offered';
+      patch.carrierQuoteTzs = fee;
+      patch.shippingFeeTzs = fee;
+      if (String(shipment.quoteStatus || '') === 'confirmed' || shipment.customerAcceptedQuote === true) {
+        patch.quoteStatus = 'confirmed';
+        patch.customerAcceptedQuote = true;
       }
     }
     tx.set(ref, patch, { merge: true });
     tx.set(db.collection('carriers').doc(carrierId), { accepted: FieldValue.increment(1) }, { merge: true });
-    if (orderId && fee > 0 && (needsQuote || String(shipment.quoteStatus || '') === 'awaiting_company')) {
+    const quoteAlreadyConfirmed = String(shipment.quoteStatus || '') === 'confirmed' || shipment.customerAcceptedQuote === true;
+    if (orderId && fee > 0 && !quoteAlreadyConfirmed && (needsQuote || String(shipment.quoteStatus || '') === 'awaiting_company')) {
       tx.set(
         db.collection('orders').doc(orderId),
         {
@@ -552,7 +554,7 @@ async function handlePortalTrackingLink(req) {
 }
 
 async function handlePortalQuote(req) {
-  const { db, decoded, carrierId, carrier } = await requireCarrierContext(req);
+  const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const amount = Math.round(Number(body.amountTzs) || 0);
   if (amount < 1000 || amount > 50000000) throw badRequest('Enter the delivery price in TZS.');
@@ -565,10 +567,7 @@ async function handlePortalQuote(req) {
   if (shipment.quoteStatus === 'confirmed' && deliveryFeeOf(shipment) > 0) {
     throw conflict('The customer already confirmed this price.');
   }
-  const standing = standingFor(carrier);
-  const rate = Number(standing?.feeRate) || Number(standing?.feePercent) / 100 || 0.12;
-  // Draft commission only — haulFee counts when the company accepts/takes the order.
-  const draftCommission = Math.max(0, Math.round(Number(body.commissionTzs) || amount * rate));
+  const draftCommission = Math.round(amount * 0.15);
   const label = `TZS ${amount.toLocaleString('en-US')}`;
   await ref.set(
     {
@@ -577,7 +576,7 @@ async function handlePortalQuote(req) {
       shippingFeeTzs: amount,
       customerAcceptedQuote: false,
       quoteDraftCommissionTzs: draftCommission,
-      quoteDraftFeeRate: rate,
+      quoteDraftFeeRate: 0.15,
       quoteStatus: 'offered',
       fareLabel: label,
       quotedAt: FieldValue.serverTimestamp(),

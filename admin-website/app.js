@@ -1685,7 +1685,16 @@ async function markOrderWaitingForDriver(order, reason = 'No online nearby drive
 }
 
 async function autoCancelDriverSearchOrder(order) {
-  if (isOutsideParcelOrder(order) || safeText(order.driverSearchStatus) === 'ops_desk') {
+  const quote = safeText(order.quoteStatus);
+  if (
+    isOutsideParcelOrder(order) ||
+    safeText(order.driverSearchStatus) === 'ops_desk' ||
+    safeText(order.assignmentMode) === 'ops_desk' ||
+    ['awaiting_company', 'offered', 'confirmed', 'declined'].includes(quote) ||
+    safeText(order.carrierMatchStatus) ||
+    safeText(order.carrierShipmentId) ||
+    safeText(order.haulStage)
+  ) {
     return false;
   }
   if (!isImmediatePendingWithoutDriver(order) || !isDriverSearchExpired(order)) {

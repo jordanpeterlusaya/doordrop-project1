@@ -903,9 +903,21 @@ export function isNinunulieOrder(order?: Pick<DeliveryOrder, 'flow' | 'serviceLa
   return String(order.serviceLabel || '').trim().toLowerCase() === 'ninunulie';
 }
 
+function isCompanyDeskOrder(order: DeliveryOrder | null | undefined) {
+  if (!order) return false;
+  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk' || order.assignmentMode === 'ops_desk') {
+    return true;
+  }
+  const quote = String(order.quoteStatus || '');
+  if (quote === 'awaiting_company' || quote === 'offered' || quote === 'confirmed' || quote === 'declined') {
+    return true;
+  }
+  return Boolean(order.carrierMatchStatus || order.carrierShipmentId || order.haulStage);
+}
+
 function getDriverSearchExpiryMillis(order: DeliveryOrder) {
-  // Bus/air (outside) parcels stay with the ops desk — never invent a driver-search timeout.
-  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+  // Company cargo stays with the agent desk — never invent a driver-search timeout.
+  if (isCompanyDeskOrder(order)) {
     return 0;
   }
 
@@ -933,7 +945,7 @@ function isDriverSearchExpired(order: DeliveryOrder) {
 }
 
 function isImmediatePendingWithoutDriver(order: DeliveryOrder) {
-  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+  if (isCompanyDeskOrder(order)) {
     return false;
   }
   return order.status === 'pending_assignment' && !order.driverId && order.timingMode !== 'later';
@@ -986,12 +998,18 @@ async function markOrderWaitingForDriver(order: DeliveryOrder, reason = 'No onli
 }
 
 export async function autoCancelOrderIfDriverSearchExpired(order: DeliveryOrder) {
-  // Outside (bus/air) orders are managed by admin only — never auto-cancel.
-  if (isOutsideParcelOrder(order) || order.driverSearchStatus === 'ops_desk') {
+  // Company cargo is quoted by agents. The track-screen retry must not cancel it.
+  if (isCompanyDeskOrder(order)) {
     return false;
   }
 
   if (!isImmediatePendingWithoutDriver(order) || !isDriverSearchExpired(order)) {
+    return false;
+  }
+
+  const shipmentSnap = await getDoc(doc(db, 'carrierShipments', order.id)).catch(() => null);
+  const shipmentStatus = String(shipmentSnap?.data()?.shipmentStatus || '');
+  if (shipmentSnap?.exists() && shipmentStatus && shipmentStatus !== 'cancelled') {
     return false;
   }
 
