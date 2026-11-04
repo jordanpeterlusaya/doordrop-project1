@@ -40,6 +40,26 @@ function normalizePaymentStatus(status) {
   return normalized ? 'pending' : 'pending';
 }
 
+/** Map real provider/backend failure signals — never invent a decline reason. */
+function publicVerifyFailureMessage({ providerStatus, failureReason, message, error } = {}) {
+  const provider = String(providerStatus || '').trim();
+  const upper = provider.toUpperCase();
+  const detail = String(failureReason || message || error || '').replace(/\s+/g, ' ').trim();
+  const haystack = `${provider} ${detail}`;
+  if (/insufficient|salio|low.?balance|no.?balance|balance.?too.?low/i.test(haystack)) {
+    return 'Salio halitoshi.';
+  }
+  if (['EXPIRED', 'TIMEOUT'].includes(upper) || /\bexpired\b|\btimeout\b|muda umeisha/i.test(haystack)) {
+    return 'Muda umeisha, jaribu tena.';
+  }
+  if (['CANCELLED', 'CANCELED', 'REJECTED'].includes(upper) || /\bcancel|\breject/i.test(haystack)) {
+    return 'Malipo yameshindikana.';
+  }
+  if (detail && !/^malipo hayajakamilika\.?$/i.test(detail)) return detail;
+  if (['FAILED', 'FAILURE'].includes(upper)) return 'Malipo yameshindikana.';
+  return detail || 'Malipo yameshindikana.';
+}
+
 function badRequest(message) {
   const error = new Error(message);
   error.statusCode = 400;
@@ -227,14 +247,16 @@ async function markIntentFailed(db, payment, reason) {
   const carrier = carrierSnap?.exists ? carrierSnap.data() : {};
   const openIds = openOrderIds(carrier).filter((id) => id !== orderId);
   const nowIso = new Date().toISOString();
+  const providerStatus = String(reason || 'FAILED').trim() || 'FAILED';
+  const failureReason = publicVerifyFailureMessage({ providerStatus });
   const writes = [
     (batch) =>
       batch.set(
         paymentRef(db, orderId),
         {
           status: 'failed',
-          failureReason: 'Malipo hayajakamilika.',
-          providerStatus: reason || 'FAILED',
+          failureReason,
+          providerStatus,
           updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
@@ -250,7 +272,8 @@ async function markIntentFailed(db, payment, reason) {
             orderId,
             status: 'failed',
             amount: Math.round(Number(payment.amount) || 0),
-            failureReason: 'Malipo hayajakamilika.',
+            failureReason,
+            providerStatus,
             updatedAt: nowIso,
           },
         },
@@ -259,7 +282,7 @@ async function markIntentFailed(db, payment, reason) {
     );
   }
   await commitChunked(db, writes);
-  return { orderId, status: 'failed' };
+  return { orderId, status: 'failed', providerStatus, failureReason };
 }
 
 async function allocateConfirmedPayment(db, payment, remote) {
@@ -284,7 +307,13 @@ async function allocateConfirmedPayment(db, payment, remote) {
     if (!paySnap.exists) return { ignored: true, orderId };
     const current = paySnap.data() || {};
     if (String(current.status || '') === 'completed') {
-      return { idempotent: true, orderId, status: 'completed', settled: true };
+      return {
+        idempotent: true,
+        orderId,
+        status: 'completed',
+        settled: true,
+        reference: String(current.trivapesaReference || remote?.reference || '').trim() || undefined,
+      };
     }
     const shipSnaps = [];
     for (const shipmentRef of shipmentRefs) {
@@ -339,8 +368,27 @@ async function allocateConfirmedPayment(db, payment, remote) {
       },
       { merge: true }
     );
-    return { orderId, status: 'completed', settled: true, allocatedTzs: plan.allocated };
+    return {
+      orderId,
+      status: 'completed',
+      settled: true,
+      allocatedTzs: plan.allocated,
+      reference: String(remote?.reference || current.trivapesaReference || '').trim() || undefined,
+      providerStatus: String(remote?.status || 'SUCCESS').trim() || undefined,
+    };
   });
+}
+
+function paymentOutcomeMeta(payment, remoteStatus) {
+  const providerStatus = String(
+    remoteStatus || payment?.providerStatus || payment?.failureReason || ''
+  ).trim();
+  const failureReason = String(payment?.failureReason || '').trim();
+  return {
+    providerStatus: providerStatus || undefined,
+    failureReason: failureReason || undefined,
+    reference: String(payment?.trivapesaReference || '').trim() || undefined,
+  };
 }
 
 async function syncPayment(db, orderId) {
@@ -350,7 +398,13 @@ async function syncPayment(db, orderId) {
   if (!snap.exists) return { ignored: true, orderId: id };
   const payment = { id: snap.id, ...snap.data() };
   if (String(payment.status || '') === 'completed') {
-    return { idempotent: true, orderId: id, status: 'completed', settled: true };
+    return {
+      idempotent: true,
+      orderId: id,
+      status: 'completed',
+      settled: true,
+      ...paymentOutcomeMeta(payment),
+    };
   }
   const locallyFailed = String(payment.status || '') === 'failed';
   let remote = null;
@@ -361,7 +415,7 @@ async function syncPayment(db, orderId) {
     });
   } catch (error) {
     console.warn('trivapesa status skipped', error?.providerCode || error?.statusCode || 'error');
-    if (locallyFailed) return { orderId: id, status: 'failed' };
+    if (locallyFailed) return { orderId: id, status: 'failed', ...paymentOutcomeMeta(payment) };
     return { orderId: id, status: 'pending', unknown: true };
   }
   if (!remote) {
@@ -369,11 +423,11 @@ async function syncPayment(db, orderId) {
     const pushed = Boolean(payment.trivapesaReference);
     const abandoned = !locallyFailed && age > (pushed ? 24 * 60 * 60 * 1000 : FRESH_PUSH_MS);
     if (abandoned) {
-      await markIntentFailed(db, payment, 'FAILED');
-      return { orderId: id, status: 'failed' };
+      await markIntentFailed(db, payment, 'EXPIRED');
+      return { orderId: id, status: 'failed', ...paymentOutcomeMeta(payment, 'EXPIRED') };
     }
     return locallyFailed
-      ? { orderId: id, status: 'failed' }
+      ? { orderId: id, status: 'failed', ...paymentOutcomeMeta(payment) }
       : { orderId: id, status: 'pending' };
   }
   const next = normalizePaymentStatus(remote.status);
@@ -382,9 +436,9 @@ async function syncPayment(db, orderId) {
   }
   if (next === 'failed') {
     if (!locallyFailed) await markIntentFailed(db, payment, remote.status);
-    return { orderId: id, status: 'failed' };
+    return { orderId: id, status: 'failed', ...paymentOutcomeMeta(payment, remote.status) };
   }
-  if (locallyFailed) return { orderId: id, status: 'failed' };
+  if (locallyFailed) return { orderId: id, status: 'failed', ...paymentOutcomeMeta(payment) };
   return { orderId: id, status: 'pending' };
 }
 
@@ -581,14 +635,48 @@ async function verifyCarrierCommissionPayment(req) {
   const summary = summarize(rows);
   const latest = results.filter(Boolean).reverse().find((item) => item.orderId) || {};
   const pending = normalizePaymentStatus(carrier.commissionPayment?.status) === 'pending';
-  const watched = results.find((item) => requested && item?.orderId === requested);
+  const watched = results.find((item) => requested && item?.orderId === requested) || latest;
   const watchedFailed = watched?.status === 'failed';
+  const watchedCompleted = watched?.status === 'completed' || watched?.settled === true;
+  const carrierPay = carrier.commissionPayment || {};
+  const providerStatus = String(
+    watched?.providerStatus || carrierPay.providerStatus || carrierPay.failureReason || ''
+  ).trim();
+  const failureReason = String(
+    watched?.failureReason || carrierPay.failureReason || ''
+  ).trim();
+  const reference = String(
+    watched?.reference || carrierPay.trivapesaReference || carrierPay.reference || ''
+  ).trim();
+  let message = '';
+  if (pending) message = WAIT_MESSAGE;
+  else if (watchedFailed) {
+    message = publicVerifyFailureMessage({
+      providerStatus,
+      failureReason,
+      message: failureReason,
+    });
+  }
   return {
     ...summary,
-    status: pending ? 'pending' : watchedFailed ? 'failed' : watched?.status === 'completed' ? 'completed' : summary.unpaidTzs > 0 ? 'due' : 'clear',
+    status: pending
+      ? 'pending'
+      : watchedFailed
+        ? 'failed'
+        : watchedCompleted
+          ? 'completed'
+          : summary.unpaidTzs > 0
+            ? 'due'
+            : 'clear',
     settled: results.some((item) => item?.settled === true || item?.status === 'completed'),
-    orderId: pending ? String(carrier.commissionPayment?.orderId || '') : requested || latest.orderId || '',
-    message: pending ? WAIT_MESSAGE : watchedFailed ? 'Malipo hayajakamilika.' : '',
+    orderId: pending
+      ? String(carrier.commissionPayment?.orderId || '')
+      : requested || latest.orderId || '',
+    message,
+    providerStatus: providerStatus || undefined,
+    failureReason: watchedFailed ? failureReason || undefined : undefined,
+    reference: reference || undefined,
+    error: watchedFailed ? message || undefined : undefined,
   };
 }
 
