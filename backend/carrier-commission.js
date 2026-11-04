@@ -93,8 +93,38 @@ function publicPayError(error) {
   ) {
     return text;
   }
+  if (text && text.length <= 90 && !/salio|api.?key|secret|unauthorized|forbidden|internal/i.test(text)) {
+    return text;
+  }
   if (/salio/i.test(text)) return 'USSD haijatumwa. Jaribu tena.';
   return 'USSD haijatumwa. Jaribu tena.';
+}
+
+function sanitizeIdempotencyKey(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 48);
+}
+
+function orderIdForIdempotency(carrierId, idempotencyKey) {
+  const safe = sanitizeIdempotencyKey(idempotencyKey);
+  if (safe.length >= 8) return `HCC-${safe}`;
+  return generateOrderId(carrierId);
+}
+
+function pendingResponse(base, { orderId, amount, reference, duplicate = false, status = 'pending', message = WAIT_MESSAGE } = {}) {
+  return {
+    ...base,
+    status,
+    duplicate: Boolean(duplicate),
+    pushed: Boolean(reference),
+    orderId: String(orderId || ''),
+    amount: Math.round(Number(amount) || 0),
+    reference: String(reference || '').trim() || undefined,
+    trivapesaReference: String(reference || '').trim() || undefined,
+    message,
+  };
 }
 
 function isCompletedShipment(shipment) {
@@ -452,7 +482,8 @@ async function settleOpenPayments(db, carrier) {
 
 function freshPending(carrier) {
   const current = carrier?.commissionPayment || {};
-  if (normalizePaymentStatus(current.status) !== 'pending') return null;
+  const status = String(current.status || '').toLowerCase();
+  if (status !== 'pending' && status !== 'creating') return null;
   const orderId = String(current.orderId || '').trim();
   if (!orderId) return null;
   const createdAt = Number(current.createdAtMs || 0);
@@ -485,55 +516,114 @@ async function initiateCarrierCommissionPayment(req) {
   );
   if (!isValidTzMobile(phone)) throw badRequest('Weka namba sahihi ya simu.');
 
-  const selectedNetwork = String(body.network || '').trim().toLowerCase();
+  const selectedNetwork = String(body.network || body.method || '').trim().toLowerCase();
   if (!requestNetwork(selectedNetwork)) throw badRequest('Mtandao huu haupo.');
 
-  const fresh = freshPending(carrier);
-  if (fresh) {
-    return {
-      ...base,
-      status: 'pending',
-      duplicate: true,
-      orderId: String(fresh.orderId || ''),
-      amount: Number(fresh.amount || amount),
-      message: WAIT_MESSAGE,
-    };
+  const idempotencyKey = sanitizeIdempotencyKey(body.idempotencyKey || body.idempotency_key || '');
+  let orderId = orderIdForIdempotency(carrierId, idempotencyKey);
+  let existingPay = null;
+  const existingSnap = await paymentRef(db, orderId).get();
+  if (existingSnap.exists) {
+    existingPay = { id: existingSnap.id, ...existingSnap.data() };
+    if (String(existingPay.carrierId || '') !== carrierId) {
+      orderId = generateOrderId(carrierId);
+      existingPay = null;
+    } else if (String(existingPay.status || '') === 'completed') {
+      return pendingResponse(base, {
+        orderId,
+        amount: Number(existingPay.amount || amount),
+        reference: existingPay.trivapesaReference,
+        duplicate: true,
+        status: 'completed',
+        message: '',
+      });
+    } else if (
+      String(existingPay.status || '') === 'pending' &&
+      String(existingPay.trivapesaReference || '').trim()
+    ) {
+      return pendingResponse(base, {
+        orderId,
+        amount: Number(existingPay.amount || amount),
+        reference: existingPay.trivapesaReference,
+        duplicate: true,
+      });
+    }
   }
 
-  const orderId = generateOrderId(carrierId);
+  const fresh = freshPending(carrier);
+  if (fresh && String(fresh.orderId || '') !== orderId) {
+    const freshRef = String(fresh.reference || fresh.trivapesaReference || '').trim();
+    return pendingResponse(base, {
+      orderId: String(fresh.orderId || ''),
+      amount: Number(fresh.amount || amount),
+      reference: freshRef,
+      duplicate: true,
+    });
+  }
+
   const companyName = String(carrier.tradingName || carrier.companyName || carrier.name || 'HAUL carrier').trim();
-  const createdAtMs = Date.now();
-  await paymentRef(db, orderId).set({
-    orderId,
-    carrierId,
-    amount,
-    currency: 'TZS',
-    status: 'creating',
-    provider: 'trivapesa',
-    network: selectedNetwork,
-    payerPhone: phone,
-    buyerName: companyName,
-    callbackUrl: commissionWebhookUrl(),
-    createdAtMs,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  const createdAtMs = Number(existingPay?.createdAtMs) || Date.now();
+  const shipmentIds = Array.isArray(body.shipmentIds)
+    ? body.shipmentIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 40)
+    : [];
+
+  // Reserve the in-flight slot before TrivaPesa so a second tap cannot start another push.
+  await paymentRef(db, orderId).set(
+    {
+      orderId,
+      carrierId,
+      amount,
+      currency: 'TZS',
+      status: 'creating',
+      provider: 'trivapesa',
+      network: selectedNetwork,
+      payerPhone: phone,
+      buyerName: companyName,
+      callbackUrl: commissionWebhookUrl(),
+      idempotencyKey: idempotencyKey || orderId,
+      shipmentIds,
+      createdAtMs,
+      createdAt: existingPay?.createdAt || FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  const nowIso = new Date().toISOString();
+  await db.collection('carriers').doc(carrierId).set(
+    {
+      commissionPayerPhone: phone,
+      commissionPayment: {
+        orderId,
+        status: 'creating',
+        amount,
+        network: selectedNetwork,
+        payerPhone: phone,
+        createdAtMs,
+        updatedAt: nowIso,
+      },
+    },
+    { merge: true }
+  );
 
   try {
+    console.log('[ussd] carrier create', carrierId.slice(0, 8), orderId, selectedNetwork, amount);
     const created = await createCollection({
       amount,
       phone,
       customerName: companyName,
       externalId: orderId,
       network: selectedNetwork,
+      idempotencyKey: idempotencyKey || orderId,
     });
     const providerStatus = normalizePaymentStatus(created.status);
     if (providerStatus === 'failed') {
       await markIntentFailed(db, { orderId, carrierId, amount }, created.status);
       throw badRequest('USSD haijatumwa. Jaribu tena.');
     }
+    if (!String(created.reference || '').trim()) {
+      throw badRequest('USSD haijatumwa. Jaribu tena.');
+    }
     const openIds = [...openOrderIds(carrier), orderId].slice(-8);
-    const nowIso = new Date().toISOString();
     await paymentRef(db, orderId).set(
       {
         status: 'pending',
@@ -554,11 +644,18 @@ async function initiateCarrierCommissionPayment(req) {
           amount,
           network: selectedNetwork,
           payerPhone: phone,
+          trivapesaReference: created.reference,
           createdAtMs,
-          updatedAt: nowIso,
+          updatedAt: new Date().toISOString(),
         },
       },
       { merge: true }
+    );
+    console.log(
+      '[ussd] carrier pushed',
+      orderId,
+      created.idempotentReplay ? 'replay' : 'new',
+      String(created.reference).slice(0, 18)
     );
     if (providerStatus === 'completed') {
       const settled = await syncPayment(db, orderId);
@@ -567,51 +664,86 @@ async function initiateCarrierCommissionPayment(req) {
         ...summarize(after),
         status: settled?.status || 'completed',
         settled: settled?.settled === true,
+        pushed: true,
         orderId,
         amount,
+        reference: created.reference,
+        trivapesaReference: created.reference,
         message: settled?.settled ? '' : WAIT_MESSAGE,
       };
     }
-    return {
-      ...base,
-      status: 'pending',
-      duplicate: false,
+    return pendingResponse(base, {
       orderId,
       amount,
-      message: WAIT_MESSAGE,
-    };
+      reference: created.reference,
+      duplicate: Boolean(created.idempotentReplay),
+    });
   } catch (error) {
     const snap = await paymentRef(db, orderId).get().catch(() => null);
     const status = String(snap?.data()?.status || '');
-    if (status === 'creating') {
+    if (status === 'creating' || status === 'pending') {
       let remote = null;
       try {
-        remote = await fetchCollection({ externalId: orderId });
+        remote = await fetchCollection({
+          reference: snap?.data()?.trivapesaReference,
+          externalId: orderId,
+        });
       } catch {
         remote = null;
       }
-      if (remote && normalizePaymentStatus(remote.status) !== 'failed') {
+      if (remote && normalizePaymentStatus(remote.status) !== 'failed' && String(remote.reference || '').trim()) {
+        const openIds = [...openOrderIds(carrier), orderId].slice(-8);
         await paymentRef(db, orderId).set(
           {
             status: 'pending',
-            trivapesaReference: remote.reference || '',
+            trivapesaReference: remote.reference,
             providerStatus: remote.status || 'PENDING',
             updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
-        return {
-          ...base,
-          status: 'pending',
+        await db.collection('carriers').doc(carrierId).set(
+          {
+            commissionOpenOrderIds: openIds,
+            commissionPayment: {
+              orderId,
+              status: 'pending',
+              amount,
+              network: selectedNetwork,
+              payerPhone: phone,
+              trivapesaReference: remote.reference,
+              createdAtMs,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+          { merge: true }
+        );
+        return pendingResponse(base, {
           orderId,
           amount,
-          message: WAIT_MESSAGE,
-        };
+          reference: remote.reference,
+          duplicate: true,
+        });
       }
-      await markIntentFailed(db, { orderId, carrierId, amount }, 'FAILED').catch(() => undefined);
+      if (status === 'creating') {
+        await markIntentFailed(db, { orderId, carrierId, amount }, 'FAILED').catch(() => undefined);
+      }
     }
-    if (error?.statusCode === 400 && publicPayError(error) === String(error.message || '')) throw error;
-    throw badRequest(publicPayError(error));
+    const message = publicPayError(error);
+    console.warn('[ussd] carrier init failed', orderId, error?.providerCode || error?.statusCode || 'error', message);
+    const statusCode = Number(error?.statusCode);
+    if (statusCode === 503) {
+      const unavailable = badRequest(message);
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
+    if ((statusCode === 502 || statusCode === 429) && error?.retryable) {
+      const retryable = badRequest(message);
+      retryable.statusCode = statusCode;
+      throw retryable;
+    }
+    if (error?.statusCode === 400 && message === String(error.message || '')) throw error;
+    throw badRequest(message);
   }
 }
 

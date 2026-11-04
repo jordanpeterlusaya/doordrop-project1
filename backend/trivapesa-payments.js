@@ -122,7 +122,30 @@ function pickTransaction(payload, reference) {
   return null;
 }
 
-async function trivapesaFetch(pathname, { method = 'GET', body } = {}) {
+function publicProviderMessage(providerCode, providerMessage) {
+  const code = String(providerCode || '').trim().toUpperCase();
+  const detail = String(providerMessage || '').replace(/\s+/g, ' ').trim();
+  const haystack = `${code} ${detail}`;
+  if (/INVALID.?PHONE|PHONE.?NUMBER|MSISDN|customer_phone/i.test(haystack)) {
+    return 'Weka namba sahihi ya simu.';
+  }
+  if (/INVALID.?NETWORK|UNSUPPORTED.?NETWORK|UNKNOWN.?NETWORK/i.test(haystack)) {
+    return 'Mtandao huu haupo.';
+  }
+  if (/DUPLICATE|IDEMPOTEN/i.test(haystack)) {
+    return 'Subiri uthibitisho kwenye simu.';
+  }
+  if (
+    detail &&
+    detail.length <= 90 &&
+    !/salio|balance|api.?key|secret|unauthorized|forbidden|internal/i.test(detail)
+  ) {
+    return detail;
+  }
+  return 'USSD haijatumwa. Jaribu tena.';
+}
+
+async function trivapesaFetch(pathname, { method = 'GET', body, idempotencyKey } = {}) {
   const key = apiKey();
   if (!key) {
     const error = new Error('Malipo hayajasanidiwa.');
@@ -130,16 +153,19 @@ async function trivapesaFetch(pathname, { method = 'GET', body } = {}) {
     error.publicMessage = 'Malipo hayajasanidiwa.';
     throw error;
   }
+  const headers = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'HAUL-Agents/1.0',
+    'x-api-key': key,
+  };
+  const idem = String(idempotencyKey || '').trim();
+  if (idem) headers['Idempotency-Key'] = idem.slice(0, 128);
   const response = await fetch(`${apiBaseUrl()}${pathname}`, {
     method,
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'HAUL-Agents/1.0',
-      'x-api-key': key,
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(25000),
   });
   const responseText = await response.text();
   let parsed = null;
@@ -150,11 +176,22 @@ async function trivapesaFetch(pathname, { method = 'GET', body } = {}) {
   }
   if (!response.ok || parsed?.success === false) {
     const providerCode = String(parsed?.error?.code || '').trim();
-    console.warn('trivapesa request failed', method, pathname.split('?')[0], response.status, providerCode || 'no_code');
-    const error = new Error('USSD haijatumwa. Jaribu tena.');
-    error.statusCode = response.status >= 500 ? 502 : 400;
+    const providerMessage = String(parsed?.error?.message || '').trim();
+    console.warn(
+      'trivapesa request failed',
+      method,
+      pathname.split('?')[0],
+      response.status,
+      providerCode || 'no_code',
+      providerMessage ? providerMessage.slice(0, 80) : ''
+    );
+    const publicMessage = publicProviderMessage(providerCode, providerMessage);
+    const error = new Error(publicMessage);
+    error.statusCode = response.status >= 500 ? 502 : response.status === 429 ? 429 : 400;
     error.providerCode = providerCode;
-    error.publicMessage = 'USSD haijatumwa. Jaribu tena.';
+    error.providerMessage = providerMessage;
+    error.publicMessage = publicMessage;
+    error.retryable = response.status >= 500 || response.status === 429 || response.status === 408;
     throw error;
   }
   return parsed || {};
@@ -176,20 +213,34 @@ function driverCommissionWebhookUrl() {
 
 async function createCollection(input) {
   const network = requestNetwork(input.network);
+  const externalId = String(input.externalId || '').trim();
   const payload = {
     amount: Math.round(Number(input.amount)),
     currency: 'TZS',
     customer_phone: String(input.phone || ''),
     customer_name: String(input.customerName || 'HAUL carrier').slice(0, 80),
-    external_id: String(input.externalId || ''),
+    external_id: externalId,
     callback_url: String(input.callbackUrl || '').trim() || commissionWebhookUrl(),
   };
   if (network) payload.network = network;
-  const parsed = await trivapesaFetch('/api/v1/payments/collections', { method: 'POST', body: payload });
+  const parsed = await trivapesaFetch('/api/v1/payments/collections', {
+    method: 'POST',
+    body: payload,
+    idempotencyKey: String(input.idempotencyKey || externalId || '').trim(),
+  });
   const record = pickTransaction(parsed, parsed?.reference) || {};
+  const reference = String(parsed?.reference || record.reference || '').trim();
+  if (!reference) {
+    console.warn('trivapesa collection missing reference', externalId || 'no_external_id');
+    const error = new Error('USSD haijatumwa. Jaribu tena.');
+    error.statusCode = 502;
+    error.publicMessage = 'USSD haijatumwa. Jaribu tena.';
+    error.retryable = true;
+    throw error;
+  }
   return {
-    reference: String(parsed?.reference || record.reference || ''),
-    externalId: String(parsed?.external_id || record.external_id || input.externalId || ''),
+    reference,
+    externalId: String(parsed?.external_id || record.external_id || externalId || ''),
     status: String(parsed?.status || record.status || 'PENDING'),
     amount: Number(record.charge_amount ?? record.amount ?? parsed?.data?.amount ?? input.amount),
     network: String(record.network || network || ''),
