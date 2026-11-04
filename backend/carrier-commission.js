@@ -18,6 +18,9 @@ const {
 const PAYMENT_COLLECTION = 'carrierCommissionPayments';
 const FRESH_PUSH_MS = 2 * 60 * 1000;
 const WAIT_MESSAGE = 'Subiri uthibitisho kwenye simu.';
+const INITIATING_MESSAGE = 'Inaanzisha USSD…';
+const PUSHED_MESSAGE = 'Angalia simu — USSD push imetumwa';
+const NETWORK_MISMATCH_MESSAGE = 'Namba hii si ya mtandao uliochagua. Chagua mtandao sahihi.';
 
 function normalizePhoneNumber(value) {
   const digits = String(value || '').replace(/[^\d]/g, '');
@@ -30,6 +33,29 @@ function normalizePhoneNumber(value) {
 
 function isValidTzMobile(phone) {
   return /^255[67]\d{8}$/.test(String(phone || ''));
+}
+
+/** Detect M-Pesa / Mixx / Airtel from TZ MSISDN prefix when unambiguous. */
+function detectNetworkFromPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const local = digits.startsWith('255')
+    ? digits.slice(3)
+    : digits.startsWith('0')
+      ? digits.slice(1)
+      : digits;
+  const prefix = local.slice(0, 2);
+  if (['74', '75', '76'].includes(prefix)) return 'mpesa';
+  if (['65', '67', '71', '77'].includes(prefix)) return 'mixx';
+  if (['68', '69', '78'].includes(prefix)) return 'airtel';
+  return '';
+}
+
+function assertPhoneMatchesNetwork(phone, network) {
+  const detected = detectNetworkFromPhone(phone);
+  const selected = String(network || '').trim().toLowerCase();
+  if (detected && selected && detected !== selected) {
+    throw badRequest(NETWORK_MISMATCH_MESSAGE);
+  }
 }
 
 function normalizePaymentStatus(status) {
@@ -89,15 +115,18 @@ function publicPayError(error) {
     text === 'Mtandao huu haupo.' ||
     text === 'Hakuna deni.' ||
     text === 'Akaunti haina kampuni.' ||
-    text === WAIT_MESSAGE
+    text === WAIT_MESSAGE ||
+    text === INITIATING_MESSAGE ||
+    text === PUSHED_MESSAGE ||
+    text === NETWORK_MISMATCH_MESSAGE
   ) {
     return text;
   }
   if (text && text.length <= 90 && !/salio|api.?key|secret|unauthorized|forbidden|internal/i.test(text)) {
     return text;
   }
-  if (/salio/i.test(text)) return 'USSD haijatumwa. Jaribu tena.';
-  return 'USSD haijatumwa. Jaribu tena.';
+  if (/salio/i.test(text)) return 'Haijatumwa — jaribu tena';
+  return 'Haijatumwa — jaribu tena';
 }
 
 function sanitizeIdempotencyKey(value) {
@@ -113,17 +142,25 @@ function orderIdForIdempotency(carrierId, idempotencyKey) {
   return generateOrderId(carrierId);
 }
 
-function pendingResponse(base, { orderId, amount, reference, duplicate = false, status = 'pending', message = WAIT_MESSAGE } = {}) {
+function pendingResponse(
+  base,
+  { orderId, amount, reference, duplicate = false, status = 'pending', message, pushed = false } = {}
+) {
+  const ref = String(reference || '').trim();
+  // Gate: never claim pushed without an explicit flag AND a provider reference.
+  const confirmedPush = pushed === true && Boolean(ref) && status !== 'creating';
   return {
     ...base,
     status,
     duplicate: Boolean(duplicate),
-    pushed: Boolean(reference),
+    pushed: confirmedPush,
     orderId: String(orderId || ''),
     amount: Math.round(Number(amount) || 0),
-    reference: String(reference || '').trim() || undefined,
-    trivapesaReference: String(reference || '').trim() || undefined,
-    message,
+    reference: confirmedPush ? ref : undefined,
+    trivapesaReference: confirmedPush ? ref : undefined,
+    message:
+      message ||
+      (confirmedPush ? PUSHED_MESSAGE : status === 'creating' ? INITIATING_MESSAGE : WAIT_MESSAGE),
   };
 }
 
@@ -518,6 +555,7 @@ async function initiateCarrierCommissionPayment(req) {
 
   const selectedNetwork = String(body.network || body.method || '').trim().toLowerCase();
   if (!requestNetwork(selectedNetwork)) throw badRequest('Mtandao huu haupo.');
+  assertPhoneMatchesNetwork(phone, selectedNetwork);
 
   const idempotencyKey = sanitizeIdempotencyKey(body.idempotencyKey || body.idempotency_key || '');
   let orderId = orderIdForIdempotency(carrierId, idempotencyKey);
@@ -529,12 +567,14 @@ async function initiateCarrierCommissionPayment(req) {
       orderId = generateOrderId(carrierId);
       existingPay = null;
     } else if (String(existingPay.status || '') === 'completed') {
+      const completedRef = String(existingPay.trivapesaReference || '').trim();
       return pendingResponse(base, {
         orderId,
         amount: Number(existingPay.amount || amount),
-        reference: existingPay.trivapesaReference,
+        reference: completedRef,
         duplicate: true,
         status: 'completed',
+        pushed: Boolean(completedRef),
         message: '',
       });
     } else if (
@@ -546,18 +586,46 @@ async function initiateCarrierCommissionPayment(req) {
         amount: Number(existingPay.amount || amount),
         reference: existingPay.trivapesaReference,
         duplicate: true,
+        pushed: true,
+        message: PUSHED_MESSAGE,
+      });
+    } else if (String(existingPay.status || '') === 'creating') {
+      return pendingResponse(base, {
+        orderId,
+        amount: Number(existingPay.amount || amount),
+        reference: '',
+        duplicate: true,
+        status: 'creating',
+        pushed: false,
+        message: INITIATING_MESSAGE,
       });
     }
   }
 
   const fresh = freshPending(carrier);
   if (fresh && String(fresh.orderId || '') !== orderId) {
-    const freshRef = String(fresh.reference || fresh.trivapesaReference || '').trim();
+    const freshStatus = String(fresh.status || '').toLowerCase();
+    const freshRef = String(fresh.trivapesaReference || fresh.reference || '').trim();
+    // Only echo a prior push when that order is pending WITH a provider reference.
+    if (freshStatus === 'pending' && freshRef) {
+      return pendingResponse(base, {
+        orderId: String(fresh.orderId || ''),
+        amount: Number(fresh.amount || amount),
+        reference: freshRef,
+        duplicate: true,
+        pushed: true,
+        message: PUSHED_MESSAGE,
+      });
+    }
+    // Creating / no reference yet — honest initiating state, never invent "sent".
     return pendingResponse(base, {
       orderId: String(fresh.orderId || ''),
       amount: Number(fresh.amount || amount),
-      reference: freshRef,
+      reference: '',
       duplicate: true,
+      status: 'creating',
+      pushed: false,
+      message: INITIATING_MESSAGE,
     });
   }
 
@@ -568,6 +636,7 @@ async function initiateCarrierCommissionPayment(req) {
     : [];
 
   // Reserve the in-flight slot before TrivaPesa so a second tap cannot start another push.
+  // Clear any stale provider reference from a prior merge so we never echo a fake "pushed".
   await paymentRef(db, orderId).set(
     {
       orderId,
@@ -582,6 +651,8 @@ async function initiateCarrierCommissionPayment(req) {
       callbackUrl: commissionWebhookUrl(),
       idempotencyKey: idempotencyKey || orderId,
       shipmentIds,
+      trivapesaReference: '',
+      providerStatus: '',
       createdAtMs,
       createdAt: existingPay?.createdAt || FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -598,6 +669,8 @@ async function initiateCarrierCommissionPayment(req) {
         amount,
         network: selectedNetwork,
         payerPhone: phone,
+        trivapesaReference: '',
+        reference: '',
         createdAtMs,
         updatedAt: nowIso,
       },
@@ -616,18 +689,20 @@ async function initiateCarrierCommissionPayment(req) {
       idempotencyKey: idempotencyKey || orderId,
     });
     const providerStatus = normalizePaymentStatus(created.status);
+    const createdRef = String(created.reference || '').trim();
     if (providerStatus === 'failed') {
       await markIntentFailed(db, { orderId, carrierId, amount }, created.status);
-      throw badRequest('USSD haijatumwa. Jaribu tena.');
+      throw badRequest('Haijatumwa — jaribu tena');
     }
-    if (!String(created.reference || '').trim()) {
-      throw badRequest('USSD haijatumwa. Jaribu tena.');
+    if (!createdRef) {
+      console.warn('[ussd] carrier initiate missing reference', orderId, created.status || 'no_status');
+      throw badRequest('Haijatumwa — jaribu tena');
     }
     const openIds = [...openOrderIds(carrier), orderId].slice(-8);
     await paymentRef(db, orderId).set(
       {
         status: 'pending',
-        trivapesaReference: created.reference,
+        trivapesaReference: createdRef,
         providerStatus: created.status || 'PENDING',
         providerNetwork: created.network || REQUEST_NETWORKS[selectedNetwork] || '',
         updatedAt: FieldValue.serverTimestamp(),
@@ -644,7 +719,7 @@ async function initiateCarrierCommissionPayment(req) {
           amount,
           network: selectedNetwork,
           payerPhone: phone,
-          trivapesaReference: created.reference,
+          trivapesaReference: createdRef,
           createdAtMs,
           updatedAt: new Date().toISOString(),
         },
@@ -655,7 +730,8 @@ async function initiateCarrierCommissionPayment(req) {
       '[ussd] carrier pushed',
       orderId,
       created.idempotentReplay ? 'replay' : 'new',
-      String(created.reference).slice(0, 18)
+      'status=' + String(created.status || 'PENDING'),
+      'ref=' + createdRef.slice(0, 18)
     );
     if (providerStatus === 'completed') {
       const settled = await syncPayment(db, orderId);
@@ -667,16 +743,18 @@ async function initiateCarrierCommissionPayment(req) {
         pushed: true,
         orderId,
         amount,
-        reference: created.reference,
-        trivapesaReference: created.reference,
-        message: settled?.settled ? '' : WAIT_MESSAGE,
+        reference: createdRef,
+        trivapesaReference: createdRef,
+        message: settled?.settled ? '' : PUSHED_MESSAGE,
       };
     }
     return pendingResponse(base, {
       orderId,
       amount,
-      reference: created.reference,
+      reference: createdRef,
       duplicate: Boolean(created.idempotentReplay),
+      pushed: true,
+      message: PUSHED_MESSAGE,
     });
   } catch (error) {
     const snap = await paymentRef(db, orderId).get().catch(() => null);
@@ -692,11 +770,12 @@ async function initiateCarrierCommissionPayment(req) {
         remote = null;
       }
       if (remote && normalizePaymentStatus(remote.status) !== 'failed' && String(remote.reference || '').trim()) {
+        const remoteRef = String(remote.reference || '').trim();
         const openIds = [...openOrderIds(carrier), orderId].slice(-8);
         await paymentRef(db, orderId).set(
           {
             status: 'pending',
-            trivapesaReference: remote.reference,
+            trivapesaReference: remoteRef,
             providerStatus: remote.status || 'PENDING',
             updatedAt: FieldValue.serverTimestamp(),
           },
@@ -711,7 +790,7 @@ async function initiateCarrierCommissionPayment(req) {
               amount,
               network: selectedNetwork,
               payerPhone: phone,
-              trivapesaReference: remote.reference,
+              trivapesaReference: remoteRef,
               createdAtMs,
               updatedAt: new Date().toISOString(),
             },
@@ -721,8 +800,10 @@ async function initiateCarrierCommissionPayment(req) {
         return pendingResponse(base, {
           orderId,
           amount,
-          reference: remote.reference,
+          reference: remoteRef,
           duplicate: true,
+          pushed: true,
+          message: PUSHED_MESSAGE,
         });
       }
       if (status === 'creating') {
@@ -781,8 +862,10 @@ async function verifyCarrierCommissionPayment(req) {
     watched?.reference || carrierPay.trivapesaReference || carrierPay.reference || ''
   ).trim();
   let message = '';
-  if (pending) message = WAIT_MESSAGE;
-  else if (watchedFailed) {
+  if (pending) {
+    // Reference means provider accepted the collection; until then stay on initiating copy.
+    message = reference ? 'Angalia simu yako' : INITIATING_MESSAGE;
+  } else if (watchedFailed) {
     message = publicVerifyFailureMessage({
       providerStatus,
       failureReason,
@@ -805,6 +888,7 @@ async function verifyCarrierCommissionPayment(req) {
       ? String(carrier.commissionPayment?.orderId || '')
       : requested || latest.orderId || '',
     message,
+    pushed: pending ? Boolean(reference) : undefined,
     providerStatus: providerStatus || undefined,
     failureReason: watchedFailed ? failureReason || undefined : undefined,
     reference: reference || undefined,
@@ -849,7 +933,10 @@ async function handleCarrierCommissionWebhook(req) {
 
 module.exports = {
   WAIT_MESSAGE,
+  INITIATING_MESSAGE,
+  PUSHED_MESSAGE,
   allocateConfirmedPayment,
+  detectNetworkFromPhone,
   handleCarrierCommissionWebhook,
   initiateCarrierCommissionPayment,
   normalizePaymentStatus,

@@ -174,16 +174,23 @@ async function trivapesaFetch(pathname, { method = 'GET', body, idempotencyKey }
   } catch {
     parsed = null;
   }
-  if (!response.ok || parsed?.success === false) {
-    const providerCode = String(parsed?.error?.code || '').trim();
-    const providerMessage = String(parsed?.error?.message || '').trim();
+  const providerCode = String(parsed?.error?.code || '').trim();
+  const providerMessage = String(parsed?.error?.message || '').trim();
+  // HTTP 200 with a nested error / success:false is a soft failure — do not invent success.
+  const softFail =
+    parsed?.success === false ||
+    (parsed?.error != null &&
+      typeof parsed.error === 'object' &&
+      Boolean(providerCode || providerMessage));
+  if (!response.ok || softFail) {
     console.warn(
       'trivapesa request failed',
       method,
       pathname.split('?')[0],
       response.status,
       providerCode || 'no_code',
-      providerMessage ? providerMessage.slice(0, 80) : ''
+      providerMessage ? providerMessage.slice(0, 80) : '',
+      parsed?.success === false ? 'success:false' : ''
     );
     const publicMessage = publicProviderMessage(providerCode, providerMessage);
     const error = new Error(publicMessage);
@@ -230,18 +237,40 @@ async function createCollection(input) {
   });
   const record = pickTransaction(parsed, parsed?.reference) || {};
   const reference = String(parsed?.reference || record.reference || '').trim();
+  const status = String(parsed?.status || record.status || '').trim();
+  // Safe initiate log — never dump API keys or full MSISDN.
+  console.log(
+    '[trivapesa] collection initiate',
+    externalId || 'no_external_id',
+    'success=' + String(parsed?.success),
+    'status=' + (status || 'none'),
+    'hasReference=' + Boolean(reference),
+    'ref=' + (reference ? reference.slice(0, 14) : ''),
+    'network=' + String(record.network || network || ''),
+    'replay=' + String(parsed?.idempotent_replay === true)
+  );
   if (!reference) {
-    console.warn('trivapesa collection missing reference', externalId || 'no_external_id');
+    console.warn('trivapesa collection missing reference', externalId || 'no_external_id', status || 'no_status');
     const error = new Error('USSD haijatumwa. Jaribu tena.');
     error.statusCode = 502;
     error.publicMessage = 'USSD haijatumwa. Jaribu tena.';
     error.retryable = true;
     throw error;
   }
+  const normalized = String(status || 'PENDING').trim().toUpperCase();
+  if (['FAILED', 'FAILURE', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(normalized)) {
+    const detail = publicProviderMessage(normalized, status);
+    const error = new Error(detail);
+    error.statusCode = 400;
+    error.publicMessage = detail;
+    error.providerCode = normalized;
+    error.providerMessage = status;
+    throw error;
+  }
   return {
     reference,
     externalId: String(parsed?.external_id || record.external_id || externalId || ''),
-    status: String(parsed?.status || record.status || 'PENDING'),
+    status: status || 'PENDING',
     amount: Number(record.charge_amount ?? record.amount ?? parsed?.data?.amount ?? input.amount),
     network: String(record.network || network || ''),
     idempotentReplay: parsed?.idempotent_replay === true,
