@@ -186,6 +186,10 @@ export type DriverCommissionPayResult = {
   orderId?: string;
   settled?: boolean;
   duplicate?: boolean;
+  /** True only when provider accepted the push AND returned a reference. */
+  pushed?: boolean;
+  reference?: string;
+  trivapesaReference?: string;
   message?: string;
   error?: string;
   networks?: DriverPaymentNetwork[];

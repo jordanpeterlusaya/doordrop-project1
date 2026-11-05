@@ -24,6 +24,9 @@ const {
 const PAYMENT_COLLECTION = 'driverCommissionPayments';
 const FRESH_PUSH_MS = 2 * 60 * 1000;
 const WAIT_MESSAGE = 'Subiri uthibitisho kwenye simu.';
+const INITIATING_MESSAGE = 'Inaanzisha USSD…';
+const PUSHED_MESSAGE = 'Angalia simu — USSD push imetumwa';
+const NETWORK_MISMATCH_MESSAGE = 'Namba hii si ya mtandao uliochagua. Chagua mtandao sahihi.';
 const DEFAULT_FEE_RATE = 0.2;
 const TIER_RULES = [
   { id: 'bronze', minStreak: 0, feeRate: 0.2, payCeilingTzs: 25_000 },
@@ -75,6 +78,51 @@ function isValidTzMobile(phone) {
   return /^255[67]\d{8}$/.test(String(phone || ''));
 }
 
+/** Detect M-Pesa / Mixx / Airtel from TZ MSISDN prefix when unambiguous. */
+function detectNetworkFromPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const local = digits.startsWith('255')
+    ? digits.slice(3)
+    : digits.startsWith('0')
+      ? digits.slice(1)
+      : digits;
+  const prefix = local.slice(0, 2);
+  if (['74', '75', '76'].includes(prefix)) return 'mpesa';
+  if (['65', '67', '71', '77'].includes(prefix)) return 'mixx';
+  if (['68', '69', '78'].includes(prefix)) return 'airtel';
+  return '';
+}
+
+function assertPhoneMatchesNetwork(phone, network) {
+  const detected = detectNetworkFromPhone(phone);
+  const selected = String(network || '').trim().toLowerCase();
+  if (detected && selected && detected !== selected) {
+    throw badRequest(NETWORK_MISMATCH_MESSAGE);
+  }
+}
+
+function pendingResponse(
+  base,
+  { orderId, amount, reference, duplicate = false, status = 'pending', message, pushed = false } = {}
+) {
+  const ref = String(reference || '').trim();
+  // Gate: never claim pushed without an explicit flag AND a provider reference.
+  const confirmedPush = pushed === true && Boolean(ref) && status !== 'creating';
+  return {
+    ...base,
+    status,
+    duplicate: Boolean(duplicate),
+    pushed: confirmedPush,
+    orderId: String(orderId || ''),
+    amount: Math.round(Number(amount) || 0),
+    reference: confirmedPush ? ref : undefined,
+    trivapesaReference: confirmedPush ? ref : undefined,
+    message:
+      message ||
+      (confirmedPush ? PUSHED_MESSAGE : status === 'creating' ? INITIATING_MESSAGE : WAIT_MESSAGE),
+  };
+}
+
 function normalizePaymentStatus(status) {
   const normalized = String(status || '').trim().toUpperCase();
   if (['COMPLETED', 'COMPLETE', 'SUCCESS', 'SUCCESSFUL', 'PAID'].includes(normalized)) return 'completed';
@@ -113,12 +161,20 @@ function publicPayError(error) {
       'Mtandao huu haupo.',
       'Hakuna deni.',
       WAIT_MESSAGE,
+      INITIATING_MESSAGE,
+      PUSHED_MESSAGE,
+      NETWORK_MISMATCH_MESSAGE,
+      'Haijatumwa — jaribu tena',
+      'USSD haijatumwa. Jaribu tena.',
     ].includes(text)
   ) {
     return text;
   }
-  if (/salio/i.test(text)) return 'USSD haijatumwa. Jaribu tena.';
-  return 'USSD haijatumwa. Jaribu tena.';
+  if (text && text.length <= 90 && !/salio|api.?key|secret|unauthorized|forbidden|internal/i.test(text)) {
+    return text;
+  }
+  if (/salio/i.test(text)) return 'Haijatumwa — jaribu tena';
+  return 'Haijatumwa — jaribu tena';
 }
 
 function parseFareTzs(order) {
@@ -468,7 +524,8 @@ async function settleOpenPayments(db, driver) {
 
 function freshPending(driver) {
   const current = driver?.commissionPayment || {};
-  if (normalizePaymentStatus(current.status) !== 'pending') return null;
+  const status = String(current.status || '').toLowerCase();
+  if (status !== 'pending' && status !== 'creating') return null;
   const orderId = String(current.orderId || '').trim();
   if (!orderId) return null;
   const createdAt = Number(current.createdAtMs || 0);
@@ -501,25 +558,44 @@ async function initiateDriverCommissionPayment(req) {
   );
   if (!isValidTzMobile(phone)) throw badRequest('Weka namba sahihi ya simu.');
 
-  const selectedNetwork = String(body.network || '').trim().toLowerCase();
+  const selectedNetwork = String(body.network || body.method || '').trim().toLowerCase();
   if (!requestNetwork(selectedNetwork)) throw badRequest('Mtandao huu haupo.');
+  assertPhoneMatchesNetwork(phone, selectedNetwork);
 
   const fresh = freshPending(driver);
   if (fresh) {
-    return {
-      ...base,
-      status: 'pending',
-      duplicate: true,
+    const freshStatus = String(fresh.status || '').toLowerCase();
+    const freshRef = String(fresh.trivapesaReference || fresh.reference || '').trim();
+    // Only echo a prior push when that order is pending WITH a provider reference.
+    if (freshStatus === 'pending' && freshRef) {
+      return pendingResponse(base, {
+        orderId: String(fresh.orderId || ''),
+        amount: Number(fresh.amount || amount),
+        reference: freshRef,
+        duplicate: true,
+        pushed: true,
+        message: PUSHED_MESSAGE,
+      });
+    }
+    // Creating / no reference yet — honest initiating state, never invent "sent".
+    return pendingResponse(base, {
       orderId: String(fresh.orderId || ''),
       amount: Number(fresh.amount || amount),
-      message: WAIT_MESSAGE,
-    };
+      reference: '',
+      duplicate: true,
+      status: 'creating',
+      pushed: false,
+      message: INITIATING_MESSAGE,
+    });
   }
 
   const orderId = generateOrderId(driverId);
   const driverName = String(driver.fullName || driver.displayName || driver.name || 'HAUL Pilot').trim();
   const createdAtMs = Date.now();
   const callbackUrl = driverCommissionWebhookUrl();
+
+  // Reserve the in-flight slot before TrivaPesa so a second tap cannot start another push.
+  // Clear any stale provider reference from a prior merge so we never echo a fake "pushed".
   await paymentRef(db, orderId).set({
     orderId,
     driverId,
@@ -531,12 +607,34 @@ async function initiateDriverCommissionPayment(req) {
     payerPhone: phone,
     buyerName: driverName,
     callbackUrl,
+    trivapesaReference: '',
+    providerStatus: '',
     createdAtMs,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  const nowIso = new Date().toISOString();
+  await db.collection('drivers').doc(driverId).set(
+    {
+      commissionPayerPhone: phone,
+      commissionPayment: {
+        orderId,
+        status: 'creating',
+        amount,
+        network: selectedNetwork,
+        payerPhone: phone,
+        trivapesaReference: '',
+        reference: '',
+        createdAtMs,
+        updatedAt: nowIso,
+      },
+      commissionStatus: 'pending',
+    },
+    { merge: true }
+  );
 
   try {
+    console.log('[ussd] driver create', driverId.slice(0, 8), orderId, selectedNetwork, amount);
     const created = await createCollection({
       amount,
       phone,
@@ -544,18 +642,23 @@ async function initiateDriverCommissionPayment(req) {
       externalId: orderId,
       network: selectedNetwork,
       callbackUrl,
+      idempotencyKey: orderId,
     });
     const providerStatus = normalizePaymentStatus(created.status);
+    const createdRef = String(created.reference || '').trim();
     if (providerStatus === 'failed') {
       await markIntentFailed(db, { orderId, driverId, amount }, created.status);
-      throw badRequest('USSD haijatumwa. Jaribu tena.');
+      throw badRequest('Haijatumwa — jaribu tena');
+    }
+    if (!createdRef) {
+      console.warn('[ussd] driver initiate missing reference', orderId, created.status || 'no_status');
+      throw badRequest('Haijatumwa — jaribu tena');
     }
     const openIds = [...openOrderIds(driver), orderId].slice(-8);
-    const nowIso = new Date().toISOString();
     await paymentRef(db, orderId).set(
       {
         status: 'pending',
-        trivapesaReference: created.reference,
+        trivapesaReference: createdRef,
         providerStatus: created.status || 'PENDING',
         providerNetwork: created.network || REQUEST_NETWORKS[selectedNetwork] || '',
         updatedAt: FieldValue.serverTimestamp(),
@@ -572,12 +675,20 @@ async function initiateDriverCommissionPayment(req) {
           amount,
           network: selectedNetwork,
           payerPhone: phone,
+          trivapesaReference: createdRef,
           createdAtMs,
-          updatedAt: nowIso,
+          updatedAt: new Date().toISOString(),
         },
         commissionStatus: 'pending',
       },
       { merge: true }
+    );
+    console.log(
+      '[ussd] driver pushed',
+      orderId,
+      created.idempotentReplay ? 'replay' : 'new',
+      'status=' + String(created.status || 'PENDING'),
+      'ref=' + createdRef.slice(0, 18)
     );
     if (providerStatus === 'completed') {
       const settled = await syncPayment(db, orderId);
@@ -586,51 +697,92 @@ async function initiateDriverCommissionPayment(req) {
         ...summarize(after, driver),
         status: settled?.status || 'completed',
         settled: settled?.settled === true,
+        pushed: true,
         orderId,
         amount,
-        message: settled?.settled ? '' : WAIT_MESSAGE,
+        reference: createdRef,
+        trivapesaReference: createdRef,
+        message: settled?.settled ? '' : PUSHED_MESSAGE,
       };
     }
-    return {
-      ...base,
-      status: 'pending',
-      duplicate: false,
+    return pendingResponse(base, {
       orderId,
       amount,
-      message: WAIT_MESSAGE,
-    };
+      reference: createdRef,
+      duplicate: Boolean(created.idempotentReplay),
+      pushed: true,
+      message: PUSHED_MESSAGE,
+    });
   } catch (error) {
     const snap = await paymentRef(db, orderId).get().catch(() => null);
     const status = String(snap?.data()?.status || '');
-    if (status === 'creating') {
+    if (status === 'creating' || status === 'pending') {
       let remote = null;
       try {
-        remote = await fetchCollection({ externalId: orderId });
+        remote = await fetchCollection({
+          reference: snap?.data()?.trivapesaReference,
+          externalId: orderId,
+        });
       } catch {
         remote = null;
       }
-      if (remote && normalizePaymentStatus(remote.status) !== 'failed') {
+      if (remote && normalizePaymentStatus(remote.status) !== 'failed' && String(remote.reference || '').trim()) {
+        const remoteRef = String(remote.reference || '').trim();
+        const openIds = [...openOrderIds(driver), orderId].slice(-8);
         await paymentRef(db, orderId).set(
           {
             status: 'pending',
-            trivapesaReference: remote.reference || '',
+            trivapesaReference: remoteRef,
             providerStatus: remote.status || 'PENDING',
             updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
-        return {
-          ...base,
-          status: 'pending',
+        await db.collection('drivers').doc(driverId).set(
+          {
+            commissionOpenOrderIds: openIds,
+            commissionPayment: {
+              orderId,
+              status: 'pending',
+              amount,
+              network: selectedNetwork,
+              payerPhone: phone,
+              trivapesaReference: remoteRef,
+              createdAtMs,
+              updatedAt: new Date().toISOString(),
+            },
+            commissionStatus: 'pending',
+          },
+          { merge: true }
+        );
+        return pendingResponse(base, {
           orderId,
           amount,
-          message: WAIT_MESSAGE,
-        };
+          reference: remoteRef,
+          duplicate: true,
+          pushed: true,
+          message: PUSHED_MESSAGE,
+        });
       }
-      await markIntentFailed(db, { orderId, driverId, amount }, 'FAILED').catch(() => undefined);
+      if (status === 'creating') {
+        await markIntentFailed(db, { orderId, driverId, amount }, 'FAILED').catch(() => undefined);
+      }
     }
-    if (error?.statusCode === 400 && publicPayError(error) === String(error.message || '')) throw error;
-    throw badRequest(publicPayError(error));
+    const message = publicPayError(error);
+    console.warn('[ussd] driver init failed', orderId, error?.providerCode || error?.statusCode || 'error', message);
+    const statusCode = Number(error?.statusCode);
+    if (statusCode === 503) {
+      const unavailable = badRequest(message);
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
+    if ((statusCode === 502 || statusCode === 429) && error?.retryable) {
+      const retryable = badRequest(message);
+      retryable.statusCode = statusCode;
+      throw retryable;
+    }
+    if (error?.statusCode === 400 && message === String(error.message || '')) throw error;
+    throw badRequest(message);
   }
 }
 
@@ -653,13 +805,25 @@ async function verifyDriverCommissionPayment(req) {
   const summary = summarize(rows, driver);
   await syncDriverUnpaidMirror(db, driverId, summary.unpaidTzs, driver);
   const latest = results.filter(Boolean).reverse().find((item) => item.orderId) || {};
-  const pending = normalizePaymentStatus(driver.commissionPayment?.status) === 'pending';
+  const payStatus = String(driver.commissionPayment?.status || '').toLowerCase();
+  const pending = payStatus === 'pending' || payStatus === 'creating';
+  const reference = String(
+    driver.commissionPayment?.trivapesaReference || driver.commissionPayment?.reference || ''
+  ).trim();
   const watched = results.find((item) => requested && item?.orderId === requested);
   const watchedFailed = watched?.status === 'failed';
+  let message = '';
+  if (pending) {
+    message = reference ? 'Angalia simu yako' : INITIATING_MESSAGE;
+  } else if (watchedFailed) {
+    message = 'Malipo hayajakamilika.';
+  }
   return {
     ...summary,
     status: pending
-      ? 'pending'
+      ? payStatus === 'creating'
+        ? 'creating'
+        : 'pending'
       : watchedFailed
         ? 'failed'
         : watched?.status === 'completed'
@@ -669,7 +833,10 @@ async function verifyDriverCommissionPayment(req) {
             : 'clear',
     settled: results.some((item) => item?.settled === true || item?.status === 'completed'),
     orderId: pending ? String(driver.commissionPayment?.orderId || '') : requested || latest.orderId || '',
-    message: pending ? WAIT_MESSAGE : watchedFailed ? 'Malipo hayajakamilika.' : '',
+    pushed: pending ? Boolean(reference) : undefined,
+    reference: reference || undefined,
+    trivapesaReference: reference || undefined,
+    message,
   };
 }
 
@@ -732,6 +899,8 @@ async function getDriverCommissionStatus(req) {
 
 module.exports = {
   WAIT_MESSAGE,
+  INITIATING_MESSAGE,
+  PUSHED_MESSAGE,
   allocateConfirmedPayment,
   commissionFeeRate,
   commissionPayCeilingTzs,

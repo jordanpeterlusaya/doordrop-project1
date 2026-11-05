@@ -1,8 +1,11 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  LayoutChangeEvent,
+  Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +23,7 @@ import { driveHapticLight, driveHapticMedium } from '../lib/drive-haptics';
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const CTA = driveTheme.colors.cta;
+const CTA_TEXT = driveTheme.colors.ctaText;
 
 export function DriveBrandMark({ compact = false, light = false }: { compact?: boolean; light?: boolean }) {
   return (
@@ -215,7 +219,7 @@ export function DriveGoOnline({
             onPress?.();
           }}
           style={({ pressed }) => [styles.ctaButton, loading && styles.disabled, pressed && styles.ctaPressed]}>
-          {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.ctaButtonText}>{label}</Text>}
+          {loading ? <ActivityIndicator color={CTA_TEXT} /> : <Text style={styles.ctaButtonText}>{label}</Text>}
         </Pressable>
         <Text style={styles.homeActionHint}>{hint}</Text>
       </DriveSurfaceCard>
@@ -239,10 +243,10 @@ export function DriveGoOnline({
           pressed && styles.brandPressed,
         ]}>
         {loading ? (
-          <ActivityIndicator color="#FFFFFF" />
+          <ActivityIndicator color={CTA_TEXT} />
         ) : (
           <>
-            <MaterialCommunityIcons name="power" size={22} color="#FFFFFF" />
+            <MaterialCommunityIcons name="power" size={22} color={CTA_TEXT} />
             <Text style={styles.homeCtaText}>{label}</Text>
           </>
         )}
@@ -361,6 +365,10 @@ export function DriveOrderCard({
   onAction,
   onCall,
   callLabel,
+  onChat,
+  chatLabel,
+  onOpenMaps,
+  mapsLabel,
   fareStepper,
   loadLabel,
   chancesUsed,
@@ -372,6 +380,7 @@ export function DriveOrderCard({
   onChangeOfferNote,
   onDecline,
   declineLabel = 'Kataa',
+  swipeHint,
 }: {
   meta: string;
   place: string;
@@ -387,6 +396,11 @@ export function DriveOrderCard({
   onAction?: () => void;
   onCall?: () => void;
   callLabel?: string;
+  onChat?: () => void;
+  chatLabel?: string;
+  onOpenMaps?: () => void;
+  mapsLabel?: string;
+  swipeHint?: string;
   fareStepper?: {
     onMinus: () => void;
     onPlus: () => void;
@@ -453,12 +467,7 @@ export function DriveOrderCard({
           </Pressable>
         ) : null}
       </View>
-      {phone ? (
-        <Pressable onPress={() => void onCall?.()} style={styles.openPhone}>
-          <Text style={styles.openPhoneText}>{phone}</Text>
-          {callLabel ? <Text style={styles.openPhoneAction}>{callLabel}</Text> : null}
-        </Pressable>
-      ) : null}
+      {phone ? <Text style={styles.openPhoneText}>{phone}</Text> : null}
       {onChangeOfferNote ? (
         <View style={styles.openNotes}>
           {['Bei yangu.', 'Niko tayari.', 'Tuongee.'].map((line) => {
@@ -471,20 +480,13 @@ export function DriveOrderCard({
           })}
         </View>
       ) : null}
-      <Pressable
-        disabled={loading || actionDisabled}
-        onPress={() => {
-          void driveHapticMedium();
-          onAction?.();
-        }}
-        style={({ pressed }) => [
-          styles.homeCtaGradient,
-          styles.homeCtaDark,
-          (loading || actionDisabled) && styles.disabled,
-          pressed && styles.ctaPressed,
-        ]}>
-        {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.homeCtaText}>{actionLabel}</Text>}
-      </Pressable>
+      <DriveSwipeToAccept
+        label={actionLabel}
+        hint={swipeHint || actionLabel}
+        loading={loading}
+        disabled={actionDisabled}
+        onAccept={() => onAction?.()}
+      />
       {onDecline ? (
         <Pressable onPress={onDecline} style={styles.openDecline}>
           <Text style={styles.openDeclineText}>{declineLabel}</Text>
@@ -640,19 +642,22 @@ export function DriveAuthPanel({
   title,
   subtitle,
   avatarKind = 'authWelcome',
+  showIllustration = true,
 }: {
   title: string;
   subtitle: string;
   avatarKind?: Exclude<DriveAvatarKind, 'customer' | 'driver'>;
+  showIllustration?: boolean;
 }) {
   return (
     <View style={styles.authPanel}>
-      <DriveAvatarStage tone="brand">
-        <DriveSceneAvatar kind={avatarKind} size={108} />
-      </DriveAvatarStage>
-      <DriveBrandMark />
       <Text style={styles.authTitle}>{title}</Text>
       <Text style={styles.authSubtitle}>{subtitle}</Text>
+      {showIllustration ? (
+        <View style={styles.authIllustrationWell}>
+          <DriveSceneAvatar kind={avatarKind} size={120} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -994,13 +999,227 @@ export function DrivePrimaryButton({
         pressed && (variant === 'brand' ? styles.brandPressed : styles.ctaPressed),
       ]}>
       {loading ? (
-        <ActivityIndicator color="#FFFFFF" />
+        <ActivityIndicator color={CTA_TEXT} />
       ) : (
         <View style={styles.primaryButtonInner}>
-          {icon ? <MaterialCommunityIcons name={icon} size={20} color="#FFFFFF" /> : null}
+          {icon ? <MaterialCommunityIcons name={icon} size={22} color={CTA_TEXT} /> : null}
           <Text style={styles.ctaButtonText}>{label}</Text>
         </View>
       )}
+    </Pressable>
+  );
+}
+
+/** Swipe right to confirm — used on incoming offer cards. */
+export function DriveSwipeToAccept({
+  label,
+  loading,
+  disabled,
+  onAccept,
+  hint,
+}: {
+  label: string;
+  loading?: boolean;
+  disabled?: boolean;
+  onAccept?: () => void;
+  hint?: string;
+}) {
+  const trackWidth = useRef(0);
+  const translateX = useRef(new Animated.Value(0)).current;
+  const thumbSize = 56;
+  const maxSlide = () => Math.max(0, trackWidth.current - thumbSize - 8);
+
+  useEffect(() => {
+    if (loading || disabled) {
+      translateX.setValue(0);
+    }
+  }, [disabled, loading, translateX]);
+
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => !disabled && !loading,
+        onMoveShouldSetPanResponder: (_e, g) => !disabled && !loading && Math.abs(g.dx) > 4 && Math.abs(g.dx) > Math.abs(g.dy),
+        onPanResponderGrant: () => {
+          translateX.stopAnimation();
+        },
+        onPanResponderMove: (_e, g) => {
+          translateX.setValue(Math.min(maxSlide(), Math.max(0, g.dx)));
+        },
+        onPanResponderRelease: (_e, g) => {
+          const max = maxSlide();
+          if (max > 0 && g.dx >= max * 0.72) {
+            Animated.timing(translateX, { toValue: max, duration: 110, useNativeDriver: false }).start(() => {
+              void driveHapticMedium();
+              onAccept?.();
+              translateX.setValue(0);
+            });
+            return;
+          }
+          Animated.spring(translateX, { toValue: 0, useNativeDriver: false, bounciness: 6 }).start();
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(translateX, { toValue: 0, useNativeDriver: false }).start();
+        },
+      }),
+    [disabled, loading, onAccept, translateX]
+  );
+
+  const onTrackLayout = (event: LayoutChangeEvent) => {
+    trackWidth.current = event.nativeEvent.layout.width;
+  };
+
+  return (
+    <View
+      onLayout={onTrackLayout}
+      style={[styles.swipeTrack, (disabled || loading) && styles.disabled]}
+      accessibilityRole="adjustable"
+      accessibilityLabel={label}>
+      <Text style={styles.swipeHint} numberOfLines={1}>
+        {loading ? '...' : hint || label}
+      </Text>
+      <Animated.View
+        style={[styles.swipeThumb, { transform: [{ translateX }] }]}
+        {...pan.panHandlers}>
+        {loading ? (
+          <ActivityIndicator color={CTA_TEXT} />
+        ) : (
+          <MaterialCommunityIcons name="chevron-double-right" size={28} color={CTA_TEXT} />
+        )}
+      </Animated.View>
+    </View>
+  );
+}
+
+export function DriveCancelReasonSheet({
+  visible,
+  title,
+  subtitle,
+  presets,
+  placeholder,
+  confirmLabel,
+  keepLabel,
+  loading,
+  onClose,
+  onConfirm,
+}: {
+  visible: boolean;
+  title: string;
+  subtitle: string;
+  presets: string[];
+  placeholder: string;
+  confirmLabel: string;
+  keepLabel: string;
+  loading?: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [selected, setSelected] = useState('');
+  const [custom, setCustom] = useState('');
+
+  useEffect(() => {
+    if (!visible) {
+      setSelected('');
+      setCustom('');
+    }
+  }, [visible]);
+
+  const reason = (custom.trim() || selected).trim();
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.cancelSheetBackdrop} onPress={onClose} />
+      <View style={styles.cancelSheet}>
+        <View style={styles.cancelSheetHandle} />
+        <Text style={styles.cancelSheetTitle}>{title}</Text>
+        <Text style={styles.cancelSheetSubtitle}>{subtitle}</Text>
+        <View style={styles.cancelChipWrap}>
+          {presets.map((preset) => {
+            const active = selected === preset && !custom.trim();
+            return (
+              <Pressable
+                key={preset}
+                onPress={() => {
+                  void driveHapticLight();
+                  setCustom('');
+                  setSelected(preset);
+                }}
+                style={[styles.cancelChip, active && styles.cancelChipActive]}>
+                <Text style={[styles.cancelChipText, active && styles.cancelChipTextActive]}>{preset}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <TextInput
+          value={custom}
+          onChangeText={(value) => {
+            setCustom(value);
+            if (value.trim()) setSelected('');
+          }}
+          placeholder={placeholder}
+          placeholderTextColor={driveTheme.colors.muted}
+          multiline
+          maxLength={180}
+          style={styles.cancelReasonInput}
+          textAlignVertical="top"
+        />
+        <DrivePrimaryButton
+          label={confirmLabel}
+          loading={loading}
+          disabled={!reason || loading}
+          onPress={() => onConfirm(reason)}
+        />
+        <DriveGhostButton label={keepLabel} onPress={onClose} />
+      </View>
+    </Modal>
+  );
+}
+
+export function DriveCallChatRow({
+  callLabel,
+  chatLabel,
+  onCall,
+  onChat,
+}: {
+  callLabel: string;
+  chatLabel: string;
+  onCall?: () => void;
+  onChat?: () => void;
+}) {
+  return (
+    <View style={styles.contactRow}>
+      <Pressable
+        onPress={() => {
+          void driveHapticMedium();
+          onCall?.();
+        }}
+        style={({ pressed }) => [styles.contactBtn, pressed && styles.pressed]}>
+        <MaterialCommunityIcons name="phone" size={22} color="#111827" />
+        <Text style={styles.contactBtnText}>{callLabel}</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => {
+          void driveHapticMedium();
+          onChat?.();
+        }}
+        style={({ pressed }) => [styles.contactBtn, pressed && styles.pressed]}>
+        <MaterialCommunityIcons name="message-text" size={22} color="#111827" />
+        <Text style={styles.contactBtnText}>{chatLabel}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+export function DriveMapsButton({ label, onPress }: { label: string; onPress?: () => void }) {
+  return (
+    <Pressable
+      onPress={() => {
+        void driveHapticMedium();
+        onPress?.();
+      }}
+      style={({ pressed }) => [styles.mapsButton, pressed && styles.pressed]}>
+      <MaterialCommunityIcons name="navigation-variant" size={22} color="#FFFFFF" />
+      <Text style={styles.mapsButtonText}>{label}</Text>
     </Pressable>
   );
 }
@@ -1010,12 +1229,15 @@ export function DriveGhostButton({
   loading,
   disabled,
   onPress,
+  tone = 'default',
 }: {
   label: string;
   loading?: boolean;
   disabled?: boolean;
   onPress?: () => void;
+  tone?: 'default' | 'danger';
 }) {
+  const danger = tone === 'danger';
   return (
     <Pressable
       disabled={disabled || loading}
@@ -1023,8 +1245,13 @@ export function DriveGhostButton({
         void driveHapticLight();
         onPress?.();
       }}
-      style={({ pressed }) => [styles.ghostButton, (disabled || loading) && styles.disabled, pressed && styles.pressed]}>
-      <Text style={styles.ghostButtonText}>{loading ? '...' : label}</Text>
+      style={({ pressed }) => [
+        styles.ghostButton,
+        danger && styles.ghostButtonDanger,
+        (disabled || loading) && styles.disabled,
+        pressed && styles.pressed,
+      ]}>
+      <Text style={[styles.ghostButtonText, danger && styles.ghostButtonTextDanger]}>{loading ? '...' : label}</Text>
     </Pressable>
   );
 }
@@ -1329,7 +1556,7 @@ const styles = StyleSheet.create({
   },
   homeCtaText: {
     fontFamily: driveType.bold,
-    color: '#FFFFFF',
+    color: CTA_TEXT,
     fontSize: 17,
     letterSpacing: 0.15,
   },
@@ -1602,9 +1829,109 @@ const styles = StyleSheet.create({
   brandPressed: { backgroundColor: driveTheme.colors.primaryDark },
   ctaButtonText: {
     fontFamily: driveType.bold,
-    color: '#FFFFFF',
+    color: CTA_TEXT,
+    fontSize: 17,
+    letterSpacing: 0.2,
+  },
+  swipeTrack: {
+    minHeight: 68,
+    borderRadius: 18,
+    backgroundColor: driveTheme.colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginTop: 4,
+  },
+  swipeHint: {
+    position: 'absolute',
+    left: 72,
+    right: 16,
+    fontFamily: driveType.bold,
+    color: driveTheme.colors.ink,
     fontSize: 16,
     letterSpacing: 0.2,
+  },
+  swipeThumb: {
+    width: 56,
+    height: 56,
+    marginLeft: 4,
+    borderRadius: 14,
+    backgroundColor: CTA,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...driveTheme.shadows.pill,
+  },
+  cancelSheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  cancelSheet: {
+    backgroundColor: driveTheme.colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 28,
+    gap: 12,
+  },
+  cancelSheetHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: driveTheme.colors.lineStrong,
+    marginBottom: 6,
+  },
+  cancelSheetTitle: {
+    fontFamily: driveType.bold,
+    color: driveTheme.colors.ink,
+    fontSize: 20,
+    letterSpacing: -0.3,
+  },
+  cancelSheetSubtitle: {
+    fontFamily: driveType.regular,
+    color: driveTheme.colors.subtext,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: -4,
+  },
+  cancelChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  cancelChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  cancelChipActive: {
+    borderColor: CTA,
+    backgroundColor: driveTheme.colors.primarySoft,
+  },
+  cancelChipText: {
+    fontFamily: driveType.semibold,
+    color: driveTheme.colors.subtext,
+    fontSize: 13,
+  },
+  cancelChipTextActive: {
+    color: driveTheme.colors.ink,
+  },
+  cancelReasonInput: {
+    minHeight: 88,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: driveTheme.colors.line,
+    backgroundColor: driveTheme.colors.surfaceMuted,
+    color: driveTheme.colors.ink,
+    fontFamily: driveType.regular,
+    fontSize: 15,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   searchingRow: { flexDirection: 'row', alignItems: 'flex-start', gap: driveTheme.spacing.md },
   searchingPulse: {
@@ -1628,7 +1955,7 @@ const styles = StyleSheet.create({
   secondaryTextBtn: { marginTop: driveTheme.spacing.lg, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   secondaryTextBtnLabel: { fontFamily: driveType.semibold, color: driveTheme.colors.subtext, fontSize: 15 },
   orderSheet: { minHeight: 460, gap: 0, paddingBottom: 8 },
-  openOffer: { gap: 18, paddingTop: 4 },
+  openOffer: { gap: 12, paddingTop: 2 },
   openTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   openLoad: { fontFamily: driveType.bold, color: driveTheme.colors.ink, fontSize: 15 },
   openPlace: { fontFamily: driveType.bold, color: driveTheme.colors.ink, fontSize: 28, lineHeight: 34, letterSpacing: -0.6 },
@@ -1647,11 +1974,44 @@ const styles = StyleSheet.create({
   openPhone: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   openPhoneText: { fontFamily: driveType.semibold, color: driveTheme.colors.ink, fontSize: 16 },
   openPhoneAction: { fontFamily: driveType.bold, color: driveTheme.colors.ink, fontSize: 15 },
+  openAccept: { minHeight: 68, borderRadius: 18 },
+  openAcceptText: { fontSize: 22, letterSpacing: 0.4 },
+  contactRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  contactBtn: {
+    flex: 1,
+    minHeight: 60,
+    borderRadius: 16,
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+  },
+  contactBtnText: { fontFamily: driveType.bold, color: '#111827', fontSize: 18 },
+  mapsButton: {
+    minHeight: 60,
+    borderRadius: 16,
+    backgroundColor: '#1A73E8',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    marginTop: 4,
+  },
+  mapsButtonText: { fontFamily: driveType.bold, color: '#FFFFFF', fontSize: 18 },
   openNotes: { flexDirection: 'row', gap: 16 },
   openNote: { fontFamily: driveType.semibold, color: '#9CA3AF', fontSize: 14 },
   openNoteOn: { color: driveTheme.colors.ink },
-  openDecline: { alignItems: 'center', paddingVertical: 2 },
-  openDeclineText: { fontFamily: driveType.semibold, color: '#6B7280', fontSize: 15 },
+  openDecline: {
+    minHeight: 56,
+    borderRadius: 16,
+    backgroundColor: '#DC2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  openDeclineText: { fontFamily: driveType.bold, color: '#FFFFFF', fontSize: 18 },
   chanceDot: { width: 8, height: 8, borderRadius: 4 },
   chanceDotLeft: { backgroundColor: driveTheme.colors.primary },
   chanceDotUsed: { backgroundColor: '#E5E7EB' },
@@ -1890,21 +2250,45 @@ const styles = StyleSheet.create({
   accountName: { fontFamily: driveType.bold, color: driveTheme.colors.ink, fontSize: 17, letterSpacing: -0.3 },
   accountMeta: { fontFamily: driveType.regular, color: driveTheme.colors.subtext, fontSize: 13, marginTop: 2 },
   authPanel: {
-    backgroundColor: driveTheme.colors.surface,
+    backgroundColor: 'transparent',
     borderRadius: driveTheme.radius.xl,
-    padding: driveTheme.spacing.xl,
+    paddingVertical: driveTheme.spacing.lg,
+    paddingHorizontal: driveTheme.spacing.md,
     gap: driveTheme.spacing.sm,
     marginBottom: driveTheme.spacing.md,
-    ...driveTheme.shadows.card,
+    alignItems: 'center',
   },
   authTitle: {
     fontFamily: driveType.bold,
-    color: driveTheme.colors.ink,
-    fontSize: 26,
-    letterSpacing: -0.6,
-    marginTop: driveTheme.spacing.md,
+    color: driveTheme.colors.primary,
+    fontSize: 28,
+    lineHeight: 36,
+    letterSpacing: 0.4,
+    textAlign: 'center',
+    width: '100%',
+    flexShrink: 1,
+    paddingHorizontal: 4,
   },
-  authSubtitle: { fontFamily: driveType.regular, color: driveTheme.colors.subtext, fontSize: 15, lineHeight: 22 },
+  authSubtitle: {
+    fontFamily: driveType.regular,
+    color: '#CBD5E1',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    maxWidth: '100%',
+    width: '100%',
+    flexShrink: 1,
+    paddingHorizontal: 4,
+  },
+  authIllustrationWell: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    marginTop: 8,
+    borderRadius: 28,
+    backgroundColor: driveTheme.colors.surfaceMuted,
+  },
   nearbyPin: { alignItems: 'center' },
   nearbyBubble: {
     width: 30,
@@ -2063,7 +2447,14 @@ const styles = StyleSheet.create({
   notifTime: { fontFamily: driveType.regular, color: driveTheme.colors.muted, fontSize: 12, marginTop: 2 },
   primaryButtonInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   ghostButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
+  ghostButtonDanger: {
+    minHeight: 60,
+    borderRadius: 16,
+    backgroundColor: '#DC2626',
+    marginTop: 10,
+  },
   ghostButtonText: { fontFamily: driveType.semibold, color: driveTheme.colors.subtext, fontSize: 15 },
+  ghostButtonTextDanger: { fontFamily: driveType.bold, color: '#FFFFFF', fontSize: 18 },
   quickRow: { flexDirection: 'row', gap: driveTheme.spacing.sm, marginTop: driveTheme.spacing.md },
   quickBtn: {
     flex: 1,

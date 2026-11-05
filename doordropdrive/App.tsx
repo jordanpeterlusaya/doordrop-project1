@@ -6,6 +6,7 @@ import {
   DriveAuthPanel,
   DriveBrandMark,
   DriveBottomSheet,
+  DriveCancelReasonSheet,
   DriveGhostButton,
   DriveHomeMapGradients,
   DriveIconWell,
@@ -21,7 +22,6 @@ import {
   DriveStatRow,
   DriveStatusPill,
   DriveSurfaceCard,
-  DriveTripQuickActions,
   DriveSegmentedControl,
 } from './components/drive-ui';
 import { BoltBottomNavItem, BoltRewardsScreen, BoltRideRow } from './components/pilot-bolt-ui';
@@ -36,7 +36,7 @@ import { PilotHelpScreen, openSupportCall, openSupportWhatsApp } from './compone
 import { PilotMenuDrawer } from './components/pilot-menu-drawer';
 import { PilotOrderCancelledModal } from './components/pilot-order-cancelled-modal';
 import { DRIVE_DARK_MAP_STYLE } from './constants/drive-map-style';
-import { pilotStanding } from './constants/pilot-standing';
+import { pilotStanding, pilotTiersExplanation } from './constants/pilot-standing';
 import { DriveAccessLockScreen } from './components/drive-access-lock-screen';
 import { tryRequire } from './lib/safety';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -53,6 +53,7 @@ import {
     createUserWithEmailAndPassword,
     onAuthStateChanged,
     sendPasswordResetEmail,
+    signInWithCustomToken,
     signInWithEmailAndPassword,
     signOut,
     updateProfile,
@@ -144,6 +145,7 @@ import {
   listenForOrderNotificationTaps,
   registerDriverPushToken,
 } from './lib/driver-push-notifications';
+import { loginDriverWithOtp, sendDriverOtp, verifyDriverOtp } from './lib/driver-otp';
 import { normalizePhoneNumber } from './lib/phone-auth';
 import {
   buildAccessPlanState,
@@ -166,8 +168,9 @@ import {
   toMapPoint,
 } from './lib/drive-location';
 import { driveTheme, driveType } from './constants/drive-theme';
+import { DriveSceneAvatar, type DriveAvatarKind } from './lib/drive-avatars';
 
-type AuthMode = 'signin' | 'register' | 'forgot';
+type AuthMode = 'phone' | 'signin' | 'register' | 'forgot';
 type DriverTab = 'home' | 'trip' | 'earn' | 'history' | 'notifications' | 'account';
 type AccountView = 'overview' | 'payments';
 type PaymentCheckoutStep = 'debt' | 'proof' | 'submitted';
@@ -250,7 +253,7 @@ function detectPaymentNetworkFromPhone(phone?: string | null): DriverPaymentNetw
   if (['74', '75', '76'].includes(prefix)) {
     return 'mpesa';
   }
-  if (['65', '67', '71'].includes(prefix)) {
+  if (['65', '67', '71', '77'].includes(prefix)) {
     return 'mixx';
   }
   if (['68', '69', '78'].includes(prefix)) {
@@ -426,6 +429,78 @@ function isActiveOrderStatus(status?: DeliveryOrderStatus) {
 
 function isIncomingOffer(order?: DeliveryOrder | null) {
   return isCargoOfferIncoming(order);
+}
+
+function numberOrUndefined(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Instant cargo offers include the order on the socket. Show that card before Firestore catches up. */
+function deliveryOrderFromCargoWsOffer(
+  orderId: string,
+  raw: Record<string, unknown> | undefined
+): DeliveryOrder | null {
+  if (!raw) {
+    return null;
+  }
+  const id = String(raw.id || orderId || '').trim();
+  if (!id) {
+    return null;
+  }
+  const statusRaw = String(raw.status || 'driver_assigned');
+  const status: DeliveryOrderStatus =
+    statusRaw === 'pending_assignment' ||
+    statusRaw === 'driver_assigned' ||
+    statusRaw === 'driver_at_pickup' ||
+    statusRaw === 'in_transit'
+      ? statusRaw
+      : 'driver_assigned';
+  return {
+    id,
+    orderNumber: String(raw.orderNumber || id),
+    userId: String(raw.userId || ''),
+    customerName: String(raw.customerName || 'HAUL'),
+    customerEmail: String(raw.customerEmail || ''),
+    customerPhone: String(raw.customerPhone || ''),
+    serviceLabel: String(raw.serviceLabel || raw.cargoVehicleLabel || 'Cargo'),
+    status,
+    pickupLabel: String(raw.pickupLabel || ''),
+    dropoffLabel: String(raw.dropoffLabel || ''),
+    pickupLatitude: numberOrUndefined(raw.pickupLatitude),
+    pickupLongitude: numberOrUndefined(raw.pickupLongitude),
+    dropoffLatitude: numberOrUndefined(raw.dropoffLatitude),
+    dropoffLongitude: numberOrUndefined(raw.dropoffLongitude),
+    etaLabel: String(raw.etaLabel || ''),
+    fareLabel: String(raw.fareLabel || ''),
+    totalLabel: String(raw.totalLabel || raw.fareLabel || ''),
+    fareType: raw.fareType === 'algorithm' ? 'algorithm' : 'negotiated',
+    customerOffer: numberOrUndefined(raw.customerOffer),
+    minFare: numberOrUndefined(raw.minFare),
+    negotiationStatus: String(raw.negotiationStatus || 'open'),
+    cargoVehicleKey: String(raw.cargoVehicleKey || ''),
+    cargoVehicleLabel: String(raw.cargoVehicleLabel || ''),
+    flow: String(raw.flow || 'cargo'),
+    scheduleLabel: String(raw.scheduleLabel || ''),
+    recipientName: String(raw.recipientName || raw.customerName || ''),
+    recipientPhone: String(raw.recipientPhone || raw.customerPhone || ''),
+    driverId: String(raw.driverId || ''),
+    assignmentMode: 'cargo_ws',
+  };
+}
+
+function mergePendingCargoOffers(orders: DeliveryOrder[], pending: Map<string, DeliveryOrder>) {
+  if (!pending.size) {
+    return orders;
+  }
+  const seen = new Set(orders.map((order) => order.id));
+  const extras: DeliveryOrder[] = [];
+  for (const offer of pending.values()) {
+    if (!seen.has(offer.id) && isActiveOrderStatus(offer.status)) {
+      extras.push(offer);
+    }
+  }
+  return extras.length ? [...extras, ...orders] : orders;
 }
 
 function getNextTripAction(status?: DeliveryOrderStatus): TripAction | null {
@@ -692,7 +767,13 @@ function AppButton({
         pressed && !disabled && styles.buttonPressed,
       ]}>
       <View style={styles.buttonInner}>
-        <Text style={[textStyle, compact && styles.buttonTextCompact]}>{label}</Text>
+        <Text
+          style={[textStyle, compact && styles.buttonTextCompact]}
+          numberOfLines={2}
+          adjustsFontSizeToFit
+          minimumFontScale={0.85}>
+          {label}
+        </Text>
         {icon ? <MaterialCommunityIcons name={icon} size={compact ? 16 : 18} color={iconColor} /> : null}
       </View>
     </Pressable>
@@ -809,6 +890,28 @@ function FormSection({ title, children }: { title: string; children: React.React
   );
 }
 
+function AuthHero({
+  title,
+  subtitle,
+  avatarKind,
+}: {
+  title: string;
+  subtitle: string;
+  avatarKind?: Exclude<DriveAvatarKind, 'customer' | 'driver'>;
+}) {
+  return (
+    <View style={styles.authHeroBlock}>
+      <Text style={styles.authHeroTitle}>{title}</Text>
+      <Text style={styles.authLandingSubtitle}>{subtitle}</Text>
+      {avatarKind ? (
+        <View style={styles.authIllustrationWell}>
+          <DriveSceneAvatar kind={avatarKind} size={128} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function SetupField({
   value,
   onChangeText,
@@ -820,17 +923,23 @@ function SetupField({
   textContentType,
   returnKeyType,
   onSubmitEditing,
+  editable = true,
+  maxLength,
+  centered = true,
 }: {
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
-  keyboardType?: 'default' | 'email-address' | 'phone-pad';
+  keyboardType?: 'default' | 'email-address' | 'phone-pad' | 'number-pad';
   secureTextEntry?: boolean;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   autoComplete?: React.ComponentProps<typeof TextInput>['autoComplete'];
   textContentType?: React.ComponentProps<typeof TextInput>['textContentType'];
   returnKeyType?: React.ComponentProps<typeof TextInput>['returnKeyType'];
   onSubmitEditing?: () => void;
+  editable?: boolean;
+  maxLength?: number;
+  centered?: boolean;
 }) {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const isPassword = Boolean(secureTextEntry);
@@ -841,8 +950,10 @@ function SetupField({
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="#94A3B8"
+        placeholderTextColor="#A8B4C4"
         keyboardType={keyboardType}
+        editable={editable}
+        maxLength={maxLength}
         autoCapitalize={autoCapitalize}
         autoCorrect={false}
         autoComplete={autoComplete}
@@ -850,7 +961,7 @@ function SetupField({
         returnKeyType={returnKeyType}
         onSubmitEditing={onSubmitEditing}
         secureTextEntry={isPassword && !passwordVisible}
-        style={styles.setupTextInput}
+        style={[styles.setupTextInput, centered && styles.setupTextInputCentered]}
       />
       {isPassword ? (
         <Pressable
@@ -1281,7 +1392,12 @@ export default function DoorDriveApp() {
         )
       : 0;
   // ─── Original state ───────────────────────
-  const [authMode, setAuthMode] = useState<AuthMode>('signin');
+  const [authMode, setAuthMode] = useState<AuthMode>('phone');
+  const [phoneAuthNumber, setPhoneAuthNumber] = useState('');
+  const [phoneAuthCode, setPhoneAuthCode] = useState('');
+  const [phoneAuthStep, setPhoneAuthStep] = useState<'number' | 'code'>('number');
+  const [phoneAuthBusy, setPhoneAuthBusy] = useState(false);
+  const otpPhoneRef = useRef('');
   const [registerStep, setRegisterStep] = useState<'details' | 'vehicle'>('vehicle');
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [showStartupSplash, setShowStartupSplash] = useState(true);
@@ -1310,12 +1426,14 @@ export default function DoorDriveApp() {
   const [locationLabel, setLocationLabel] = useState('Location sync has not started yet.');
   const [driverProfile, setDriverProfile] = useState<DriverRecord | null>(null);
   const [driverOrders, setDriverOrders] = useState<DeliveryOrder[]>([]);
+  const pendingCargoOffersRef = useRef<Map<string, DeliveryOrder>>(new Map());
   const [openCargoOffers, setOpenCargoOffers] = useState<DeliveryOrder[]>([]);
   const [tripMessages, setTripMessages] = useState<OrderMessage[]>([]);
   const [tripMessagesLoading, setTripMessagesLoading] = useState(false);
   const [tripMessageDraft, setTripMessageDraft] = useState('');
   const [tripMessageSending, setTripMessageSending] = useState(false);
   const [tripChatOpen, setTripChatOpen] = useState(false);
+  const [cancelReasonOpen, setCancelReasonOpen] = useState(false);
   const [nearbyCustomers, setNearbyCustomers] = useState<NearbyCustomer[]>([]);
   const [activeOrderContactPhone, setActiveOrderContactPhone] = useState('');
   const [liveMapPoint, setLiveMapPoint] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -2068,7 +2186,10 @@ export default function DoorDriveApp() {
     const unsubscribeDriverOrders = subscribeToDriverOrders(
       authUser.uid,
       (orders) => {
-        setDriverOrders(orders);
+        for (const order of orders) {
+          pendingCargoOffersRef.current.delete(order.id);
+        }
+        setDriverOrders(mergePendingCargoOffers(orders, pendingCargoOffersRef.current));
         setDriverOrdersLoading(false);
       },
       (error) => {
@@ -2143,17 +2264,35 @@ export default function DoorDriveApp() {
         },
         onEvent: (event) => {
           if (event.type === 'offer' && event.orderId) {
+            const incoming = deliveryOrderFromCargoWsOffer(event.orderId, event.order);
+            if (incoming) {
+              pendingCargoOffersRef.current.set(incoming.id, incoming);
+              setDriverOrders((current) => {
+                const without = current.filter((item) => item.id !== incoming.id);
+                return [incoming, ...without];
+              });
+            }
             // Firestore assignment also sets currentOrderId; this wakes the alert path immediately.
             setFeedback({
               tone: 'info',
               message: 'Oda mpya ya mizigo — thibitisha sasa.',
             });
           }
-          if (event.type === 'cancelled' && event.orderId) {
+          if (event.type === 'offer_cleared' && event.orderId) {
+            pendingCargoOffersRef.current.delete(event.orderId);
+            const clearedId = event.orderId;
+            setDriverOrders((current) => current.filter((item) => item.id !== clearedId));
+          }
+          if (event.type === 'cancelled' && event.orderId && event.by !== 'driver') {
+            pendingCargoOffersRef.current.delete(event.orderId);
+            const cancelledId = event.orderId;
+            setDriverOrders((current) => current.filter((item) => item.id !== cancelledId));
             if (lastCancelledOrderIdRef.current !== event.orderId) {
               lastCancelledOrderIdRef.current = event.orderId;
               setOrderCancelledVisible(true);
               setInAppNavMode(false);
+              setTripChatOpen(false);
+              setSelectedTab('home');
             }
           }
         },
@@ -2195,6 +2334,7 @@ export default function DoorDriveApp() {
           setInAppNavMode(false);
         }
 
+        pendingCargoOffersRef.current.delete(order.id);
         setDriverOrders((currentOrders) => {
           const withoutCurrent = currentOrders.filter((item) => item.id !== order.id);
           return [order, ...withoutCurrent];
@@ -2233,13 +2373,20 @@ export default function DoorDriveApp() {
         (!isPlaceholderDriverName(driverProfile?.fullName) ? driverProfile?.fullName?.trim() : '') ||
         authUser.displayName?.trim() ||
         '',
-      phoneNumber: current.phoneNumber || driverProfile?.phoneNumber || '',
+      phoneNumber: current.phoneNumber || driverProfile?.phoneNumber || otpPhoneRef.current || authUser.phoneNumber || '',
       vehicleType: toPilotVehicleType(driverProfile?.vehicleType || current.vehicleType),
       vehicleLabel: getVehicleTypeLabel(driverProfile?.vehicleType || current.vehicleType),
       vehicleColor: current.vehicleColor || driverProfile?.vehicleColor || '',
       plateNumber: current.plateNumber || driverProfile?.plateNumber || '',
     }));
   }, [authUser, driverProfile, driverProfileMissing]);
+
+  useEffect(() => {
+    const detected = detectPaymentNetworkFromPhone(paymentPhoneNumber || driverProfile?.phoneNumber);
+    if (detected) {
+      setSelectedPaymentNetwork(detected);
+    }
+  }, [paymentPhoneNumber, driverProfile?.phoneNumber]);
 
   useEffect(() => {
     if (!authUser?.uid || !activeOrder?.id || driverProfile?.currentOrderId === activeOrder.id) {
@@ -2814,17 +2961,75 @@ export default function DoorDriveApp() {
     }
   };
 
-  const handleAdvanceTrip = async (nextStatus: DeliveryOrderStatus) => {
+  const openExternalMapsToPoint = async (
+    point: { latitude: number; longitude: number } | null | undefined,
+    meta?: { orderId?: string; orderNumber?: string; target?: string; status?: string }
+  ) => {
+    if (!point || !Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) {
+      return;
+    }
+
+    const destination = `${point.latitude},${point.longitude}`;
+    const nativeUrl = `google.navigation:q=${destination}`;
+    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=driving`;
+
+    try {
+      if (Platform.OS === 'android') {
+        try {
+          await Linking.openURL(nativeUrl);
+        } catch {
+          await Linking.openURL(webUrl);
+        }
+      } else {
+        await Linking.openURL(webUrl);
+      }
+      trackDriverActivity('driver_external_navigation', 'driver_navigation', {
+        orderId: meta?.orderId,
+        orderNumber: meta?.orderNumber,
+        targetStatus: meta?.status,
+        target: meta?.target,
+        provider: 'google_maps',
+      });
+    } catch {
+      // Stay in HAUL Pilots — never treat maps failure as trip failure.
+    }
+  };
+
+  const handleAdvanceTrip = async (
+    nextStatus: DeliveryOrderStatus,
+    options?: { cancellationReason?: string; openMapsAfter?: boolean }
+  ) => {
     if (!authUser || !activeOrder || busyAction) {
       return;
     }
 
+    // Completing or cancelling must never finish the Android activity / reload the JS bundle.
     setBusyAction(`trip-${nextStatus}`);
     setFeedback(null);
 
+    const mapsPointBefore =
+      nextStatus === 'driver_at_pickup'
+        ? getOrderPickupPoint(activeOrder)
+        : nextStatus === 'in_transit'
+          ? getDriverVisibleDropoffPoint(activeOrder)
+          : null;
+    const mapsTarget =
+      nextStatus === 'driver_at_pickup' ? 'pickup' : nextStatus === 'in_transit' ? 'dropoff' : undefined;
+    const shouldOpenMaps =
+      Boolean(options?.openMapsAfter) &&
+      nextStatus !== 'delivered' &&
+      nextStatus !== 'cancelled' &&
+      Boolean(mapsPointBefore);
+
     try {
-      await updateDriverOrderStatus(authUser.uid, activeOrder.id, nextStatus);
+      await updateDriverOrderStatus(authUser.uid, activeOrder.id, nextStatus, {
+        cancellationReason: options?.cancellationReason,
+      });
       const localStatusTime = new Date();
+      const cancelReason =
+        nextStatus === 'cancelled'
+          ? String(options?.cancellationReason || '').trim() || 'Driver cancelled the trip'
+          : '';
       setDriverOrders((currentOrders) =>
         currentOrders.map((order) =>
           order.id === activeOrder.id
@@ -2834,6 +3039,9 @@ export default function DoorDriveApp() {
                 deliveredAt: nextStatus === 'delivered' ? localStatusTime : order.deliveredAt,
                 cancelledAt: nextStatus === 'cancelled' ? localStatusTime : order.cancelledAt,
                 cancelledBy: nextStatus === 'cancelled' ? 'driver' : order.cancelledBy,
+                cancellationReason: nextStatus === 'cancelled' ? cancelReason : order.cancellationReason,
+                driverSearchMessage:
+                  nextStatus === 'cancelled' ? `Dereva ameghairi oda hii: ${cancelReason}` : order.driverSearchMessage,
                 updatedAt: localStatusTime,
               }
             : order
@@ -2845,7 +3053,7 @@ export default function DoorDriveApp() {
             ? {
                 ...currentProfile,
                 currentOrderId: '',
-                isAvailable: nextStatus === 'delivered' ? true : currentProfile.isAvailable,
+                isAvailable: true,
                 lastActiveAt: localStatusTime,
                 updatedAt: localStatusTime,
               }
@@ -2858,18 +3066,51 @@ export default function DoorDriveApp() {
         previousStatus: activeOrder.status,
         nextStatus,
         serviceLabel: activeOrder.serviceLabel,
+        cancellationReason: nextStatus === 'cancelled' ? cancelReason : undefined,
       });
       setFeedback({
         tone: 'success',
         message:
           nextStatus === 'delivered'
-            ? 'Delivery completed. Rate the customer from History.'
+            ? language === 'sw'
+              ? 'Delivery imekamilika. Kakaa kwenye HAUL Pilots — rate mteja kwenye Historia.'
+              : 'Delivery completed. Stay in HAUL Pilots — rate the customer from History.'
             : nextStatus === 'cancelled'
-              ? 'Order cancelled and sent back to dispatch.'
+              ? language === 'sw'
+                ? 'Safari imeghairiwa. App inaendelea — mteja ataona sababu.'
+                : 'Trip cancelled. You stay in the app — the customer will see the reason.'
             : `Trip updated to ${getDeliveryOrderStatusLabel(nextStatus).toLowerCase()}.`,
       });
+      if (nextStatus === 'cancelled') {
+        setCancelReasonOpen(false);
+        setInAppNavMode(false);
+        setTripChatOpen(false);
+        setSelectedTab('home');
+        const token = await auth.currentUser?.getIdToken().catch(() => '');
+        if (token) {
+          cargoOfferSocketRef.current?.send({
+            type: 'driver_cancel',
+            orderId: activeOrder.id,
+            driverId: authUser.uid,
+            token,
+            reason: cancelReason,
+          });
+        }
+      }
       if (nextStatus === 'delivered') {
+        // Keep the app open: history hosts the customer rating sheet.
+        setInAppNavMode(false);
+        setTripChatOpen(false);
         setSelectedTab('history');
+      }
+      if (shouldOpenMaps && mapsPointBefore) {
+        // Fire after status write so a maps handoff cannot interrupt completion/cancel.
+        void openExternalMapsToPoint(mapsPointBefore, {
+          orderId: activeOrder.id,
+          orderNumber: activeOrder.orderNumber,
+          target: mapsTarget,
+          status: nextStatus,
+        });
       }
     } catch (error) {
       setFeedback({
@@ -2884,6 +3125,11 @@ export default function DoorDriveApp() {
     } finally {
       setBusyAction('');
     }
+  };
+
+  const handleTripPrimaryAdvance = (nextStatus: DeliveryOrderStatus) => {
+    // Yellow status CTA advances the trip and opens Maps to the next leg (not on complete).
+    void handleAdvanceTrip(nextStatus, { openMapsAfter: nextStatus !== 'delivered' });
   };
 
   const handleToggleAvailability = async () => {
@@ -3008,7 +3254,7 @@ export default function DoorDriveApp() {
 
     const destination = `${topDemandZone.latitude},${topDemandZone.longitude}`;
     const nativeUrl = `google.navigation:q=${destination}`;
-    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
+    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=driving`;
 
     try {
       const supported = await Linking.canOpenURL(nativeUrl);
@@ -3113,9 +3359,13 @@ export default function DoorDriveApp() {
     }
   };
 
-  /** Keep the driver inside HAUL Pilots — follow the route on the in-app map. */
+  /** Turn-by-turn opens the Google Maps app. The HAUL map stays on screen. */
   const handleOpenNavigation = async () => {
     if (!activeOrder) {
+      return;
+    }
+
+    if (activeOrder.status === 'delivered' || activeOrder.status === 'cancelled') {
       return;
     }
 
@@ -3130,52 +3380,12 @@ export default function DoorDriveApp() {
       return;
     }
 
-    setInAppNavMode(true);
-    setSelectedTab('home');
-    setHomeSheetExpanded(false);
-
-    const driverPoint =
-      getPointFromCoordinates(activeOrder.driverLatitude, activeOrder.driverLongitude) ??
-      resolveDriverMapPoint(driverProfile, liveMapPoint);
-    const points = [driverPoint, target.point].filter(Boolean) as MapPoint[];
-    if (homeMapRef.current?.fitToCoordinates && points.length >= 2) {
-      try {
-        homeMapRef.current.fitToCoordinates(points, {
-          edgePadding: { top: 80, right: 48, bottom: 220, left: 48 },
-          animated: true,
-        });
-      } catch {
-        // ignore camera failures — polyline still guides
-      }
-    } else if (homeMapRef.current?.animateToRegion && target.point) {
-      homeMapRef.current.animateToRegion(buildMapRegion(target.point, 0.02, 0.02), 500);
-    }
-
-    trackDriverActivity('driver_in_app_navigation', 'driver_navigation', {
+    await openExternalMapsToPoint(target.point, {
       orderId: activeOrder.id,
       orderNumber: activeOrder.orderNumber,
-      targetStatus: activeOrder.status,
       target: target.kind,
-      provider: 'in_app_map',
+      status: activeOrder.status,
     });
-    setFeedback({ tone: 'info', message: copy.followingRoute });
-  };
-
-  const handleOpenExternalMaps = async () => {
-    if (!activeOrder) return;
-    const target = getDriverNavigationTarget(activeOrder);
-    if (!target.point) return;
-    const destination = `${target.point.latitude},${target.point.longitude}`;
-    const encodedDestination = encodeURIComponent(destination);
-    const url =
-      Platform.OS === 'ios'
-        ? `http://maps.apple.com/?daddr=${encodedDestination}&dirflg=d`
-        : `https://www.google.com/maps/dir/?api=1&destination=${encodedDestination}&travelmode=driving`;
-    try {
-      await Linking.openURL(url);
-    } catch {
-      setFeedback({ tone: 'info', message: copy.followRouteHint });
-    }
   };
 
   const handleSignOut = async () => {
@@ -3238,51 +3448,71 @@ export default function DoorDriveApp() {
       return;
     }
 
-    const normalizedPaymentPhone = normalizePhoneNumber(paymentPhoneNumber || driverProfile?.phoneNumber || '').replace(/^\+/, '');
-
     if (selectedNetworkMeta && selectedNetworkMeta.enabled === false) {
       setFeedback({ tone: 'info', message: 'Chagua M-Pesa, Mixx by Yas, au Airtel Money.' });
       return;
     }
 
-    if (!normalizedPaymentPhone) {
-      setFeedback({ tone: 'error', message: 'Weka namba ya mobile money itakayopokea payment prompt.' });
+    // Normalize to 255XXXXXXXXX (same gate as transporters portal / backend).
+    const e164 = normalizePhoneNumber(paymentPhoneNumber || driverProfile?.phoneNumber || '');
+    const normalizedPaymentPhone = e164.replace(/^\+/, '');
+    if (!normalizedPaymentPhone || !/^255[67]\d{8}$/.test(normalizedPaymentPhone)) {
+      setFeedback({ tone: 'error', message: 'Weka namba sahihi ya simu (+255).' });
       return;
     }
 
+    // Instant button feedback — never leave the tap looking idle.
     ussdInitiateLockRef.current = true;
     setBusyAction('commission-payment');
-    setFeedback(null);
+    setFeedback({ tone: 'info', message: 'Inaanzisha USSD…' });
 
     let didSendUssd = false;
     try {
       const status = await initiateDriverCommissionUssd({
         phoneNumber: normalizedPaymentPhone,
-        network: detectedPaymentNetwork || selectedPaymentNetwork,
+        network: selectedPaymentNetwork,
         amount: dailyCommissionDue,
       });
-      didSendUssd = !status.duplicate;
-      trackDriverActivity('driver_commission_payment_submitted', 'driver_payments', {
-        dateKey: commissionDateKey,
-        grossAmount: dailyGrossEarnings,
-        commissionAmount: dailyCommissionDue,
-        method: 'trivapesa_ussd',
-        network: detectedPaymentNetwork || selectedPaymentNetwork,
-        orderId: status.orderId || '',
-      });
-      setPaymentCheckoutStep('submitted');
-      setFeedback(
-        status.duplicate
-          ? { tone: 'info', message: status.message || 'USSD bado inasubiri. Ingiza PIN kwenye simu sasa.' }
-          : { tone: 'success', message: status.message || 'USSD imetumwa. Thibitisha PIN kwenye simu yako.' }
-      );
+      const reference = String(status.reference || status.trivapesaReference || '').trim();
+      // Same gate as portal: only claim sent with pushed===true && reference.
+      const confirmedPush = status.pushed === true && Boolean(reference) && status.status !== 'creating';
+      didSendUssd = confirmedPush && !status.duplicate;
+
+      if (confirmedPush) {
+        trackDriverActivity('driver_commission_payment_submitted', 'driver_payments', {
+          dateKey: commissionDateKey,
+          grossAmount: dailyGrossEarnings,
+          commissionAmount: dailyCommissionDue,
+          method: 'trivapesa_ussd',
+          network: selectedPaymentNetwork,
+          orderId: status.orderId || '',
+          reference,
+        });
+        setPaymentCheckoutStep('submitted');
+        setFeedback({
+          tone: 'success',
+          message: status.message || 'Angalia simu — USSD push imetumwa',
+        });
+      } else if (status.status === 'failed') {
+        setFeedback({
+          tone: 'error',
+          message: status.message || status.error || 'Haijatumwa — jaribu tena',
+        });
+      } else {
+        // Creating / no reference — never invent "imetumwa".
+        setPaymentCheckoutStep(status.orderId ? 'submitted' : paymentCheckoutStep);
+        setFeedback({
+          tone: 'info',
+          message: status.message || 'Inaanzisha USSD… Subiri kidogo kisha jaribu tena kama prompt haionekani.',
+        });
+      }
     } catch (error) {
       setFeedback({
         tone: 'error',
         message:
           error instanceof FirebaseError
-            ? getFirebaseDataErrorMessage(error.code, 'Could not start TrivaPesa payment.')
-            : getPaymentFeedbackMessage(error, copy, 'Could not start TrivaPesa payment.'),
+            ? getFirebaseDataErrorMessage(error.code, 'Haijatumwa — jaribu tena')
+            : getPaymentFeedbackMessage(error, copy, 'Haijatumwa — jaribu tena'),
       });
     } finally {
       setBusyAction('');
@@ -3366,9 +3596,15 @@ export default function DoorDriveApp() {
         serviceLabel: activeOrder.serviceLabel,
         fareLabel: activeOrder.totalLabel || activeOrder.fareLabel,
       });
-      setInAppNavMode(true);
       setSelectedTab('home');
-      setFeedback({ tone: 'success', message: copy.followingRoute });
+      setFeedback({ tone: 'success', message: copy.orderAccepted });
+      // No separate Maps button after accept — open navigation to pickup immediately.
+      void openExternalMapsToPoint(getOrderPickupPoint(activeOrder), {
+        orderId: activeOrder.id,
+        orderNumber: activeOrder.orderNumber,
+        target: 'pickup',
+        status: 'driver_assigned',
+      });
     } catch (error) {
       setFeedback({
         tone: 'error',
@@ -3503,25 +3739,22 @@ export default function DoorDriveApp() {
   };
 
   const handleDeclineOrder = () => {
-    Alert.alert(
-      'Reject this order?',
-      'The order will return to dispatch for another driver.',
-      [
-        { text: 'Keep order', style: 'cancel' },
-        { text: 'Reject order', style: 'destructive', onPress: () => void performDeclineOrder() },
-      ]
-    );
+    Alert.alert(copy.declineTitle, copy.declineBody, [
+      { text: copy.declineKeep, style: 'cancel' },
+      { text: copy.declineConfirm, style: 'destructive', onPress: () => void performDeclineOrder() },
+    ]);
   };
 
   const handleCancelActiveTrip = () => {
-    Alert.alert(
-      'Cancel this trip?',
-      'Use this only when you cannot complete the trip. The order will be marked cancelled.',
-      [
-        { text: 'Keep trip', style: 'cancel' },
-        { text: 'Cancel trip', style: 'destructive', onPress: () => void handleAdvanceTrip('cancelled') },
-      ]
-    );
+    setCancelReasonOpen(true);
+  };
+
+  const handleConfirmCancelWithReason = (reason: string) => {
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      return;
+    }
+    void handleAdvanceTrip('cancelled', { cancellationReason: trimmed });
   };
 
   const handleRateCustomer = async () => {
@@ -3563,12 +3796,17 @@ export default function DoorDriveApp() {
 
   const handleRegisterBack = () => {
     setFeedback(null);
+    if (authMode === 'phone' && phoneAuthStep === 'code') {
+      setPhoneAuthStep('number');
+      setPhoneAuthCode('');
+      return;
+    }
     if (authMode === 'register' && registerStep === 'details') {
       setRegisterStep('vehicle');
       return;
     }
     setRegisterStep('vehicle');
-    setAuthMode('signin');
+    setAuthMode(authMode === 'phone' ? 'phone' : 'signin');
   };
 
   const handlePasswordReset = async () => {
@@ -3611,12 +3849,70 @@ export default function DoorDriveApp() {
   // Auth screen
   // ──────────────────────────────────────────────
 
+  const handleSendPhoneCode = async () => {
+    const phone = normalizePhoneNumber(phoneAuthNumber);
+    if (!phone) {
+      setFeedback({ tone: 'error', message: copy.authPhoneMissing });
+      return;
+    }
+    setPhoneAuthBusy(true);
+    setFeedback(null);
+    try {
+      await sendDriverOtp(phone, 'signup');
+      otpPhoneRef.current = phone;
+      setPhoneAuthStep('code');
+      setFeedback({ tone: 'success', message: copy.authPhoneSent });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : copy.authPhoneMissing,
+      });
+    } finally {
+      setPhoneAuthBusy(false);
+    }
+  };
+
+  const handleVerifyPhoneCode = async () => {
+    const phone = normalizePhoneNumber(phoneAuthNumber) || otpPhoneRef.current;
+    const code = phoneAuthCode.replace(/\D/g, '');
+    if (!phone) {
+      setFeedback({ tone: 'error', message: copy.authPhoneMissing });
+      return;
+    }
+    if (code.length < 4) {
+      setFeedback({ tone: 'error', message: copy.authPhoneCodeMissing });
+      return;
+    }
+    setPhoneAuthBusy(true);
+    setFeedback(null);
+    try {
+      const verified = await verifyDriverOtp(phone, code);
+      const ticket = String(verified.otpTicket || '');
+      if (!ticket) {
+        throw new Error(copy.authPhoneCodeMissing);
+      }
+      const session = await loginDriverWithOtp(phone, ticket);
+      const customToken = String(session.customToken || '');
+      if (!customToken) {
+        throw new Error('Phone sign-in did not return a session.');
+      }
+      otpPhoneRef.current = phone;
+      await signInWithCustomToken(auth, customToken);
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : copy.authPhoneCodeMissing,
+      });
+    } finally {
+      setPhoneAuthBusy(false);
+    }
+  };
+
   const renderAuthScreen = () => {
     const openRegister = () => {
       setFeedback(null);
-      setRegisterTermsAccepted(false);
-      setRegisterStep('vehicle');
-      setAuthMode('register');
+      setPhoneAuthStep('number');
+      setAuthMode('phone');
     };
 
     const openForgot = () => {
@@ -3647,16 +3943,17 @@ export default function DoorDriveApp() {
     const renderRegisterForm = () => (
       <>
         {authTopBar(true)}
-        <View style={styles.authHeroCopy}>
-          <Text style={styles.authPageTitle}>
-            {registerStep === 'vehicle' ? copy.authVehicleDetailsTitle : copy.authRegisterTitle}
-          </Text>
-        </View>
+        <AuthHero
+          title={registerStep === 'vehicle' ? copy.authVehicleDetailsTitle : copy.authRegisterTitle}
+          subtitle={
+            registerStep === 'vehicle' ? copy.authVehicleDetailsSubtitle : copy.authRegisterSubtitle
+          }
+        />
 
         {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
         {registerStep === 'details' ? (
-          <>
+          <View style={styles.authFormStack}>
             <SetupField
               value={registerForm.firstName}
               onChangeText={(value) => setRegisterForm((current) => ({ ...current, firstName: value }))}
@@ -3738,9 +4035,9 @@ export default function DoorDriveApp() {
               onPress={() => void handleRegister()}
               disabled={registering}
             />
-          </>
+          </View>
         ) : (
-          <>
+          <View style={styles.authFormStack}>
             <VehicleTypePicker
               value={toPilotVehicleType(registerForm.vehicleType)}
               onChange={(vehicleType) =>
@@ -3752,7 +4049,7 @@ export default function DoorDriveApp() {
               }
             />
             <AppButton label={copy.authContinue} onPress={() => { setFeedback(null); setRegisterStep('details'); }} />
-          </>
+          </View>
         )}
 
         {registerStep === 'details' ? (
@@ -3766,7 +4063,7 @@ export default function DoorDriveApp() {
             onPress={handleRegisterBack}
             style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
             <Text style={styles.loginSecondaryActionMuted}>{copy.authHaveAccount}</Text>
-            <Text style={styles.loginSecondaryActionText}>{copy.authLogin}</Text>
+            <Text style={styles.loginSecondaryActionText}>{copy.authLoginHere}</Text>
           </Pressable>
         )}
       </>
@@ -3775,34 +4072,38 @@ export default function DoorDriveApp() {
     const renderForgotForm = () => (
       <>
         {authTopBar(true)}
-        <View style={styles.authHeroCopy}>
-          <Text style={styles.authPageTitle}>{copy.authForgotTitle}</Text>
-        </View>
+        <AuthHero
+          title={copy.authForgotTitle}
+          subtitle={copy.authForgotSubtitle}
+          avatarKind="payment"
+        />
 
         {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-        <SetupField
-          value={loginEmail}
-          onChangeText={(value) => {
-            setLoginEmail(value);
-            if (feedback) {
-              setFeedback(null);
-            }
-          }}
-          placeholder={copy.authEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoComplete="email"
-          textContentType="emailAddress"
-          returnKeyType="send"
-          onSubmitEditing={() => void handlePasswordReset()}
-        />
+        <View style={styles.authFormStack}>
+          <SetupField
+            value={loginEmail}
+            onChangeText={(value) => {
+              setLoginEmail(value);
+              if (feedback) {
+                setFeedback(null);
+              }
+            }}
+            placeholder={copy.authEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+            textContentType="emailAddress"
+            returnKeyType="send"
+            onSubmitEditing={() => void handlePasswordReset()}
+          />
 
-        <AppButton
-          label={resettingPassword ? copy.authSendingReset : copy.authSendReset}
-          onPress={() => void handlePasswordReset()}
-          disabled={resettingPassword}
-        />
+          <AppButton
+            label={resettingPassword ? copy.authSendingReset : copy.authSendReset}
+            onPress={() => void handlePasswordReset()}
+            disabled={resettingPassword}
+          />
+        </View>
 
         <Pressable
           onPress={handleRegisterBack}
@@ -3812,55 +4113,148 @@ export default function DoorDriveApp() {
       </>
     );
 
+    const renderPhoneForm = () => {
+      const verifying = phoneAuthStep === 'code';
+
+      return (
+        <>
+          {authTopBar(verifying)}
+          <AuthHero
+            title={verifying ? copy.authOtpTitle : copy.authPhoneTitle}
+            subtitle={verifying ? copy.authOtpSubtitle : copy.authPhoneSubtitle}
+            avatarKind={verifying ? 'verification' : undefined}
+          />
+          {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
+          <View style={styles.authFormStack}>
+            {verifying ? (
+              <SetupField
+                value={phoneAuthCode}
+                onChangeText={(value) => {
+                  setPhoneAuthCode(value.replace(/[^\d]/g, '').slice(0, 6));
+                  if (feedback) setFeedback(null);
+                }}
+                placeholder={copy.authPhoneCode}
+                keyboardType="number-pad"
+                autoCapitalize="none"
+                textContentType="oneTimeCode"
+                maxLength={6}
+              />
+            ) : (
+              <View style={styles.setupPhoneRow}>
+                <View style={styles.authCountryCode}>
+                  <Text style={styles.setupFlagText}>TZ</Text>
+                  <Text style={styles.authDialCode}>+255</Text>
+                </View>
+                <View style={styles.setupPhoneInput}>
+                  <SetupField
+                    value={phoneAuthNumber}
+                    onChangeText={(value) => {
+                      setPhoneAuthNumber(value);
+                      if (feedback) setFeedback(null);
+                    }}
+                    placeholder={copy.authPhone}
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    autoComplete="tel"
+                    textContentType="telephoneNumber"
+                    editable={!phoneAuthBusy}
+                  />
+                </View>
+              </View>
+            )}
+            <AppButton
+              label={
+                phoneAuthBusy
+                  ? verifying
+                    ? copy.authPhoneVerifying
+                    : copy.authPhoneSending
+                  : verifying
+                    ? copy.authPhoneVerify
+                    : copy.authPhoneSend
+              }
+              onPress={() => void (verifying ? handleVerifyPhoneCode() : handleSendPhoneCode())}
+              disabled={phoneAuthBusy}
+            />
+          </View>
+          {verifying ? (
+            <Pressable
+              onPress={() => {
+                setPhoneAuthStep('number');
+                setPhoneAuthCode('');
+                setFeedback(null);
+              }}
+              style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+              <Text style={styles.loginSecondaryActionMuted}>
+                {language === 'sw' ? 'Hujapokea msimbo?' : "Didn't get a code?"}
+              </Text>
+              <Text style={styles.loginSecondaryActionText}>{copy.authPhoneSend}</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => {
+                setFeedback(null);
+                setAuthMode('signin');
+              }}
+              accessibilityLabel={copy.authPhoneEmail}
+              style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
+              <Text style={styles.loginSecondaryActionMuted}>{copy.authHaveAccount}</Text>
+              <Text style={styles.loginSecondaryActionText}>{copy.authLoginHere}</Text>
+            </Pressable>
+          )}
+        </>
+      );
+    };
+
     const renderLoginForm = () => (
       <>
         {authTopBar(false)}
-        <View style={styles.authLandingHero}>
-          <Text style={[styles.authPageTitle, styles.authLandingTitle]}>{copy.authLoginTitle}</Text>
-          <Text style={styles.authLandingSubtitle}>
-            {language === 'sw' ? 'Ingia ili upokee oda za mizigo.' : 'Sign in to receive cargo orders.'}
-          </Text>
-        </View>
+        <AuthHero
+          title={copy.authLoginTitle}
+          subtitle={copy.authLoginSubtitle}
+          avatarKind="authWelcome"
+        />
 
         {feedback ? <FeedbackBanner tone={feedback.tone} message={feedback.message} /> : null}
 
-        <SetupField
-          value={loginEmail}
-          onChangeText={(value) => {
-            setLoginEmail(value);
-            if (feedback) {
-              setFeedback(null);
-            }
-          }}
-          placeholder={copy.authEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoComplete="email"
-          textContentType="emailAddress"
-          returnKeyType="next"
-        />
-        <SetupField
-          value={loginPassword}
-          onChangeText={(value) => {
-            setLoginPassword(value);
-            if (feedback) {
-              setFeedback(null);
-            }
-          }}
-          placeholder={copy.authPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoComplete="password"
-          textContentType="password"
-          returnKeyType="done"
-          onSubmitEditing={() => void handleSignIn()}
-        />
+        <View style={styles.authFormStack}>
+          <SetupField
+            value={loginEmail}
+            onChangeText={(value) => {
+              setLoginEmail(value);
+              if (feedback) {
+                setFeedback(null);
+              }
+            }}
+            placeholder={copy.authEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+            textContentType="emailAddress"
+            returnKeyType="next"
+          />
+          <SetupField
+            value={loginPassword}
+            onChangeText={(value) => {
+              setLoginPassword(value);
+              if (feedback) {
+                setFeedback(null);
+              }
+            }}
+            placeholder={copy.authPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="password"
+            textContentType="password"
+            returnKeyType="done"
+            onSubmitEditing={() => void handleSignIn()}
+          />
 
-        <AppButton
-          label={signingIn ? copy.authLoggingIn : copy.authLogin}
-          onPress={() => void handleSignIn()}
-          disabled={signingIn}
-        />
+          <AppButton
+            label={signingIn ? copy.authLoggingIn : copy.authLogin}
+            onPress={() => void handleSignIn()}
+            disabled={signingIn}
+          />
+        </View>
 
         <Pressable
           onPress={openForgot}
@@ -3872,7 +4266,7 @@ export default function DoorDriveApp() {
           onPress={openRegister}
           style={({ pressed }) => [styles.loginSecondaryAction, pressed && styles.buttonPressed]}>
           <Text style={styles.loginSecondaryActionMuted}>{copy.authNoAccount}</Text>
-          <Text style={styles.loginSecondaryActionText}>{copy.authRegister}</Text>
+          <Text style={styles.loginSecondaryActionText}>{copy.authRegisterHere}</Text>
         </Pressable>
 
         <View style={styles.authFooter}>
@@ -3895,7 +4289,13 @@ export default function DoorDriveApp() {
             contentContainerStyle={styles.authScroll}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
-            {authMode === 'register' ? renderRegisterForm() : authMode === 'forgot' ? renderForgotForm() : renderLoginForm()}
+            {authMode === 'register'
+              ? renderRegisterForm()
+              : authMode === 'forgot'
+                ? renderForgotForm()
+                : authMode === 'signin'
+                  ? renderLoginForm()
+                  : renderPhoneForm()}
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
@@ -4219,13 +4619,13 @@ export default function DoorDriveApp() {
                   value={`TZS ${todayEarnings.toLocaleString()}`}
                   meta={copy.todayShort}
                   commissionLabel={copy.commissionDueShort}
-                  commissionValue={`TZS ${(hasCommissionDue ? dailyCommissionDue : Math.round(todayEarnings * 0.2)).toLocaleString()}`}
+                  commissionValue={`TZS ${(hasCommissionDue ? dailyCommissionDue : Math.round(todayEarnings * (pilotStandingState.feePercent / 100))).toLocaleString()}`}
                   expandedHint={
                     hasCommissionDue
                       ? copy.commissionTapHint
                       : language === 'sw'
-                        ? 'Makadirio 20% ya leo · bofya tena kuficha'
-                        : 'Est. 20% of today · tap again to hide'
+                        ? `Makadirio ${pilotStandingState.feePercent}% ya leo · bofya tena kuficha`
+                        : `Est. ${pilotStandingState.feePercent}% of today · tap again to hide`
                   }
                 />
                 <PilotMapChromeButton
@@ -4291,8 +4691,6 @@ export default function DoorDriveApp() {
                 customer={requestCustomerName || undefined}
                 customerPhone={activeOrderContactPhone || resolveOrderContactPhone(activeOrder) || undefined}
                 phoneLabel={copy.customerPhoneLabel}
-                callLabel={copy.callCustomer}
-                onCall={() => void handleCallCustomer()}
                 fareLabel={copy.orderFareLabel}
                 fare={
                   isInstantCargoVerify
@@ -4381,11 +4779,12 @@ export default function DoorDriveApp() {
                               : copy.accept
                 }
                 loading={busyAction === 'accept-order' || busyAction === 'counter-fare'}
+                swipeHint={copy.swipeToAcceptHint}
                 onAction={() => void (isInstantCargoVerify ? handleAcceptOrder() : handleDriverFarePrimary())}
                 declineLabel={busyAction === 'decline-order' ? copy.declining : copy.decline}
                 onDecline={() => {
                   if (busyAction === 'decline-order') return;
-                  void performDeclineOrder();
+                  handleDeclineOrder();
                 }}
               />
             ) : activeOrder ? (
@@ -4397,27 +4796,31 @@ export default function DoorDriveApp() {
                   dropoffTitle={copy.dropoff}
                   dropoffLabel={driverDropoffLabel}
                 />
-                {activeOrderContactPhone || resolveOrderContactPhone(activeOrder) ? (
-                  <Pressable
-                    onPress={() => void handleCallCustomer()}
-                    style={({ pressed }) => [styles.homeCustomerPhoneRow, pressed && styles.buttonPressed]}>
-                    <MaterialCommunityIcons name="phone-outline" size={18} color={driveTheme.colors.primaryDark} />
-                    <View style={styles.homeCustomerPhoneCopy}>
-                      <Text style={styles.homeCustomerPhoneLabel}>{copy.customerPhoneLabel}</Text>
-                      <Text style={styles.homeCustomerPhoneValue}>
-                        {activeOrderContactPhone || resolveOrderContactPhone(activeOrder)}
-                      </Text>
-                    </View>
-                    <Text style={styles.homeCustomerPhoneAction}>{copy.callCustomer}</Text>
-                  </Pressable>
-                ) : null}
-                <DrivePrimaryButton
-                  label={inAppNavMode ? copy.followingRoute : copy.navigate}
-                  icon="navigation-variant"
-                  onPress={() => void handleOpenNavigation()}
-                />
-                <Text style={styles.boltSheetHint}>{copy.followRouteHint}</Text>
+                {(() => {
+                  const nextAction = getNextTripAction(activeOrder.status);
+                  const nextLabel =
+                    nextAction?.nextStatus === 'driver_at_pickup'
+                      ? copy.tripNextArrive
+                      : nextAction?.nextStatus === 'in_transit'
+                        ? copy.tripNextStart
+                        : nextAction?.nextStatus === 'delivered'
+                          ? copy.tripNextDeliver
+                          : nextAction?.label || '';
+                  const nextBusy = nextAction ? busyAction === `trip-${nextAction.nextStatus}` : false;
+                  return nextLabel ? (
+                    <DrivePrimaryButton
+                      label={nextBusy ? `${nextLabel}...` : nextLabel}
+                      icon={nextAction?.icon}
+                      loading={nextBusy}
+                      disabled={nextBusy}
+                      onPress={() => {
+                        if (nextAction) handleTripPrimaryAdvance(nextAction.nextStatus);
+                      }}
+                    />
+                  ) : null;
+                })()}
                 <DriveGhostButton
+                  tone="danger"
                   label={busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelTrip}
                   loading={busyAction === 'trip-cancelled'}
                   onPress={handleCancelActiveTrip}
@@ -4668,41 +5071,14 @@ export default function DoorDriveApp() {
                   return;
                 }
                 if (nextAction) {
-                  void handleAdvanceTrip(nextAction.nextStatus);
+                  handleTripPrimaryAdvance(nextAction.nextStatus);
                 }
               }}
             />
           ) : null}
 
-          <DriveTripQuickActions
-            items={[
-              {
-                icon: 'navigation-variant',
-                label: copy.navigate,
-                onPress: () => void handleOpenNavigation(),
-              },
-              {
-                icon: 'phone',
-                label: copy.callCustomer,
-                onPress: () => void handleCallCustomer(),
-              },
-              {
-                icon: 'message-text-outline',
-                label: copy.customerChat,
-                badge: tripMessages.length || undefined,
-                onPress: () => setTripChatOpen(true),
-              },
-            ]}
-          />
-          <Pressable
-            onPress={() => void handleOpenExternalMaps()}
-            style={({ pressed }) => [{ alignSelf: 'center', paddingVertical: 8 }, pressed && styles.buttonPressed]}>
-            <Text style={{ fontFamily: driveType.semibold, fontSize: 13, color: '#94A3B8' }}>
-              {copy.openExternalMaps}
-            </Text>
-          </Pressable>
-
           <DriveGhostButton
+            tone="danger"
             label={
               awaitingAccept
                 ? busyAction === 'decline-order'
@@ -4717,105 +5093,6 @@ export default function DoorDriveApp() {
           />
         </DriveBottomSheet>
 
-        <Modal
-          visible={tripChatOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setTripChatOpen(false)}>
-          <KeyboardAvoidingView style={styles.tripChatModalRoot} behavior="padding">
-            <Pressable style={styles.tripChatBackdrop} onPress={() => setTripChatOpen(false)} />
-            <View style={styles.tripChatSheet}>
-              <View style={styles.tripChatSheetHandle} />
-              <View style={styles.tripChatHeader}>
-                <View style={styles.tripChatHeaderCopy}>
-                  <Text style={styles.tripChatHeaderTitle}>{copy.customerChat}</Text>
-                  <Text style={styles.tripChatHeaderSubtitle} numberOfLines={1}>
-                    {activeOrder.customerName || activeOrder.recipientName || activeOrder.orderNumber}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => setTripChatOpen(false)}
-                  style={({ pressed }) => [styles.tripChatCloseButton, pressed && styles.buttonPressed]}>
-                  <MaterialCommunityIcons name="close" size={20} color="#0F172A" />
-                </Pressable>
-              </View>
-
-              {tripMessagesLoading ? (
-                <View style={styles.tripChatEmpty}>
-                  <ActivityIndicator color={driveTheme.colors.ink} />
-                </View>
-              ) : tripMessages.length ? (
-                <ScrollView
-                  style={styles.tripChatThread}
-                  contentContainerStyle={styles.tripChatThreadContent}
-                  keyboardShouldPersistTaps="handled">
-                  {tripMessages.map((item) => {
-                    const isDriverMessage = item.senderRole === 'driver';
-                    return (
-                      <View
-                        key={item.id}
-                        style={[
-                          styles.tripMessageRow,
-                          isDriverMessage ? styles.tripMessageRowSelf : styles.tripMessageRowOther,
-                        ]}>
-                        <View
-                          style={[
-                            styles.tripMessageBubble,
-                            isDriverMessage ? styles.tripMessageBubbleSelf : styles.tripMessageBubbleOther,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.tripMessageSender,
-                              isDriverMessage ? styles.tripMessageSenderSelf : styles.tripMessageSenderOther,
-                            ]}>
-                            {isDriverMessage ? copy.tripChatYou : item.senderName || activeOrder.customerName}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.tripMessageText,
-                              isDriverMessage ? styles.tripMessageTextSelf : styles.tripMessageTextOther,
-                            ]}>
-                            {item.message}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-              ) : (
-                <View style={styles.tripChatEmpty}>
-                  <MaterialCommunityIcons name="message-text-outline" size={28} color={driveTheme.colors.ink} />
-                  <Text style={styles.tripHelperText}>{copy.tripNoMessages}</Text>
-                </View>
-              )}
-
-              <View style={styles.tripMessageComposer}>
-                <TextInput
-                  value={tripMessageDraft}
-                  onChangeText={setTripMessageDraft}
-                  editable={!tripMessageSending}
-                  multiline
-                  maxLength={240}
-                  placeholder={copy.messageCustomer}
-                  placeholderTextColor="#94A3B8"
-                  style={styles.tripMessageInput}
-                  textAlignVertical="top"
-                />
-                <Pressable
-                  disabled={!tripMessageDraft.trim() || tripMessageSending}
-                  onPress={() => void handleSendCustomerMessage()}
-                  style={({ pressed }) => [
-                    styles.tripMessageSendButton,
-                    (!tripMessageDraft.trim() || tripMessageSending) && styles.tripMessageSendButtonDisabled,
-                    pressed && tripMessageDraft.trim() && !tripMessageSending && styles.buttonPressed,
-                  ]}>
-                  <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
-                  <Text style={styles.tripMessageSendText}>{tripMessageSending ? copy.sending : copy.send}</Text>
-                </Pressable>
-              </View>
-            </View>
-          </KeyboardAvoidingView>
-        </Modal>
       </View>
     );
   };
@@ -5080,7 +5357,7 @@ export default function DoorDriveApp() {
               style={({ pressed }) => [styles.fintechPrimaryButton, pressed && styles.buttonPressed, busyAction === 'commission-payment' && styles.fintechButtonDisabled]}>
               <Text style={styles.fintechPrimaryButtonText}>
                 {busyAction === 'commission-payment'
-                  ? '...'
+                  ? 'Inatuma…'
                   : `Jaribu tena · TZS ${dailyCommissionDue.toLocaleString()}`}
               </Text>
             </Pressable>
@@ -5146,7 +5423,7 @@ export default function DoorDriveApp() {
               ]}>
               <Text style={styles.fintechPrimaryButtonText}>
                 {busyAction === 'commission-payment'
-                  ? '...'
+                  ? 'Inatuma…'
                   : `Lipa · TZS ${dailyCommissionDue.toLocaleString()}`}
               </Text>
             </Pressable>
@@ -5209,7 +5486,12 @@ export default function DoorDriveApp() {
               iconBg: '#2E2410',
               title: copy.helpRewards,
               subtitle: copy.helpRewardsHint,
-              onPress: () => setSelectedTab('earn'),
+              onPress: () => {
+                Alert.alert(copy.howItWorks, pilotTiersExplanation(language === 'sw' ? 'sw' : 'en'), [
+                  { text: copy.cancelTripKeep, style: 'cancel' },
+                  { text: copy.haulRewards, onPress: () => setSelectedTab('earn') },
+                ]);
+              },
             },
             {
               key: 'terms',
@@ -5361,12 +5643,136 @@ export default function DoorDriveApp() {
         </View>
       )}
 
+      {activeOrder ? (
+        <Modal
+          visible={tripChatOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setTripChatOpen(false)}>
+          <KeyboardAvoidingView style={styles.tripChatModalRoot} behavior="padding">
+            <Pressable style={styles.tripChatBackdrop} onPress={() => setTripChatOpen(false)} />
+            <View style={styles.tripChatSheet}>
+              <View style={styles.tripChatSheetHandle} />
+              <View style={styles.tripChatHeader}>
+                <View style={styles.tripChatHeaderCopy}>
+                  <Text style={styles.tripChatHeaderTitle}>{copy.customerChat}</Text>
+                  <Text style={styles.tripChatHeaderSubtitle} numberOfLines={1}>
+                    {activeOrder.customerName || activeOrder.recipientName || activeOrder.orderNumber}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => setTripChatOpen(false)}
+                  style={({ pressed }) => [styles.tripChatCloseButton, pressed && styles.buttonPressed]}>
+                  <MaterialCommunityIcons name="close" size={20} color="#0F172A" />
+                </Pressable>
+              </View>
+
+              {tripMessagesLoading ? (
+                <View style={styles.tripChatEmpty}>
+                  <ActivityIndicator color={driveTheme.colors.ink} />
+                </View>
+              ) : tripMessages.length ? (
+                <ScrollView
+                  style={styles.tripChatThread}
+                  contentContainerStyle={styles.tripChatThreadContent}
+                  keyboardShouldPersistTaps="handled">
+                  {tripMessages.map((item) => {
+                    const isDriverMessage = item.senderRole === 'driver';
+                    return (
+                      <View
+                        key={item.id}
+                        style={[
+                          styles.tripMessageRow,
+                          isDriverMessage ? styles.tripMessageRowSelf : styles.tripMessageRowOther,
+                        ]}>
+                        <View
+                          style={[
+                            styles.tripMessageBubble,
+                            isDriverMessage ? styles.tripMessageBubbleSelf : styles.tripMessageBubbleOther,
+                          ]}>
+                          <Text
+                            style={[
+                              styles.tripMessageSender,
+                              isDriverMessage ? styles.tripMessageSenderSelf : styles.tripMessageSenderOther,
+                            ]}>
+                            {isDriverMessage ? copy.tripChatYou : item.senderName || activeOrder.customerName}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.tripMessageText,
+                              isDriverMessage ? styles.tripMessageTextSelf : styles.tripMessageTextOther,
+                            ]}>
+                            {item.message}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <View style={styles.tripChatEmpty}>
+                  <MaterialCommunityIcons name="message-text-outline" size={28} color={driveTheme.colors.ink} />
+                  <Text style={styles.tripHelperText}>{copy.tripNoMessages}</Text>
+                </View>
+              )}
+
+              <View style={styles.tripMessageComposer}>
+                <TextInput
+                  value={tripMessageDraft}
+                  onChangeText={setTripMessageDraft}
+                  editable={!tripMessageSending}
+                  multiline
+                  maxLength={240}
+                  placeholder={copy.messageCustomer}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.tripMessageInput}
+                  textAlignVertical="top"
+                />
+                <Pressable
+                  disabled={!tripMessageDraft.trim() || tripMessageSending}
+                  onPress={() => void handleSendCustomerMessage()}
+                  style={({ pressed }) => [
+                    styles.tripMessageSendButton,
+                    (!tripMessageDraft.trim() || tripMessageSending) && styles.tripMessageSendButtonDisabled,
+                    pressed && tripMessageDraft.trim() && !tripMessageSending && styles.buttonPressed,
+                  ]}>
+                  <MaterialCommunityIcons name="send" size={16} color="#FFFFFF" />
+                  <Text style={styles.tripMessageSendText}>{tripMessageSending ? copy.sending : copy.send}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      ) : null}
+
       <PilotOrderCancelledModal
         visible={orderCancelledVisible}
         title={copy.orderCancelledTitle}
         message={copy.orderCancelledMessage}
         closeLabel={copy.orderCancelledClose}
         onClose={() => setOrderCancelledVisible(false)}
+      />
+
+      <DriveCancelReasonSheet
+        visible={cancelReasonOpen}
+        title={copy.cancelReasonTitle}
+        subtitle={copy.cancelReasonBody}
+        presets={[
+          copy.cancelReasonCustomerBusy,
+          copy.cancelReasonWrongAddress,
+          copy.cancelReasonVehicle,
+          copy.cancelReasonSafety,
+          copy.cancelReasonOther,
+        ]}
+        placeholder={copy.cancelReasonPlaceholder}
+        confirmLabel={busyAction === 'trip-cancelled' ? copy.cancelling : copy.cancelReasonConfirm}
+        keepLabel={copy.cancelTripKeep}
+        loading={busyAction === 'trip-cancelled'}
+        onClose={() => {
+          if (busyAction === 'trip-cancelled') return;
+          setCancelReasonOpen(false);
+        }}
+        onConfirm={handleConfirmCancelWithReason}
       />
 
       <PilotMenuDrawer
@@ -5547,10 +5953,11 @@ const styles = StyleSheet.create({
   },
   authScroll: {
     flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 18,
-    paddingBottom: 40,
+    paddingHorizontal: 22,
+    paddingTop: 16,
+    paddingBottom: 48,
     gap: 16,
+    justifyContent: 'flex-start',
   },
   authBackButton: {
     width: 44,
@@ -5560,6 +5967,37 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: driveTheme.colors.surface,
     marginBottom: 8,
+  },
+  authHeroBlock: {
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 4,
+    width: '100%',
+    paddingHorizontal: 4,
+  },
+  authHeroTitle: {
+    color: driveTheme.colors.primary,
+    fontSize: 28,
+    lineHeight: 36,
+    fontFamily: driveType.bold,
+    textAlign: 'center',
+    letterSpacing: 0.4,
+    width: '100%',
+    flexShrink: 1,
+  },
+  authIllustrationWell: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    marginTop: 6,
+    borderRadius: 28,
+    backgroundColor: driveTheme.colors.surfaceMuted,
+  },
+  authFormStack: {
+    width: '100%',
+    gap: 14,
   },
   authPageTitle: {
     color: driveTheme.colors.ink,
@@ -5571,7 +6009,7 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   authLandingHero: {
-    alignItems: 'flex-start',
+    alignItems: 'center',
     paddingTop: 12,
     paddingBottom: 8,
     gap: 8,
@@ -5591,7 +6029,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 10,
     overflow: 'hidden',
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
   },
   authPilotsLine: {
     color: driveTheme.colors.ink,
@@ -5601,7 +6039,7 @@ const styles = StyleSheet.create({
     marginTop: -2,
   },
   waitingVehicleLine: {
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
     backgroundColor: driveTheme.colors.surfaceElevated,
     borderRadius: 999,
     borderWidth: 1,
@@ -5615,17 +6053,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   authLandingTitle: {
-    textAlign: 'left',
+    textAlign: 'center',
     marginTop: 4,
-    fontSize: 30,
-    lineHeight: 36,
+    fontSize: 32,
+    lineHeight: 38,
   },
   authLandingSubtitle: {
-    textAlign: 'left',
-    color: driveTheme.colors.subtext,
+    textAlign: 'center',
+    color: '#CBD5E1',
     fontSize: 15,
     lineHeight: 22,
     fontFamily: driveType.regular,
+    maxWidth: '100%',
+    width: '100%',
+    alignSelf: 'center',
+    paddingHorizontal: 4,
+    flexShrink: 1,
   },
   authFieldHint: {
     color: driveTheme.colors.subtext,
@@ -5649,10 +6092,12 @@ const styles = StyleSheet.create({
   },
   authTermsText: {
     flex: 1,
-    color: driveTheme.colors.subtext,
+    minWidth: 0,
+    color: '#CBD5E1',
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 20,
     fontFamily: driveType.regular,
+    flexShrink: 1,
   },
   loginScroll: {
     flexGrow: 1,
@@ -5958,22 +6403,29 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   loginSecondaryAction: {
-    minHeight: 32,
+    minHeight: 40,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 5,
     marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   loginSecondaryActionText: {
     color: driveTheme.colors.primary,
     fontSize: 14,
+    lineHeight: 20,
     fontFamily: driveType.bold,
+    flexShrink: 1,
   },
   loginSecondaryActionMuted: {
-    color: driveTheme.colors.subtext,
+    color: '#CBD5E1',
     fontSize: 14,
+    lineHeight: 20,
     fontFamily: driveType.regular,
+    flexShrink: 1,
   },
   authScreenTopBar: {
     minHeight: 44,
@@ -6006,9 +6458,12 @@ const styles = StyleSheet.create({
     marginLeft: -6,
   },
   authLanguageQuiet: {
-    color: driveTheme.colors.subtext,
+    color: '#E2E8F0',
     fontSize: 14,
+    lineHeight: 20,
     fontFamily: driveType.semibold,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
   },
   authHeroCopy: {
     gap: 6,
@@ -6176,25 +6631,28 @@ const styles = StyleSheet.create({
   },
   authForgotButton: {
     alignSelf: 'center',
-    paddingVertical: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
   },
   authForgotButtonText: {
-    color: driveTheme.colors.subtext,
+    color: '#E2E8F0',
     fontSize: 14,
+    lineHeight: 20,
     fontFamily: driveType.semibold,
   },
   authDialCode: {
     color: driveTheme.colors.ink,
-    fontSize: 14,
+    fontSize: 15,
+    lineHeight: 20,
     fontFamily: driveType.semibold,
   },
   authCountryCode: {
-    minHeight: 52,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
-    backgroundColor: driveTheme.colors.surface,
+    minHeight: 56,
+    paddingHorizontal: 14,
+    borderRadius: 28,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    backgroundColor: driveTheme.colors.surfaceMuted,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -6292,11 +6750,11 @@ const styles = StyleSheet.create({
   },
   setupInputShell: {
     minHeight: 56,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: driveTheme.colors.line,
-    backgroundColor: driveTheme.colors.surface,
-    paddingLeft: 16,
+    borderRadius: 28,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    backgroundColor: driveTheme.colors.surfaceMuted,
+    paddingLeft: 18,
     paddingRight: 6,
     flexDirection: 'row',
     alignItems: 'center',
@@ -6305,9 +6763,14 @@ const styles = StyleSheet.create({
     flex: 1,
     color: driveTheme.colors.ink,
     fontSize: 16,
+    lineHeight: 22,
     fontFamily: driveType.regular,
-    minHeight: 44,
+    minHeight: 48,
+    paddingVertical: 12,
     paddingRight: 8,
+  },
+  setupTextInputCentered: {
+    textAlign: 'center',
   },
   setupPasswordToggle: {
     width: 44,
@@ -6316,7 +6779,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   setupInputShellPlain: {
-    paddingRight: 16,
+    paddingRight: 18,
   },
   setupSelectShell: {
     flexDirection: 'row',
@@ -6356,7 +6819,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   setupFlagText: {
-    color: driveTheme.colors.primaryDark,
+    color: driveTheme.colors.ink,
     fontSize: 13,
     fontFamily: driveType.bold,
   },
@@ -8254,18 +8717,21 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   authFooter: {
-    marginTop: 2,
+    marginTop: 8,
     alignItems: 'center',
-    paddingHorizontal: 18,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
   },
   authFooterText: {
-    color: driveTheme.colors.subtext,
+    color: '#CBD5E1',
     fontSize: 13,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 20,
+    flexShrink: 1,
   },
   authLink: {
     color: driveTheme.colors.primary,
+    fontFamily: driveType.bold,
     fontWeight: '700',
   },
   buttonBase: {
@@ -8310,7 +8776,8 @@ const styles = StyleSheet.create({
     backgroundColor: driveTheme.colors.cta,
     borderColor: driveTheme.colors.cta,
     borderRadius: 28,
-    minHeight: 56,
+    minHeight: 58,
+    marginTop: 4,
   },
   buttonSecondary: {
     backgroundColor: driveTheme.colors.surface,
@@ -8330,13 +8797,19 @@ const styles = StyleSheet.create({
     fontFamily: driveType.bold,
     color: driveTheme.colors.ctaText,
     fontSize: 15,
+    lineHeight: 20,
     textAlign: 'center',
+    flexShrink: 1,
+    paddingHorizontal: 4,
   },
   buttonTextSecondary: {
     fontFamily: driveType.bold,
     color: driveTheme.colors.ink,
     fontSize: 15,
+    lineHeight: 20,
     textAlign: 'center',
+    flexShrink: 1,
+    paddingHorizontal: 4,
   },
   vehicleCardList: {
     gap: 12,
@@ -8452,10 +8925,12 @@ const styles = StyleSheet.create({
   },
   feedbackText: {
     flex: 1,
+    minWidth: 0,
     color: driveTheme.colors.ink,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 20,
     fontFamily: driveType.semibold,
+    flexShrink: 1,
   },
   pillRow: {
     flexDirection: 'row',
