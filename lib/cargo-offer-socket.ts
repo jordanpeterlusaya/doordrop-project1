@@ -60,46 +60,72 @@ function devSocketHost() {
   return '';
 }
 
-/** Resolve cargo offer WebSocket URL. Prefer EXPO_PUBLIC_CARGO_OFFER_WS_URL. */
+/**
+ * Live Cloud Run cargo-offer socket.
+ * Returned as a direct string literal from getCargoOfferWsUrl so a release
+ * Hermes bundle cannot collapse it to an empty env lookup.
+ */
+export const HAUL_CARGO_OFFER_WSS = 'wss://haul-cargo-offer-ws-729242246964.us-central1.run.app';
+
+function isPublicOfferWsUrl(url: string) {
+  if (!url.startsWith('wss://')) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.endsWith('.local') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    ) {
+      return false;
+    }
+    return host.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve cargo offer WebSocket URL. Release builds always have the live Cloud Run host. */
 export function getCargoOfferWsUrl() {
-  const explicit = getRuntimeEnvValue('EXPO_PUBLIC_CARGO_OFFER_WS_URL').trim().replace(/\/+$/, '');
-  if (explicit) {
-    return explicit;
+  let explicit = '';
+  try {
+    explicit = getRuntimeEnvValue('EXPO_PUBLIC_CARGO_OFFER_WS_URL').trim().replace(/\/+$/, '');
+  } catch {
+    explicit = '';
   }
 
-  if (__DEV__) {
-    const port = getRuntimeEnvValue('EXPO_PUBLIC_CARGO_OFFER_WS_PORT').trim() || '4010';
-    return `ws://${devSocketHost() || '127.0.0.1'}:${port}`;
+  if (typeof __DEV__ === 'undefined' || __DEV__ === false) {
+    if (isPublicOfferWsUrl(explicit)) return explicit;
+    return 'wss://haul-cargo-offer-ws-729242246964.us-central1.run.app';
   }
+
+  if (explicit.startsWith('ws://') || explicit.startsWith('wss://')) return explicit;
 
   const port = getRuntimeEnvValue('EXPO_PUBLIC_CARGO_OFFER_WS_PORT').trim() || '4010';
   const apiBase = getDoorDropApiRuntimeConfig().resolvedApiBaseUrl;
   const wsBase = httpToWsBase(apiBase);
-  if (!wsBase) {
-    return '';
-  }
-
-  try {
-    const parsed = new URL(wsBase);
-    // Local / LAN API → same host, dedicated cargo WS port.
-    if (
-      parsed.hostname === 'localhost' ||
-      parsed.hostname === '127.0.0.1' ||
-      parsed.hostname.startsWith('10.') ||
-      parsed.hostname.startsWith('192.168.') ||
-      parsed.hostname.endsWith('.local')
-    ) {
-      parsed.port = port;
-      parsed.pathname = '/';
-      return parsed.toString().replace(/\/+$/, '');
+  if (wsBase) {
+    try {
+      const parsed = new URL(wsBase);
+      if (
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        parsed.hostname.startsWith('10.') ||
+        parsed.hostname.startsWith('192.168.') ||
+        parsed.hostname.endsWith('.local')
+      ) {
+        parsed.port = port;
+        parsed.pathname = '/';
+        return parsed.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // local dev falls through to the loopback socket
     }
-  } catch {
-    // fall through
   }
 
-  // Hosted HTTPS API cannot host long-lived sockets on Cloud Functions —
-  // require an explicit WS URL in production builds.
-  return '';
+  return `ws://${devSocketHost() || '127.0.0.1'}:${port}`;
 }
 
 export type CargoOfferSocketHandlers = {

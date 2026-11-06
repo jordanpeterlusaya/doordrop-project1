@@ -236,12 +236,13 @@ async function handleCustomerCancel(socket, message) {
     send(socket, { type: 'error', orderId, message: 'Not allowed for this order.' });
     return;
   }
-  if (order.acceptedByDriverAt) {
-    send(socket, { type: 'accepted', orderId, driverId: order.driverId || '' });
+  const status = String(order.status || '');
+  if (['in_transit', 'at_hub', 'delivered'].includes(status)) {
+    send(socket, { type: 'error', orderId, message: 'This order can no longer be cancelled.' });
     return;
   }
 
-  const result = await releaseCargoOfferDriver(db, orderId, 'Customer cancelled before the driver verified');
+  const result = await releaseCargoOfferDriver(db, orderId, 'Customer cancelled the order');
   const payload = { type: 'cancelled', orderId, by: 'customer' };
   broadcast(customersByOrder, orderId, payload);
   if (result.driverId) {
@@ -322,6 +323,55 @@ async function handleDriverDecline(socket, message) {
   }
 }
 
+async function handleDriverCancel(socket, message) {
+  const orderId = String(message.orderId || '').trim();
+  const driverId = await verifyUid(message.token);
+  if (!orderId || !driverId) {
+    send(socket, { type: 'error', message: 'orderId and driverId are required.' });
+    return;
+  }
+
+  const orderRef = db.collection('orders').doc(orderId);
+  const orderSnap = await orderRef.get();
+  if (!orderSnap.exists) {
+    send(socket, { type: 'error', orderId, message: 'Order was not found.' });
+    return;
+  }
+  const order = orderSnap.data() || {};
+  if (order.driverId && String(order.driverId) !== driverId) {
+    send(socket, { type: 'error', orderId, message: 'This order is assigned to a different driver.' });
+    return;
+  }
+
+  if (String(order.status || '') !== 'cancelled') {
+    const { FieldValue } = require('firebase-admin/firestore');
+    await orderRef.set(
+      {
+        status: 'cancelled',
+        cancelledBy: 'driver',
+        cancelledAt: FieldValue.serverTimestamp(),
+        driverSearchStatus: 'cancelled',
+        driverSearchMessage: 'Dereva ameghairi oda hii. Haifuatiliwi tena.',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection('drivers').doc(driverId).set(
+      {
+        isAvailable: true,
+        currentOrderId: '',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  const payload = { type: 'cancelled', orderId, by: 'driver' };
+  broadcast(customersByOrder, orderId, payload);
+  broadcast(driversById, driverId, payload);
+  send(socket, payload);
+}
+
 async function onMessage(socket, raw) {
   let message;
   try {
@@ -360,6 +410,9 @@ async function onMessage(socket, raw) {
       case 'driver_decline':
       case 'decline':
         await handleDriverDecline(socket, message);
+        break;
+      case 'driver_cancel':
+        await handleDriverCancel(socket, message);
         break;
       case 'ping':
         send(socket, { type: 'pong', at: Date.now() });

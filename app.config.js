@@ -46,9 +46,24 @@ const googleMapsApiKey =
   '';
 
 const doordropApiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
-const cargoOfferWsUrl = (process.env.EXPO_PUBLIC_CARGO_OFFER_WS_URL || '').trim().replace(/\/+$/, '');
-const parcelOfferWsUrl = (process.env.EXPO_PUBLIC_PARCEL_OFFER_WS_URL || '').trim().replace(/\/+$/, '');
 const easBuildProfile = process.env.EAS_BUILD_PROFILE || '';
+// Live Cloud Run hosts. Store profiles bake these even when EAS env is missing,
+// because Hermes does not keep empty EXPO_PUBLIC_* extras.
+const PRODUCTION_CARGO_OFFER_WS_URL = 'wss://haul-cargo-offer-ws-729242246964.us-central1.run.app';
+const PRODUCTION_PARCEL_OFFER_WS_URL = 'wss://haul-parcel-offer-ws-729242246964.us-central1.run.app';
+const storeWsProfile = ['production', 'preview', 'standalone'].includes(easBuildProfile);
+
+function storeOfferWsUrl(explicit, fallback) {
+  const trimmed = String(explicit || '').trim().replace(/\/+$/, '');
+  if (!storeWsProfile) return trimmed;
+  if (trimmed.startsWith('wss://') && !/localhost|127\.0\.0\.1|192\.168\.|10\.\d+\./.test(trimmed)) {
+    return trimmed;
+  }
+  return fallback;
+}
+
+const cargoOfferWsUrl = storeOfferWsUrl(process.env.EXPO_PUBLIC_CARGO_OFFER_WS_URL, PRODUCTION_CARGO_OFFER_WS_URL);
+const parcelOfferWsUrl = storeOfferWsUrl(process.env.EXPO_PUBLIC_PARCEL_OFFER_WS_URL, PRODUCTION_PARCEL_OFFER_WS_URL);
 const easOwner = process.env.DOORDROP_EAS_OWNER || 'lusayaapeters-team';
 const easProjectId = (
   process.env.DOORDROP_EAS_PROJECT_ID || '7e8f96f2-2fb2-4775-b540-815429462767'
@@ -234,7 +249,7 @@ if (!androidGoogleServicesConfig.configured) {
 module.exports = {
   expo: {
     owner: easOwner,
-    name: 'HAUL',
+    name: 'Haul',
     slug: 'DoorDrop',
     scheme: 'doordrop',
     version: '1.0.0',
@@ -259,6 +274,7 @@ module.exports = {
       adaptiveIcon: {
         foregroundImage: './assets/images/haul-adaptive-foreground.png',
         backgroundColor: '#FFE500',
+        monochromeImage: './assets/images/haul-adaptive-foreground.png',
       },
       config: {
         googleMaps: {
@@ -312,14 +328,14 @@ module.exports = {
       supportsTablet: true,
       infoPlist: {
         NSPhotoLibraryUsageDescription:
-          'DoorDrop inahitaji picha ili uambatanishe screenshot ya bidhaa.',
+          'Haul inahitaji picha ili uambatanishe screenshot ya bidhaa.',
         NSPhotoLibraryAddUsageDescription:
-          'DoorDrop inahitaji ruhusa ya picha kwa oda za Ninunulie.',
-        NSCameraUsageDescription: 'DoorDrop inahitaji kamera ili upige picha ya bidhaa.',
+          'Haul inahitaji ruhusa ya picha kwa oda za Ninunulie.',
+        NSCameraUsageDescription: 'Haul inahitaji kamera ili upige picha ya bidhaa.',
         NSContactsUsageDescription:
-          'DoorDrop inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
+          'Haul inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
         NSLocationWhenInUseUsageDescription:
-          'DoorDrop inahitaji location yako kuonyesha pickup na delivery.',
+          'Haul inahitaji location yako kuonyesha pickup na delivery.',
       },
     },
     plugins: [
@@ -329,8 +345,8 @@ module.exports = {
         'expo-image-picker',
         {
           // iOS still needs a usage string; Android uses Photo Picker without READ_MEDIA_*.
-          photosPermission: 'DoorDrop inahitaji picha ili uambatanishe screenshot ya bidhaa.',
-          cameraPermission: 'DoorDrop inahitaji kamera ili upige picha ya bidhaa.',
+          photosPermission: 'Haul inahitaji picha ili uambatanishe screenshot ya bidhaa.',
+          cameraPermission: 'Haul inahitaji kamera ili upige picha ya bidhaa.',
           microphonePermission: false,
         },
       ],
@@ -338,7 +354,7 @@ module.exports = {
         'expo-contacts',
         {
           contactsPermission:
-            'DoorDrop inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
+            'Haul inahitaji contacts ili uchague mpokeaji wa parcel kwa haraka.',
         },
       ],
       [
@@ -352,8 +368,8 @@ module.exports = {
       [
         'expo-location',
         {
-          locationAlwaysAndWhenInUsePermission: 'Allow DoorDrop to use your location',
-          locationWhenInUsePermission: 'Allow DoorDrop to use your location while using the app',
+          locationAlwaysAndWhenInUsePermission: 'Allow Haul to use your location',
+          locationWhenInUsePermission: 'Allow Haul to use your location while using the app',
         },
       ],
       [

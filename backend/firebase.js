@@ -1,5 +1,5 @@
 const { onRequest } = require('firebase-functions/v2/https');
-const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineString } = require('firebase-functions/params');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
@@ -211,6 +211,7 @@ exports.onOrderCreatedAutoAssign = onDocumentCreated(
     maxInstances: 20,
   },
   async (event) => {
+    applyRuntimeSecrets();
     const snapshot = event.data;
     if (!snapshot) {
       return;
@@ -258,6 +259,7 @@ exports.onParcelOrderMatchCarrier = onDocumentCreated(
     maxInstances: 10,
   },
   async (event) => {
+    applyRuntimeSecrets();
     if (!event.data) return;
     const orderId = event.params.orderId;
     try {
@@ -282,6 +284,7 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
     maxInstances: 10,
   },
   async (event) => {
+    applyRuntimeSecrets();
     const before = event.data?.before?.data() || null;
     const after = event.data?.after?.data() || null;
     if (!after) return;
@@ -365,6 +368,52 @@ exports.autoAssignPendingOrders = onSchedule(
   async () => {
     const { runAutoAssignmentQueue } = getAutoAssignment();
     await runAutoAssignmentQueue(getFirestoreDb());
+  }
+);
+
+exports.onSmsJobWritten = onDocumentWritten(
+  {
+    document: 'smsJobs/{jobId}',
+    region: 'us-central1',
+    timeoutSeconds: 30,
+    memory: '256MiB',
+    maxInstances: 20,
+  },
+  async (event) => {
+    applyRuntimeSecrets();
+    const after = event.data?.after?.data();
+    if (!after) return;
+    const status = String(after.status || '');
+    if (!['queued', 'pending'].includes(status)) return;
+    const jobId = event.params.jobId;
+    console.info('sms trigger', { jobId, status, orderId: after.orderId || '', event: after.event || '' });
+    try {
+      const { processSmsJob } = require('./carrier-sms');
+      await processSmsJob(getFirestoreDb(), jobId);
+    } catch (error) {
+      console.error('sms trigger failed', { jobId, reason: error?.message || String(error) });
+    }
+  }
+);
+
+exports.processSmsRetries = onSchedule(
+  {
+    schedule: 'every 1 minutes',
+    region: 'us-central1',
+    retryCount: 0,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    maxInstances: 1,
+  },
+  async () => {
+    applyRuntimeSecrets();
+    const { processDueSmsJobs } = require('./carrier-sms');
+    const results = await processDueSmsJobs(getFirestoreDb(), 25);
+    console.info('sms retry sweep', {
+      checked: Array.isArray(results) ? results.length : 0,
+      accepted: Array.isArray(results) ? results.filter((item) => item?.accepted).length : 0,
+      retrying: Array.isArray(results) ? results.filter((item) => item?.retry).length : 0,
+    });
   }
 );
 

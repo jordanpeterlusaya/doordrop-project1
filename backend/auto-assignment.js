@@ -45,7 +45,7 @@ function compact(payload) {
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
 }
 
-const { sendDriverIncomingOrderPush } = require('./driver-push');
+const { queueDriverIncomingOrderSms, sendDriverIncomingOrderPush } = require('./driver-push');
 const { isDriverCommissionLocked } = require('./driver-commission');
 
 function safeText(value, fallback = '') {
@@ -706,6 +706,8 @@ async function assignDriverToOrder(db, orderId, driverId, assignment = {}) {
         score: Number.isFinite(assignment.score) ? Math.round(Number(assignment.score) * 100) / 100 : null,
       }).catch(() => undefined),
     ]);
+    // Assignment is already committed. Queue only — Mambo runs on smsJobs, never here.
+    await queueDriverIncomingOrderSms(db, assignedDriver, assignedOrder);
   }
 }
 

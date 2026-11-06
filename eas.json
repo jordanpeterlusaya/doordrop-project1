@@ -65,11 +65,19 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api"
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-efootball-app-9d175.cloudfunctions.net/api",
+        "EXPO_PUBLIC_CARGO_OFFER_WS_URL": "wss://haul-cargo-offer-ws-729242246964.us-central1.run.app",
+        "EXPO_PUBLIC_PARCEL_OFFER_WS_URL": "wss://haul-parcel-offer-ws-729242246964.us-central1.run.app"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "track": "production",
+        "releaseStatus": "draft",
+        "changesNotSentForReview": false
+      }
+    }
   }
 }

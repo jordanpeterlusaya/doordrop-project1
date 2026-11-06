@@ -104,9 +104,47 @@ async function sendFcmMessages(tokens, { title, body, data }) {
 }
 
 /**
- * Send heads-up order alert to the assigned driver (Expo + FCM).
- * Called from assignDriverToOrder and admin manual assign.
+ * Queue the driver SMS after the order assignment is already saved.
+ * Does not call Mambo. onSmsJobWritten sends it, with retries.
+ * Failures are logged and never thrown.
  */
+async function queueDriverIncomingOrderSms(db, driver, order) {
+  const orderId = String(order?.id || '').trim();
+  const driverId = String(driver?.id || driver?.uid || '').trim() || 'driver';
+  try {
+    const { normalizeSmsPhone } = require('./sms-provider');
+    const { sendIdempotentSms } = require('./carrier-sms');
+    const phone = normalizeSmsPhone(driver?.phoneNumber || driver?.phone || '');
+    if (!orderId) {
+      console.info('sms skip', { event: 'driver_incoming', driverId, reason: 'no-order' });
+      return { skipped: true, reason: 'no-order' };
+    }
+    if (!phone) {
+      console.info('sms skip', { orderId, event: 'driver_incoming', driverId, reason: 'no-phone' });
+      return { skipped: true, reason: 'no-phone' };
+    }
+    const orderNumber = getOrderNumber(order);
+    const body = `HAUL Pilots: Oda mpya ${orderNumber}. Fungua HAUL Pilots na ukubali sasa.`;
+    return await sendIdempotentSms(db, {
+      orderId,
+      shipment: order,
+      to: phone,
+      body,
+      jobKey: `driver_incoming_${driverId}`.slice(0, 80),
+      audience: 'driver',
+      event: 'driver_incoming',
+    });
+  } catch (error) {
+    console.error('sms enqueue failed', {
+      orderId,
+      event: 'driver_incoming',
+      driverId,
+      reason: error?.message || 'error',
+    });
+    return { queued: false, error: true };
+  }
+}
+
 async function sendDriverIncomingOrderPush(driver, order) {
   const tokens = collectDriverPushTokens(driver);
   if (!tokens.expo.length && !tokens.fcm.length) {
@@ -168,5 +206,6 @@ module.exports = {
   collectDriverPushTokens,
   isExpoPushToken,
   isFcmToken,
+  queueDriverIncomingOrderSms,
   sendDriverIncomingOrderPush,
 };

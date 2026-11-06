@@ -53,39 +53,71 @@ function devSocketHost() {
   return '';
 }
 
-/** Resolve parcel offer WebSocket URL. Prefer EXPO_PUBLIC_PARCEL_OFFER_WS_URL. */
-export function getParcelOfferWsUrl() {
-  const explicit = getRuntimeEnvValue('EXPO_PUBLIC_PARCEL_OFFER_WS_URL').trim().replace(/\/+$/, '');
-  if (explicit) return explicit;
+/**
+ * Live Cloud Run parcel-offer socket.
+ * Direct string literal in the release return so Hermes cannot drop it.
+ */
+export const HAUL_PARCEL_OFFER_WSS = 'wss://haul-parcel-offer-ws-729242246964.us-central1.run.app';
 
-  if (__DEV__) {
-    const port = getRuntimeEnvValue('EXPO_PUBLIC_PARCEL_OFFER_WS_PORT').trim() || '4011';
-    return `ws://${devSocketHost() || '127.0.0.1'}:${port}`;
+function isPublicOfferWsUrl(url: string) {
+  if (!url.startsWith('wss://')) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.endsWith('.local') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    ) {
+      return false;
+    }
+    return host.length > 0;
+  } catch {
+    return false;
   }
+}
+
+/** Resolve parcel offer WebSocket URL. Release builds always have the live Cloud Run host. */
+export function getParcelOfferWsUrl() {
+  let explicit = '';
+  try {
+    explicit = getRuntimeEnvValue('EXPO_PUBLIC_PARCEL_OFFER_WS_URL').trim().replace(/\/+$/, '');
+  } catch {
+    explicit = '';
+  }
+
+  if (typeof __DEV__ === 'undefined' || __DEV__ === false) {
+    if (isPublicOfferWsUrl(explicit)) return explicit;
+    return 'wss://haul-parcel-offer-ws-729242246964.us-central1.run.app';
+  }
+
+  if (explicit.startsWith('ws://') || explicit.startsWith('wss://')) return explicit;
 
   const port = getRuntimeEnvValue('EXPO_PUBLIC_PARCEL_OFFER_WS_PORT').trim() || '4011';
   const apiBase = getDoorDropApiRuntimeConfig().resolvedApiBaseUrl;
   const wsBase = httpToWsBase(apiBase);
-  if (!wsBase) return '';
-
-  try {
-    const parsed = new URL(wsBase);
-    if (
-      parsed.hostname === 'localhost' ||
-      parsed.hostname === '127.0.0.1' ||
-      parsed.hostname.startsWith('10.') ||
-      parsed.hostname.startsWith('192.168.') ||
-      parsed.hostname.endsWith('.local')
-    ) {
-      parsed.port = port;
-      parsed.pathname = '/';
-      return parsed.toString().replace(/\/+$/, '');
+  if (wsBase) {
+    try {
+      const parsed = new URL(wsBase);
+      if (
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        parsed.hostname.startsWith('10.') ||
+        parsed.hostname.startsWith('192.168.') ||
+        parsed.hostname.endsWith('.local')
+      ) {
+        parsed.port = port;
+        parsed.pathname = '/';
+        return parsed.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // local dev falls through to the loopback socket
     }
-  } catch {
-    // fall through
   }
 
-  return '';
+  return `ws://${devSocketHost() || '127.0.0.1'}:${port}`;
 }
 
 export type ParcelOfferSocketHandlers = {
@@ -98,27 +130,69 @@ export type ParcelOfferSocketHandlers = {
 export function connectParcelOfferSocket(handlers: ParcelOfferSocketHandlers = {}) {
   const url = getParcelOfferWsUrl();
   if (!url) {
-    throw new Error(
-      'Missing parcel offer WebSocket URL. Set EXPO_PUBLIC_PARCEL_OFFER_WS_URL (e.g. ws://192.168.1.17:4011).'
-    );
+    if (__DEV__) {
+      console.warn('[parcel-offer-socket] Missing EXPO_PUBLIC_PARCEL_OFFER_WS_URL.');
+    }
+    throw new Error('Could not reach carriers right now. Check your connection and try again.');
   }
 
-  const socket = new WebSocket(url);
+  let socket = new WebSocket(url);
   let closed = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  const maxReconnectAttempts = 2;
 
-  socket.onopen = () => handlers.onOpen?.();
-  socket.onclose = () => {
-    closed = true;
-    handlers.onClose?.();
-  };
-  socket.onerror = (error) => handlers.onError?.(error);
-  socket.onmessage = (message) => {
-    try {
-      handlers.onEvent?.(JSON.parse(String(message.data)) as ParcelOfferSocketEvent);
-    } catch {
-      // ignore
+  const clearReconnect = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
   };
+
+  const bindSocket = (next: WebSocket) => {
+    socket = next;
+    socket.onopen = () => {
+      reconnectAttempt = 0;
+      handlers.onOpen?.();
+    };
+    socket.onclose = () => {
+      if (closed) {
+        handlers.onClose?.();
+        return;
+      }
+      if (reconnectAttempt < maxReconnectAttempts) {
+        const delayMs = 600 * (reconnectAttempt + 1);
+        reconnectAttempt += 1;
+        clearReconnect();
+        reconnectTimer = setTimeout(() => {
+          if (closed) return;
+          try {
+            bindSocket(new WebSocket(url));
+          } catch {
+            closed = true;
+            handlers.onError?.(new Event('error'));
+            handlers.onClose?.();
+          }
+        }, delayMs);
+        return;
+      }
+      closed = true;
+      handlers.onError?.(new Event('error'));
+      handlers.onClose?.();
+    };
+    socket.onerror = () => {
+      // onclose drives reconnect / final error.
+    };
+    socket.onmessage = (message) => {
+      try {
+        handlers.onEvent?.(JSON.parse(String(message.data)) as ParcelOfferSocketEvent);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+  };
+
+  bindSocket(socket);
 
   const send = (payload: Record<string, unknown>) => {
     if (closed || socket.readyState !== WebSocket.OPEN) return false;
@@ -131,6 +205,7 @@ export function connectParcelOfferSocket(handlers: ParcelOfferSocketHandlers = {
     send,
     close: () => {
       closed = true;
+      clearReconnect();
       try {
         socket.close();
       } catch {

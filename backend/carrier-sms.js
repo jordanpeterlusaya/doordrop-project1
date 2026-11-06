@@ -130,8 +130,23 @@ function arrivalJobId(orderId, audience) {
   return audience === 'sender' ? `${orderId}_arrived_sender` : `${orderId}_arrived`;
 }
 
+function jobData(snap) {
+  return snap?.exists ? snap.data() || {} : null;
+}
+
+/** Provider already accepted this order+event. Retries must not send again. */
+function providerAccepted(snap) {
+  const data = jobData(snap);
+  if (!data) return false;
+  if (data.messageId) return true;
+  const status = String(data.status || '');
+  return status === 'accepted' || status === 'sent';
+}
+
 function jobWasSent(snap) {
-  return Boolean(snap?.exists && snap.data()?.status === 'sent');
+  if (providerAccepted(snap)) return true;
+  const status = String(jobData(snap)?.status || '');
+  return ['queued', 'pending', 'sending', 'retry'].includes(status);
 }
 
 /**
@@ -227,46 +242,8 @@ async function deliverArrivalSms(db, { orderId, shipment, to, body, audience }) 
     return { sent: true, skipped: true, reason: 'already-sent', jobId, audience };
   }
 
-  let result;
-  try {
-    result = await sendSms(to, body, { event: 'arrived', orderId, jobId, audience });
-  } catch (cause) {
-    const balance = isSmsBalanceError(cause);
-    await writeSmsJob(ref, existing, {
-      toMasked: maskPhone(to),
-      body,
-      event: 'arrived',
-      orderId,
-      parcelCode: parcelCodeOf(shipment, orderId),
-      channel: 'sms',
-      audience,
-      provider: 'mambo',
-      status: 'failed',
-      errorCode: balance ? 'mambo_insufficient_balance' : String(cause?.code || 'sms_failed').slice(0, 80),
-      lastError: String(cause?.message || 'sms_failed').slice(0, 240),
-    });
-    if (balance) {
-      return { sent: false, balanceExhausted: true, jobId, audience, code: 'mambo_insufficient_balance' };
-    }
-    throw smsError(audience, cause);
-  }
-
-  if (result?.provider !== 'mambo') {
-    await writeSmsJob(ref, existing, {
-      toMasked: maskPhone(to),
-      body,
-      event: 'arrived',
-      orderId,
-      audience,
-      provider: result?.provider || 'unknown',
-      status: 'failed',
-      lastError: 'sms_not_mambo',
-    });
-    throw smsError(audience, { message: 'SMS haijatumwa kupitia Mambo.', statusCode: 503, code: 'sms_not_mambo' });
-  }
-
   await writeSmsJob(ref, existing, {
-    to: result.to || to,
+    to,
     toMasked: maskPhone(to),
     body,
     event: 'arrived',
@@ -274,12 +251,11 @@ async function deliverArrivalSms(db, { orderId, shipment, to, body, audience }) 
     parcelCode: parcelCodeOf(shipment, orderId),
     channel: 'sms',
     audience,
-    provider: 'mambo',
-    status: 'sent',
-    messageId: result.messageId || null,
-    sentAt: FieldValue.serverTimestamp(),
+    provider: 'queue',
+    status: 'queued',
+    attempts: 0,
   });
-  return { sent: true, skipped: false, jobId, audience, provider: 'mambo', messageId: result.messageId || null };
+  return { queued: true, sent: false, skipped: false, jobId, audience };
 }
 
 async function markSharedParty(db, { orderId, shipment, body, messageId, audience, phone }) {
@@ -411,7 +387,7 @@ async function sendArrivalNotices(db, { orderId, shipment, audiences } = {}) {
   }
 
   if (wantSender && !senderSent) {
-    if (samePhone && (recipientSent || recipient.sent)) {
+    if (samePhone && (recipientSent || recipient.sent || recipient.queued)) {
       const messageId = recipient.messageId || recipientSnap.data()?.messageId || null;
       sender = await markSharedParty(db, {
         orderId,
@@ -478,53 +454,25 @@ async function enqueueRecipientSms(db, { orderId, shipment, event, carrierCompan
 
   const body = buildBody(event, { ...shipment, carrierCompanyName }, orderId);
   const provider = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
-  const payload = {
-    to,
-    toMasked: maskPhone(to),
-    body,
-    event,
-    orderId,
-    parcelCode: parcelCodeOf(shipment, orderId),
-    channel: 'sms',
-    audience: 'recipient',
-    provider: provider || 'queue',
-    status: 'pending',
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
-  await ref.set(payload, { merge: true });
-
-  // Live send when Africa's Talking / Twilio / SMS_API_* / webhook is configured.
-  if (smsConfigured()) {
-    try {
-      const result = await sendSms(to, body, { event, orderId, jobId, audience: 'recipient' });
-      await ref.set(
-        {
-          status: 'sent',
-          provider: result.provider || provider || 'live',
-          sentAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-      console.info('carrier-sms sent', { orderId, event, toMasked: maskPhone(to), provider: result.provider });
-      return { queued: true, sent: true, jobId };
-    } catch (error) {
-      await ref.set(
-        {
-          status: 'pending',
-          lastError: String(error?.message || 'sms_failed').slice(0, 160),
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-      console.warn('carrier-sms send failed', { orderId, event, toMasked: maskPhone(to) });
-    }
-  } else {
-    console.info('carrier-sms queued', { orderId, event, toMasked: maskPhone(to) });
-  }
-
+  await ref.set(
+    {
+      to,
+      toMasked: maskPhone(to),
+      body,
+      event,
+      orderId,
+      parcelCode: parcelCodeOf(shipment, orderId),
+      channel: 'sms',
+      audience: 'recipient',
+      provider: provider || 'queue',
+      status: 'queued',
+      attempts: 0,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  console.info('carrier-sms queued', { orderId, event, toMasked: maskPhone(to) });
   return { queued: true, sent: false, jobId };
 }
 
@@ -704,74 +652,203 @@ async function notifyAdminSmsFailure(db, { orderId, shipment, detail, title, mes
 
 async function sendIdempotentSms(db, { orderId, shipment, to, body, jobKey, audience, event }) {
   const phone = normalizeSmsPhone(to);
-  if (!phone) return { skipped: true, reason: 'no_phone', audience };
-  const jobId = `${orderId}_${jobKey}`;
-  const ref = db.collection('smsJobs').doc(jobId);
-  const snap = await ref.get();
-  if (jobWasSent(snap)) return { sent: true, skipped: true, jobId, audience };
-
-  try {
-    assertMamboLive();
-  } catch (error) {
-    await writeSmsJob(ref, snap, {
-      orderId,
-      event,
-      audience,
-      to: phone,
-      toMasked: maskPhone(phone),
-      body,
-      status: 'failed',
-      errorCode: error.code || 'sms_not_configured',
-      error: String(error.message || '').slice(0, 180),
-    });
-    await notifyAdminSmsFailure(db, {
-      orderId,
-      shipment,
-      detail: error.code || error.message,
-      title: 'SMS haijawekwa',
-      message: `Oda ${parcelCodeOf(shipment, orderId)}: ${error.message}`,
-    });
-    return { sent: false, skipped: true, jobId, audience, code: error.code };
+  const dedupeKey = `${orderId}_${jobKey}`;
+  if (!phone) {
+    console.info('sms skip', { orderId, event, audience, jobId: dedupeKey, reason: 'no-phone' });
+    return { skipped: true, reason: 'no_phone', audience, jobId: dedupeKey };
   }
-
-  try {
-    const result = await sendSms(phone, body, { event, orderId, jobId, audience });
-    await writeSmsJob(ref, snap, {
+  const ref = db.collection('smsJobs').doc(dedupeKey);
+  const snap = await ref.get();
+  if (providerAccepted(snap)) {
+    console.info('sms skip', {
       orderId,
       event,
       audience,
-      to: phone,
-      toMasked: maskPhone(phone),
-      body,
-      status: 'sent',
-      provider: result.provider || 'mambo',
-      messageId: result.messageId || null,
-      jobId: result.jobId || jobId,
+      jobId: dedupeKey,
+      reason: 'already-accepted',
+      messageId: jobData(snap)?.messageId || null,
     });
-    console.info('carrier-sms sent', { orderId, audience, event, toMasked: maskPhone(phone) });
-    return { sent: true, jobId, audience, provider: result.provider };
+    return { sent: true, skipped: true, reason: 'already-accepted', jobId: dedupeKey, audience };
+  }
+  if (jobWasSent(snap)) {
+    console.info('sms skip', { orderId, event, audience, jobId: dedupeKey, reason: 'already-queued' });
+    return { queued: true, sent: false, skipped: true, reason: 'already-queued', jobId: dedupeKey, audience };
+  }
+  const previous = jobData(snap);
+  const previousStatus = String(previous?.status || '');
+  if (previousStatus === 'dead') {
+    console.warn('sms skip', { orderId, event, audience, jobId: dedupeKey, reason: 'dead' });
+    return { skipped: true, reason: 'dead', jobId: dedupeKey, audience };
+  }
+  const attempts = Math.max(0, Math.round(Number(previous?.attempts) || 0));
+  await writeSmsJob(ref, snap, {
+    orderId,
+    event,
+    audience,
+    to: phone,
+    toMasked: maskPhone(phone),
+    body,
+    parcelCode: parcelCodeOf(shipment, orderId),
+    channel: 'sms',
+    dedupeKey,
+    status: 'queued',
+    attempts,
+    provider: 'queue',
+    lastError: FieldValue.delete(),
+    nextAttemptAt: FieldValue.delete(),
+  });
+  console.info('sms enqueue', {
+    orderId,
+    event,
+    audience,
+    jobId: dedupeKey,
+    toMasked: maskPhone(phone),
+    attempts,
+  });
+  return { queued: true, sent: false, jobId: dedupeKey, audience };
+}
+
+const SMS_ATTEMPT_LIMIT = 4;
+
+function retryDelayMs(attempts) {
+  const steps = [15000, 30000, 60000, 120000];
+  return steps[Math.min(steps.length - 1, Math.max(0, attempts - 1))];
+}
+
+async function claimSmsJob(db, jobId) {
+  const ref = db.collection('smsJobs').doc(jobId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    if (data.messageId || ['accepted', 'sent', 'dead'].includes(String(data.status || ''))) return null;
+    const status = String(data.status || '');
+    if (!['queued', 'pending', 'retry', 'sending', 'failed'].includes(status)) return null;
+    const nextAt = data.nextAttemptAt?.toMillis?.() || 0;
+    if ((status === 'retry' || status === 'failed') && nextAt > Date.now()) return null;
+    const updatedMs = data.updatedAt?.toMillis?.() || 0;
+    if (status === 'sending' && updatedMs && Date.now() - updatedMs < 45 * 1000) return null;
+    tx.set(ref, { status: 'sending', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return data;
+  });
+}
+
+/** Provider acceptance is not handset delivery. Never throws to the order path. */
+async function processSmsJob(db, jobId) {
+  const data = await claimSmsJob(db, jobId);
+  if (!data) return { skipped: true, jobId };
+  const ref = db.collection('smsJobs').doc(jobId);
+  if (data.messageId) {
+    await ref.set(
+      {
+        status: 'accepted',
+        messageId: data.messageId,
+        providerStatus: 'accepted',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    console.info('sms skip', {
+      jobId,
+      orderId: data.orderId || '',
+      event: data.event || '',
+      reason: 'already-accepted',
+      messageId: data.messageId,
+    });
+    return { skipped: true, reason: 'already-accepted', jobId };
+  }
+  const attempts = Math.max(0, Math.round(Number(data.attempts) || 0)) + 1;
+  const logBase = {
+    jobId,
+    orderId: data.orderId || '',
+    event: data.event || '',
+    audience: data.audience || '',
+    attempt: attempts,
+    toMasked: data.toMasked || maskPhone(data.to),
+  };
+  console.info('sms send', logBase);
+  try {
+    const result = await sendSms(data.to, data.body, {
+      event: data.event,
+      orderId: data.orderId,
+      jobId,
+      audience: data.audience,
+      dedupeKey: data.dedupeKey || jobId,
+    });
+    await ref.set(
+      {
+        status: 'accepted',
+        provider: result.provider || 'live',
+        messageId: result.messageId || `accepted:${jobId}`,
+        providerStatus: 'accepted',
+        dedupeKey: data.dedupeKey || jobId,
+        attempts,
+        acceptedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        lastError: FieldValue.delete(),
+        nextAttemptAt: FieldValue.delete(),
+      },
+      { merge: true }
+    );
+    console.info('sms accepted', {
+      ...logBase,
+      provider: result.provider || '',
+      messageId: result.messageId || null,
+    });
+    return { accepted: true, delivered: false, jobId, provider: result.provider || '' };
   } catch (error) {
     const code = error.code || (isSmsBalanceError(error) ? 'mambo_insufficient_balance' : 'sms_failed');
-    await writeSmsJob(ref, snap, {
-      orderId,
-      event,
-      audience,
-      to: phone,
-      toMasked: maskPhone(phone),
-      body,
-      status: 'failed',
-      errorCode: code,
-      error: String(error.message || error.causeDetail || '').slice(0, 180),
-    });
-    await notifyAdminSmsFailure(db, {
-      orderId,
-      shipment,
-      detail: code,
-      title: isSmsBalanceError(error) ? 'Salio la SMS limeisha' : 'SMS haikutumwa',
-      message: `Oda ${parcelCodeOf(shipment, orderId)} (${audience}): ${String(error.message || code).slice(0, 140)}`,
-    });
-    return { sent: false, jobId, audience, code, balanceExhausted: isSmsBalanceError(error) };
+    const dead = attempts >= SMS_ATTEMPT_LIMIT;
+    const nextInMs = dead ? 0 : retryDelayMs(attempts);
+    await ref.set(
+      {
+        status: dead ? 'dead' : 'retry',
+        attempts,
+        errorCode: code,
+        lastError: String(error.message || code).slice(0, 180),
+        nextAttemptAt: dead ? FieldValue.delete() : new Date(Date.now() + nextInMs),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    console.warn(dead ? 'sms dead' : 'sms retry', { ...logBase, code, nextInMs });
+    if (dead) {
+      await notifyAdminSmsFailure(db, {
+        orderId: data.orderId,
+        shipment: { parcelCode: data.parcelCode, orderNumber: data.orderId },
+        detail: code,
+        title: 'SMS imeshindwa mara kadhaa',
+        message: `Oda ${data.parcelCode || data.orderId}: ${String(error.message || code).slice(0, 140)}`,
+      });
+    }
+    return { accepted: false, retry: !dead, dead, jobId, code };
   }
+}
+
+async function processDueSmsJobs(db, limit = 25) {
+  const now = new Date();
+  const read = async (q) => {
+    try {
+      return await q.get();
+    } catch (error) {
+      console.error('sms retry query failed', error?.message || error);
+      return { docs: [] };
+    }
+  };
+  const [retrySnap, queuedSnap, pendingSnap, sendingSnap, failedSnap] = await Promise.all([
+    read(db.collection('smsJobs').where('status', '==', 'retry').where('nextAttemptAt', '<=', now).limit(limit)),
+    read(db.collection('smsJobs').where('status', '==', 'queued').limit(limit)),
+    read(db.collection('smsJobs').where('status', '==', 'pending').limit(limit)),
+    read(db.collection('smsJobs').where('status', '==', 'sending').limit(limit)),
+    read(db.collection('smsJobs').where('status', '==', 'failed').limit(limit)),
+  ]);
+  const ids = new Set();
+  [...retrySnap.docs, ...queuedSnap.docs, ...pendingSnap.docs, ...sendingSnap.docs, ...failedSnap.docs].forEach((item) =>
+    ids.add(item.id)
+  );
+  const results = [];
+  for (const jobId of ids) results.push(await processSmsJob(db, jobId));
+  return results;
 }
 
 /** Sender + recipient SMS when a bus parcel order is placed. Idempotent. */
@@ -913,4 +990,6 @@ module.exports = {
   sendOrderPlacedPartySms,
   sendSenderCompanyFoundSms,
   smsEventFromTransition,
+  processSmsJob,
+  processDueSmsJobs,
 };

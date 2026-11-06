@@ -120,48 +120,31 @@ async function handleMarkArrived(req, database) {
       { merge: true }
     );
 
+  await saveArrived();
   try {
     const notices = await sendArrivalNotices(database, { orderId: shipmentId, shipment });
-    if (notices?.balanceExhausted || isSmsBalanceError(notices)) {
-      await saveArrived();
-      return { ok: true, shipmentStatus: 'arrived', sms: { provider: 'mambo', delivered: false } };
-    }
-    if (!notices?.recipient?.sent || !notices?.sender?.sent) {
-      const error = new Error('SMS haijatumwa kwa mtumaji na mpokeaji.');
-      error.statusCode = 503;
-      error.code = 'arrival_sms_incomplete';
-      throw error;
-    }
-    await saveArrived();
+    const queued = Boolean(notices?.recipient?.queued || notices?.sender?.queued || notices?.recipient?.sent || notices?.sender?.sent);
     return {
       ok: true,
       shipmentStatus: 'arrived',
       sms: {
-        provider: 'mambo',
-        body: notices.body,
-        recipientSent: Boolean(notices.recipient?.sent),
-        senderSent: Boolean(notices.sender?.sent),
+        provider: 'queue',
+        queued,
+        delivered: false,
+        accepted: false,
+        body: notices?.body || '',
       },
     };
   } catch (error) {
-    if (isSmsBalanceError(error)) {
-      await notifyAdminSmsBalance(database, {
-        orderId: shipmentId,
-        shipment,
-        detail: error?.code || error?.message,
-      }).catch(() => undefined);
-      await saveArrived();
-      return { ok: true, shipmentStatus: 'arrived', sms: { provider: 'mambo', delivered: false } };
-    }
     await ref.set(
       {
-        arrivalSmsPending: false,
-        arrivalSmsError: String(error?.message || 'Imeshindwa kutuma SMS.').slice(0, 180),
+        arrivalSmsPending: true,
+        arrivalSmsError: String(error?.message || 'SMS imesubiriwa.').slice(0, 180),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
-    throw error;
+    return { ok: true, shipmentStatus: 'arrived', sms: { provider: 'queue', queued: false, delivered: false, error: error.message } };
   }
 }
 

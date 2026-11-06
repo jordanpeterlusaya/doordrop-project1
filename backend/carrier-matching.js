@@ -1142,28 +1142,38 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
       console.error('carrier offer push failed', orderId, error?.message || error);
     }
 
-    // Company + sender “kampuni imepatikana” SMS — never block matching.
-    try {
-      const shipSnap = await ref.get();
-      const shipment = shipSnap.exists
-        ? { id: orderId, ...shipSnap.data() }
-        : { id: orderId, ...(shipmentPayload(order, orderId, null) || {}) };
-      const { sendCompanyOfferSms, sendSenderCompanyFoundSms } = require('./carrier-sms');
-      await sendCompanyOfferSms(db, {
+    // Offer is already saved. Persist smsJobs only — Mambo runs on the smsJobs trigger.
+    const shipSnap = await ref.get().catch(() => null);
+    const shipment = shipSnap?.exists
+      ? { id: orderId, ...shipSnap.data() }
+      : { id: orderId, ...(shipmentPayload(order, orderId, null) || {}) };
+    const { sendCompanyOfferSms, sendSenderCompanyFoundSms } = require('./carrier-sms');
+    await Promise.all([
+      sendCompanyOfferSms(db, {
         orderId,
         shipment,
         carrierId: result.carrierId,
         order,
-      });
-      await sendSenderCompanyFoundSms(db, {
+      }).catch((error) => {
+        console.error('sms enqueue failed', {
+          orderId,
+          event: 'company_offer',
+          reason: error?.message || String(error),
+        });
+      }),
+      sendSenderCompanyFoundSms(db, {
         orderId,
         shipment,
         carrierId: result.carrierId,
         order,
-      });
-    } catch (error) {
-      console.error('carrier offer SMS failed', orderId, error?.message || error);
-    }
+      }).catch((error) => {
+        console.error('sms enqueue failed', {
+          orderId,
+          event: 'company_found',
+          reason: error?.message || String(error),
+        });
+      }),
+    ]);
   }
 
   return result;
@@ -1178,13 +1188,16 @@ async function matchOrderById(db, orderId, options = {}) {
   const shipment = shipmentSnap.exists ? shipmentSnap.data() : null;
   await persistSenderPhone(db, orderId, order, shipment);
 
-  // Sender + recipient SMS on place — idempotent; never blocks matching.
-  try {
-    const { sendOrderPlacedPartySms } = require('./carrier-sms');
-    await sendOrderPlacedPartySms(db, { orderId, order, shipment });
-  } catch (error) {
-    console.error('order placed SMS failed', orderId, error?.message || error);
-  }
+  // Order document already exists. Queue party SMS; do not call Mambo or fail the match.
+  await require('./carrier-sms')
+    .sendOrderPlacedPartySms(db, { orderId, order, shipment })
+    .catch((error) => {
+      console.error('sms enqueue failed', {
+        orderId,
+        event: 'order_placed',
+        reason: error?.message || String(error),
+      });
+    });
 
   await syncParcelPhotos(db, orderId, order, shipment);
 

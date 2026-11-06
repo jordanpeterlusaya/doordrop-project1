@@ -3,10 +3,22 @@ import Constants from 'expo-constants';
 type RuntimeEnv = Record<string, string | undefined>;
 
 function getExpoExtra(): Record<string, unknown> {
-  const manifestExtra = (Constants as { manifest2?: { extra?: { expoClient?: { extra?: Record<string, unknown> } } } })
-    .manifest2?.extra?.expoClient?.extra;
-  const extra = (Constants.expoConfig?.extra ?? manifestExtra ?? {}) as Record<string, unknown>;
-  return extra && typeof extra === 'object' ? extra : {};
+  const constants = Constants as {
+    expoConfig?: { extra?: Record<string, unknown> } | null;
+    manifest?: { extra?: Record<string, unknown> } | null;
+    manifest2?: { extra?: { expoClient?: { extra?: Record<string, unknown> } } } | null;
+  };
+  const candidates = [
+    constants.expoConfig?.extra,
+    constants.manifest?.extra,
+    constants.manifest2?.extra?.expoClient?.extra,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'object') {
+      return candidate;
+    }
+  }
+  return {};
 }
 
 export function getRuntimeEnv() {
