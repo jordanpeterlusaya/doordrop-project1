@@ -139,6 +139,8 @@ export type DeliveryOrder = {
   driverAccuracyMeters?: number;
   driverLocationUpdatedAt?: unknown;
   cancellationReason?: string;
+  driverSearchStatus?: string;
+  driverSearchMessage?: string;
   cancelledBy?: 'customer' | 'driver' | 'dispatch';
   cancelledAt?: unknown;
   acceptedByDriverAt?: unknown;
@@ -1066,7 +1068,12 @@ export async function updateDriverLocation(driverId: string, location: UpdateDri
   );
 }
 
-export async function updateDriverOrderStatus(driverId: string, orderId: string, status: DeliveryOrderStatus) {
+export async function updateDriverOrderStatus(
+  driverId: string,
+  orderId: string,
+  status: DeliveryOrderStatus,
+  options?: { cancellationReason?: string }
+) {
   const [orderSnapshot, driverSnapshot] = await Promise.all([getDoc(orderRef(orderId)), getDoc(driverRef(driverId))]);
 
   if (!orderSnapshot.exists()) {
@@ -1120,11 +1127,20 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
   const outsideDurationSeconds = shouldStampOutsidePickup
     ? getOutsideParcelDurationSecondsForOrder(order)
     : 0;
+  // Platform haul fee stored on the order (separate from pilot standing tier display).
   const haulFeeRate = 0.2;
   const haulFee =
     resolvedStatus === 'delivered' || isOutsideComplete
       ? Math.max(0, Math.round(fareAmount * haulFeeRate))
       : 0;
+  const cancelReason =
+    resolvedStatus === 'cancelled'
+      ? String(options?.cancellationReason || '').trim().slice(0, 240) || 'Driver cancelled the trip'
+      : '';
+  const cancelCustomerMessage =
+    resolvedStatus === 'cancelled'
+      ? `Dereva ameghairi oda hii: ${cancelReason}`
+      : undefined;
   const orderPayload = compactFirestoreData({
     status: resolvedStatus,
     acceptedByDriverAt:
@@ -1145,6 +1161,10 @@ export async function updateDriverOrderStatus(driverId: string, orderId: string,
       : {}),
     cancelledAt: resolvedStatus === 'cancelled' ? serverTimestamp() : undefined,
     cancelledBy: resolvedStatus === 'cancelled' ? 'driver' : undefined,
+    cancellationReason: resolvedStatus === 'cancelled' ? cancelReason : undefined,
+    driverSearchStatus: resolvedStatus === 'cancelled' ? 'cancelled' : undefined,
+    driverSearchMessage: cancelCustomerMessage,
+    driverSearchResolvedAt: resolvedStatus === 'cancelled' ? serverTimestamp() : undefined,
     driverGrossEarnings: resolvedStatus === 'delivered' || isOutsideComplete ? fareAmount : undefined,
     ...(haulFee > 0
       ? {

@@ -2365,7 +2365,31 @@ export default function BookCargoScreen() {
   }, [liveCargoOrder?.id]);
 
   useEffect(() => {
-    if (!liveCargoOrder?.id) {
+    if (!liveCargoOrder || liveCargoOrder.status !== 'cancelled') {
+      return;
+    }
+    const byDriver = liveCargoOrder.cancelledBy === 'driver';
+    cargoSocketRef.current?.close();
+    cargoSocketRef.current = null;
+    setLiveCargoOrder(null);
+    setVerifyAssignedDriver(null);
+    setVerifyNearbyDrivers([]);
+    setVerifyDriversFound(0);
+    setCargoSheetStep('choose');
+    setVerifyPhase('error');
+    setFormError(
+      byDriver
+        ? language === 'sw'
+          ? 'Dereva ameghairi oda. Haifuatiliwi tena.'
+          : 'The driver cancelled this order. It is no longer live.'
+        : language === 'sw'
+          ? 'Oda imeghairiwa. Haifuatiliwi tena.'
+          : 'This order was cancelled. It is no longer live.'
+    );
+  }, [language, liveCargoOrder]);
+
+  useEffect(() => {
+    if (!liveCargoOrder?.id || liveCargoOrder.status === 'cancelled') {
       return;
     }
     if (liveCargoOrder.negotiationStatus === 'confirmed' || liveCargoOrder.acceptedByDriverAt) {
@@ -2376,7 +2400,7 @@ export default function BookCargoScreen() {
         },
       });
     }
-  }, [liveCargoOrder?.acceptedByDriverAt, liveCargoOrder?.id, liveCargoOrder?.negotiationStatus, router]);
+  }, [liveCargoOrder?.acceptedByDriverAt, liveCargoOrder?.id, liveCargoOrder?.negotiationStatus, liveCargoOrder?.status, router]);
 
   const handleVehicleSelect = useCallback((vehicleKey: RouteEstimateVehicleType) => {
     const vehicle = cargoVehicles.find((item) => item.key === vehicleKey);
@@ -2449,8 +2473,20 @@ export default function BookCargoScreen() {
             if (event.type === 'cancelled') {
               closeCargoSocket();
               setLiveCargoOrder(null);
+              setVerifyAssignedDriver(null);
+              setVerifyNearbyDrivers([]);
+              setVerifyDriversFound(0);
               setCargoSheetStep('choose');
-              setVerifyPhase('connecting');
+              setVerifyPhase('error');
+              setVerifyError(
+                event.by === 'driver'
+                  ? language === 'sw'
+                    ? 'Dereva ameghairi oda. Unaweza kuweka nyingine.'
+                    : 'The driver cancelled this order. You can place another.'
+                  : language === 'sw'
+                    ? 'Oda imeghairiwa.'
+                    : 'This order was cancelled.'
+              );
               return;
             }
             if (event.type === 'error') {
@@ -2475,7 +2511,7 @@ export default function BookCargoScreen() {
         setVerifyError(looksDev || !raw ? copy.cargo.verifyConnectionError : raw);
       }
     },
-    [closeCargoSocket, copy.cargo.verifyConnectionError, router]
+    [closeCargoSocket, copy.cargo.verifyConnectionError, language, router]
   );
 
   useEffect(() => {
@@ -2495,25 +2531,23 @@ export default function BookCargoScreen() {
       const userId = user?.uid;
       if (orderId && userId) {
         const token = await auth.currentUser?.getIdToken().catch(() => '');
-        const sent =
-          token &&
+        if (token) {
           cargoSocketRef.current?.send({
             type: 'customer_cancel',
             orderId,
             userId,
             token,
           });
-        if (!sent) {
-          await cancelDeliveryOrderByUser(orderId, language === 'sw' ? 'Mteja ameghairi' : 'Customer cancelled');
         }
+        await cancelDeliveryOrderByUser(orderId, language === 'sw' ? 'Mteja ameghairi' : 'Customer cancelled');
       }
       closeCargoSocket();
       setLiveCargoOrder(null);
       setVerifyAssignedDriver(null);
       setVerifyNearbyDrivers([]);
       setVerifyDriversFound(0);
-      setVerifyPhase('connecting');
       setCargoSheetStep('choose');
+      setFormError(language === 'sw' ? 'Oda imeghairiwa. App inabaki wazi.' : 'Order cancelled. The app stays open.');
       trackCargoActivity('cargo_verify_cancelled', 'cargo_checkout', {
         vehicleType: selectedVehicle,
         orderId: orderId || undefined,

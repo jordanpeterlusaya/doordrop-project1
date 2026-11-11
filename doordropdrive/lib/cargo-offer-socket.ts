@@ -51,6 +51,9 @@ function devSocketHost() {
   return '';
 }
 
+const PRODUCTION_CARGO_OFFER_WS_URL =
+  'wss://haul-cargo-offer-ws-729242246964.us-central1.run.app';
+
 export function getCargoOfferWsUrl() {
   const explicit = env('EXPO_PUBLIC_CARGO_OFFER_WS_URL').replace(/\/+$/, '');
   if (explicit) return explicit;
@@ -63,26 +66,26 @@ export function getCargoOfferWsUrl() {
   const port = env('EXPO_PUBLIC_CARGO_OFFER_WS_PORT') || '4010';
   const apiBase = env('EXPO_PUBLIC_API_BASE_URL') || String((getExtra() as { apiBaseUrl?: string }).apiBaseUrl || '');
   const wsBase = httpToWsBase(apiBase);
-  if (!wsBase) return '';
-
-  try {
-    const parsed = new URL(wsBase);
-    if (
-      parsed.hostname === 'localhost' ||
-      parsed.hostname === '127.0.0.1' ||
-      parsed.hostname.startsWith('10.') ||
-      parsed.hostname.startsWith('192.168.') ||
-      parsed.hostname.endsWith('.local')
-    ) {
-      parsed.port = port;
-      parsed.pathname = '/';
-      return parsed.toString().replace(/\/+$/, '');
+  if (wsBase) {
+    try {
+      const parsed = new URL(wsBase);
+      if (
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        parsed.hostname.startsWith('10.') ||
+        parsed.hostname.startsWith('192.168.') ||
+        parsed.hostname.endsWith('.local')
+      ) {
+        parsed.port = port;
+        parsed.pathname = '/';
+        return parsed.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // fall through to production default
     }
-  } catch {
-    // ignore
   }
 
-  return '';
+  return PRODUCTION_CARGO_OFFER_WS_URL;
 }
 
 export function connectCargoOfferSocket(handlers: {

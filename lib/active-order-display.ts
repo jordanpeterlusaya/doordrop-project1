@@ -74,8 +74,13 @@ const BUS_PROGRESS_STEPS = [
   { key: 'delivered', labelEn: 'Delivered', labelSw: 'Imewasili' },
 ] as const;
 
-/** Same four stages the transporter portal writes onto carrierTrackStep. */
+/** haulStage is the only current stage. Older track fields are used when it is absent. */
 function busStageIndex(order: DeliveryOrder) {
+  const stage = String(order.haulStage || '');
+  if (stage === 'delivered') return 3;
+  if (stage === 'in_transit') return 2;
+  if (stage === 'verified') return 1;
+  if (stage === 'new') return 0;
   const step = String(order.carrierTrackStep || '');
   const match = String(order.carrierMatchStatus || '');
   if (step === 'handed' || order.status === 'delivered') return 3;
