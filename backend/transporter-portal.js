@@ -165,6 +165,20 @@ async function mirrorCustomer(db, shipment) {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
     const order = snap.exists ? snap.data() || {} : {};
+    const { isCustomerCancelledRecord } = require('./carrier-cancel');
+    if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) {
+      tx.set(
+        orderRef,
+        {
+          haulStage: 'cancelled',
+          carrierMatchStatus: 'cancelled',
+          carrierTrackStep: FieldValue.delete(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return;
+    }
     const stage = forwardStage(order, shipment);
     const latest = shipment.latestJourney || {};
     const matchStatus = customerMatchStatus(shipment);
@@ -757,10 +771,18 @@ async function handlePortalPresence(req) {
   try {
     const { matchOrderById, isBusParcel } = require('./carrier-matching');
     const waiting = await db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(20).get();
+    const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
     for (const doc of waiting.docs) {
+      const shipment = { id: doc.id, ...(doc.data() || {}) };
       const orderSnap = await db.collection('orders').doc(doc.id).get();
       if (!orderSnap.exists) continue;
       const order = { id: orderSnap.id, ...orderSnap.data() };
+      if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) {
+        await clearCarrierOfferOnCustomerCancel(db, doc.id, order, shipment).catch((error) => {
+          console.error('portal presence cancel clear failed', doc.id, error?.message || error);
+        });
+        continue;
+      }
       if (order.status === 'cancelled' || !isBusParcel(order)) continue;
       const result = await matchOrderById(db, doc.id, { preferCarrierIds: new Set([carrierId]) });
       if (result?.matched && String(result.carrierId || '') === carrierId) claimed += 1;

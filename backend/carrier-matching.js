@@ -884,10 +884,25 @@ async function mirrorBusOnOrder(db, orderId, shipment) {
   const orderRef = db.collection('orders').doc(orderId);
   const carrierContact = await resolveCustomerCarrierContact(db, shipment);
   const { forwardStage, trackStepForStage } = require('./order-stage');
+  const { isCustomerCancelledRecord } = require('./carrier-cancel');
   await db.runTransaction(async (tx) => {
     const orderSnap = await tx.get(orderRef);
-    if (!orderSnap.exists || !isBusParcel({ id: orderSnap.id, ...orderSnap.data() })) return;
+    if (!orderSnap.exists) return;
     const order = orderSnap.data() || {};
+    if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) {
+      tx.set(
+        orderRef,
+        {
+          haulStage: 'cancelled',
+          carrierMatchStatus: 'cancelled',
+          carrierTrackStep: FieldValue.delete(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return;
+    }
+    if (!isBusParcel({ id: orderSnap.id, ...order })) return;
     const view = customerBusView(shipment);
     const stage = forwardStage(order, shipment);
     const trackStep = trackStepForStage(stage.haulStage, shipment);
@@ -1479,25 +1494,87 @@ async function syncCarrierShipment(db, orderId, before, after) {
 
 async function advanceCarrierOffers(db) {
   const [assignedSnap, waitingSnap] = await Promise.all([
-    db.collection('carrierShipments').where('shipmentStatus', '==', 'assigned').limit(40).get(),
-    db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(40).get(),
+    db.collection('carrierShipments').where('shipmentStatus', '==', 'assigned').limit(80).get(),
+    db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(80).get(),
   ]);
   let advanced = 0;
+  let swept = 0;
   const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel, releaseOpenCustomerCancelledOffers } = require('./carrier-cancel');
   const released = await releaseOpenCustomerCancelledOffers(db);
   // Assigned offers stay with the online company until they accept or reject.
   // There is no countdown that pulls the order away.
-  for (const doc of waitingSnap.docs) {
-    const shipment = doc.data();
-    if (shipment.carrierId || shipment.offeredCarrierId) continue;
+  // Stuck rows (cancelled, or still pointed at a company that already declined) are cleared first.
+  for (const doc of assignedSnap.docs) {
+    const shipment = { id: doc.id, ...(doc.data() || {}) };
+    if (shipment.carrierId) continue;
     const orderSnap = await db.collection('orders').doc(doc.id).get();
-    if (!orderSnap.exists || !isBusParcel(orderSnap.data())) continue;
+    const waitingOrder = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+    if (isCustomerCancelledRecord(waitingOrder) || isCustomerCancelledRecord(shipment)) {
+      const cleared = await clearCarrierOfferOnCustomerCancel(
+        db,
+        doc.id,
+        waitingOrder || {
+          id: doc.id,
+          status: 'cancelled',
+          cancelledBy: 'customer',
+          cancellationReason: shipment.cancelReason || 'Customer cancelled',
+        },
+        shipment
+      );
+      if (cleared?.cleared) swept += 1;
+      continue;
+    }
+    const declined = new Set((shipment.declinedCarrierIds || []).map((id) => String(id || '')));
+    const offered = String(shipment.offeredCarrierId || '');
+    if (!offered || !declined.has(offered)) continue;
+    await doc.ref.set(
+      {
+        shipmentStatus: 'matching',
+        offeredCarrierId: null,
+        offerExpiresAt: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    swept += 1;
+    if (!waitingOrder || !isBusParcel(waitingOrder)) continue;
+    const result = await offerNext(db, doc.id, waitingOrder, {
+      ...shipment,
+      shipmentStatus: 'matching',
+      offeredCarrierId: null,
+    });
+    if (result?.matched) advanced += 1;
+  }
+  for (const doc of waitingSnap.docs) {
+    const shipment = { id: doc.id, ...(doc.data() || {}) };
+    const orderSnap = await db.collection('orders').doc(doc.id).get();
+    if (!orderSnap.exists) continue;
     const waitingOrder = { id: orderSnap.id, ...orderSnap.data() };
     if (isCustomerCancelledRecord(waitingOrder) || isCustomerCancelledRecord(shipment)) {
       await clearCarrierOfferOnCustomerCancel(db, doc.id, waitingOrder, shipment);
+      swept += 1;
       continue;
     }
-    const result = await offerNext(db, doc.id, waitingOrder, shipment);
+    if (!isBusParcel(waitingOrder)) continue;
+    let current = shipment;
+    if (current.carrierId) continue;
+    if (current.offeredCarrierId && !offerIsOpen(current)) {
+      const declined = new Set((current.declinedCarrierIds || []).map((id) => String(id || '')));
+      declined.add(String(current.offeredCarrierId));
+      current = { ...current, shipmentStatus: 'matching', offeredCarrierId: null, declinedCarrierIds: [...declined] };
+      await doc.ref.set(
+        {
+          offeredCarrierId: null,
+          offerExpiresAt: null,
+          declinedCarrierIds: [...declined],
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      swept += 1;
+    }
+    if (current.offeredCarrierId) continue;
+    const result = await offerNext(db, doc.id, waitingOrder, current);
     if (result?.matched) advanced += 1;
   }
 
@@ -1536,7 +1613,7 @@ async function advanceCarrierOffers(db) {
 
   advanced += await backfillOpenDeclaredValues(db);
 
-  return { advanced, releasedCustomerCancels: released };
+  return { advanced, swept, releasedCustomerCancels: released };
 }
 
 module.exports = {

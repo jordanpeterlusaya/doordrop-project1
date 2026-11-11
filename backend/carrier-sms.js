@@ -905,12 +905,17 @@ async function sendCompanyOfferSms(db, { orderId, shipment, carrierId, order }) 
     ? String(carrier.tradingName || carrier.companyName || carrier.name || '').trim()
     : '';
   if (carrier) {
+    // Name only. Never write shipmentStatus, offeredCarrierId, or carrierId — SMS must not pull the desk card.
     const patch = {
       carrierCompanyName: companyName,
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (phone) patch.carrierPhone = phone.replace(/^\+/, '');
-    await db.collection('carrierShipments').doc(orderId).set(patch, { merge: true });
+    try {
+      await db.collection('carrierShipments').doc(orderId).set(patch, { merge: true });
+    } catch (error) {
+      console.error('sms company label failed', orderId, error?.message || error);
+    }
   }
   if (carrier && carrier.notifySms === false) {
     console.info('sms skip', { orderId, event: 'company_offer', carrierId, reason: 'notifySms_disabled' });

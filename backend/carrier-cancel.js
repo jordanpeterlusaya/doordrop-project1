@@ -102,7 +102,8 @@ async function clearCarrierOfferOnCustomerCancel(db, orderId, order, shipmentHin
   if (orderSnap.exists) {
     const liveOrder = orderSnap.data() || {};
     const orderPatch = {
-      carrierMatchStatus: 'matching',
+      haulStage: 'cancelled',
+      carrierMatchStatus: 'cancelled',
       carrierTrackStep: FieldValue.delete(),
       carrierShipmentId: orderId,
       updatedAt: FieldValue.serverTimestamp(),

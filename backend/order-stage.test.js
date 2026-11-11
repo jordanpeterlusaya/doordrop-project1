@@ -21,6 +21,22 @@ for (const [current, incoming, expected] of samples) {
 
 assert.strictEqual(stageFromFacts({ carrierTrackStep: 'handed' }), 'delivered');
 assert.strictEqual(stageFromFacts({ carrierMatchStatus: 'accepted' }), 'verified');
+assert.strictEqual(stageFromFacts({ haulStage: 'cancelled', carrierId: 'c1', shipmentStatus: 'assigned' }), 'cancelled');
+assert.strictEqual(stageFromFacts({ quoteStatus: 'declined', carrierId: 'c1', shipmentStatus: 'accepted' }), 'cancelled');
+assert.strictEqual(
+  forwardStage(
+    { haulStage: 'new', statusVersion: 1 },
+    { shipmentStatus: 'assigned', carrierId: 'c1', cancelledBy: 'customer', haulStage: 'cancelled' }
+  ).haulStage,
+  'cancelled'
+);
+assert.strictEqual(
+  forwardStage(
+    { haulStage: 'verified', statusVersion: 4, carrierId: 'c1' },
+    { quoteStatus: 'declined', shipmentStatus: 'cancelled', cancelledBy: 'customer' }
+  ).haulStage,
+  'cancelled'
+);
 
 function RANK_SAFE(name) {
   return { new: 0, verified: 1, in_transit: 2, delivered: 3 }[name] ?? 0;

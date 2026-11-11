@@ -2370,12 +2370,13 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
   const batch = writeBatch(db);
   batch.update(orderRef(orderId), {
     status: 'cancelled',
+    haulStage: 'cancelled',
     cancellationReason: trimmedReason,
     cancelledBy: 'customer',
     cancelledAt: serverTimestamp(),
     driverSearchMessage: 'This order was cancelled by the customer.',
     driverSearchResolvedAt: serverTimestamp(),
-    carrierMatchStatus: 'matching',
+    carrierMatchStatus: 'cancelled',
     carrierTrackStep: deleteField(),
     updatedAt: serverTimestamp(),
   });
@@ -2392,8 +2393,9 @@ export async function cancelDeliveryOrderByUser(orderId: string, reason: string)
   if (shipmentSnap?.exists()) {
     batch.update(doc(db, 'carrierShipments', shipmentId), {
       shipmentStatus: 'cancelled',
-      offeredCarrierId: null,
-      carrierId: null,
+      haulStage: 'cancelled',
+      offeredCarrierId: deleteField(),
+      carrierId: deleteField(),
       capacityReserved: false,
       trackStep: deleteField(),
       cancelledBy: 'customer',
@@ -2489,6 +2491,8 @@ export async function declineCarrierQuote(orderId: string) {
   batch.update(orderRef(orderId), {
     quoteStatus: 'declined',
     status: 'cancelled',
+    haulStage: 'cancelled',
+    carrierMatchStatus: 'cancelled',
     cancellationReason: 'Customer declined the company price',
     cancelledBy: 'customer',
     cancelledAt: serverTimestamp(),
@@ -2498,6 +2502,10 @@ export async function declineCarrierQuote(orderId: string) {
     batch.update(doc(db, 'carrierShipments', shipmentId), {
       quoteStatus: 'declined',
       shipmentStatus: 'cancelled',
+      haulStage: 'cancelled',
+      offeredCarrierId: deleteField(),
+      carrierId: deleteField(),
+      trackStep: deleteField(),
       cancelReason: 'Customer declined the company price',
       cancelledBy: 'customer',
       cancelledAt: serverTimestamp(),

@@ -269,10 +269,11 @@ async function handleCustomerCancel(socket, message) {
   await db.collection('orders').doc(orderId).set(
     {
       status: 'cancelled',
+      haulStage: 'cancelled',
       cancellationReason: 'Customer cancelled before company verified',
       cancelledBy: 'customer',
       cancelledAt: FieldValue.serverTimestamp(),
-      carrierMatchStatus: 'matching',
+      carrierMatchStatus: 'cancelled',
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
