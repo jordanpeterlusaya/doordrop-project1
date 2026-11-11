@@ -1,4 +1,4 @@
-const { FieldValue } = require('firebase-admin/firestore');
+const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
 /** Company portal must pulse portalOnlineAt within this window to receive new offers. */
@@ -410,13 +410,20 @@ function scoreCarrier(order, carrier, routes, vehicles) {
   };
 }
 
+/** Rejected and suspended accounts never get offers. Pending is allowed only when the caller already kept live desks. */
+function accountCanTakeOffers(carrier) {
+  if (!carrier || carrier.offersPaused || carrier.fraudHold) return false;
+  const status = normalize(carrier.status);
+  if (status === 'rejected' || status === 'suspended') return false;
+  return status === 'verified' || status === 'pending';
+}
+
 function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, options = {}) {
   const completedByCarrier = options.completedByCarrier instanceof Map ? options.completedByCarrier : new Map();
   const standingByCarrier = options.standingByCarrier instanceof Map ? options.standingByCarrier : new Map();
   const unpaidByCarrier = options.unpaidByCarrier instanceof Map ? options.unpaidByCarrier : null;
   return (carriers || [])
-    .filter((carrier) => normalize(carrier.status) === 'verified')
-    .filter((carrier) => !carrier.offersPaused && !carrier.fraudHold)
+    .filter((carrier) => accountCanTakeOffers(carrier))
     .map((carrier) =>
       scoreCarrier(
         order,
@@ -488,13 +495,35 @@ function declinedCarrierIds(shipment) {
   return declined;
 }
 
-async function loadNetwork(db) {
-  const [carrierSnap, routeSnap, vehicleSnap] = await Promise.all([
+async function loadNetwork(db, options = {}) {
+  const prefer =
+    options.preferCarrierIds instanceof Set
+      ? options.preferCarrierIds
+      : options.preferCarrierIds
+        ? new Set([...options.preferCarrierIds].map((id) => String(id || '').trim()).filter(Boolean))
+        : new Set();
+  const since = Timestamp.fromMillis(Date.now() - PORTAL_ONLINE_MS);
+  const [verifiedSnap, liveSnap, routeSnap, vehicleSnap] = await Promise.all([
     db.collection('carriers').where('status', '==', 'verified').get(),
+    db.collection('carriers').where('portalOnlineAt', '>=', since).get(),
     db.collection('carrierRoutes').where('active', '==', true).get(),
     db.collection('carrierVehicles').where('status', '==', 'active').get(),
   ]);
-  const carriers = carrierSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const byId = new Map();
+  const addDoc = (doc) => {
+    if (!doc?.exists) return;
+    byId.set(doc.id, { id: doc.id, ...doc.data() });
+  };
+  verifiedSnap.docs.forEach(addDoc);
+  liveSnap.docs.forEach(addDoc);
+  const missing = [...prefer].filter((id) => id && !byId.has(id));
+  if (missing.length) {
+    const extras = await Promise.all(missing.map((id) => db.collection('carriers').doc(id).get()));
+    extras.forEach(addDoc);
+  }
+  // Verified companies, plus a registered company whose portal heartbeat is live.
+  // Rejected / suspended / paused stay out. Phone verification is not an offer gate.
+  const carriers = [...byId.values()].filter((carrier) => accountCanTakeOffers(carrier));
   const routesByCarrier = new Map();
   routeSnap.docs.forEach((doc) => {
     const data = { id: doc.id, ...doc.data() };
@@ -1023,10 +1052,8 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
       : options.preferCarrierIds
         ? new Set([...options.preferCarrierIds].map(String))
         : null;
-  const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db);
-  const openCarriers = carriers.filter(
-    (carrier) => normalize(carrier.status) === 'verified' && !carrier.offersPaused && !carrier.fraudHold
-  );
+  const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db, { preferCarrierIds });
+  const openCarriers = carriers.filter((carrier) => accountCanTakeOffers(carrier));
   const stats = await loadDeskStats(db, openCarriers.map((carrier) => carrier.id));
   const standingByCarrier = new Map();
   const eligible = [];
@@ -1463,6 +1490,7 @@ module.exports = {
   PORTAL_ONLINE_MS,
   SHIPMENT_FLOW,
   acceptCarrierOfferViaWs,
+  accountCanTakeOffers,
   isCarrierLive,
   advanceCarrierOffers,
   cashSplit,
