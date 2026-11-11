@@ -30,6 +30,7 @@ const { handleCarrierDocumentUpload, handleNinunuliePhotoUpload } = require('./m
 const {
   handleConfirmPhone,
   handleLoginWithOtp,
+  handleRegisterWithOtp,
   handleSendOtp,
   handleVerifyOtp,
 } = require('./carrier-otp');
@@ -38,6 +39,11 @@ const {
   handleSendCustomerOtp,
   handleVerifyCustomerOtp,
 } = require('./customer-otp');
+const {
+  handleLoginDriverWithOtp,
+  handleSendDriverOtp,
+  handleVerifyDriverOtp,
+} = require('./driver-otp');
 const {
   handleCompleteDeliveryProof,
   handleDeliveryProofOptions,
@@ -757,9 +763,13 @@ async function requestListener(req, res) {
             'POST /carrier-auth/otp/send',
             'POST /carrier-auth/otp/verify',
             'POST /carrier-auth/otp/login',
+            'POST /carrier-auth/otp/register',
             'POST /carrier-auth/confirm-phone',
             'POST /customer-auth/otp/send',
             'POST /customer-auth/otp/verify',
+            'POST /driver-auth/otp/send',
+            'POST /driver-auth/otp/verify',
+            'POST /driver-auth/otp/login',
             'POST /customer-auth/confirm-phone',
             'GET /carrier/delivery-proof/options',
             'POST /carrier/delivery-proof/otp/send',
@@ -920,6 +930,30 @@ async function requestListener(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/login') {
       const payload = await handleLoginWithOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/carrier-auth/otp/register') {
+      const payload = await handleRegisterWithOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-auth/otp/send') {
+      const payload = await handleSendDriverOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-auth/otp/verify') {
+      const payload = await handleVerifyDriverOtp(req);
+      sendJson(res, 200, payload, originHeader);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/driver-auth/otp/login') {
+      const payload = await handleLoginDriverWithOtp(req);
       sendJson(res, 200, payload, originHeader);
       return;
     }

@@ -888,73 +888,54 @@ async function loadCarrierDoc(db, carrierId) {
   }
 }
 
-function uniqueSmsPhones(values) {
-  const seen = new Set();
-  const phones = [];
-  for (const value of values) {
-    const phone = normalizeSmsPhone(value);
-    if (!phone || seen.has(phone)) continue;
-    seen.add(phone);
-    phones.push(phone);
-  }
-  return phones;
-}
-
-async function companyOfferPhones(db, carrierId, carrier, shipment) {
-  const raw = [
-    carrier?.phone,
-    carrier?.phoneNormalized,
-    carrier?.notificationPhone,
-    carrier?.smsPhone,
-    shipment?.carrierPhone,
-  ];
-  const lists = await Promise.all([
-    db.collection('carrierStaff').where('carrierId', '==', carrierId).limit(30).get().catch(() => null),
-    db.collection('carrierMembers').where('carrierId', '==', carrierId).limit(30).get().catch(() => null),
-  ]);
-  for (const snap of lists) {
-    if (!snap) continue;
-    snap.docs.forEach((doc) => raw.push(doc.data()?.phone, doc.data()?.phoneNormalized));
-  }
-  return uniqueSmsPhones(raw);
+/**
+ * Order SMS (new offer) goes only to the OTP-verified notification phone.
+ * Unverified phone, staff, and member numbers are ignored.
+ */
+function verifiedNotificationPhone(carrier) {
+  if (!carrier || carrier.phoneVerified !== true) return '';
+  return normalizeSmsPhone(carrier.notificationPhone || carrier.phone || carrier.phoneNormalized || '');
 }
 
 /** SMS to the transport company when an offer is assigned. Portal accounts use the same phone path as Agents. */
 async function sendCompanyOfferSms(db, { orderId, shipment, carrierId, order }) {
   const carrier = await loadCarrierDoc(db, carrierId);
-  // Persist company label for later arrival/sender copy even if SMS is opted out.
+  const phone = verifiedNotificationPhone(carrier);
+  const companyName = carrier
+    ? String(carrier.tradingName || carrier.companyName || carrier.name || '').trim()
+    : '';
   if (carrier) {
-    await db.collection('carrierShipments').doc(orderId).set(
-      {
-        carrierCompanyName: String(carrier.tradingName || carrier.companyName || carrier.name || '').trim(),
-        carrierPhone: String(carrier.phone || carrier.phoneNormalized || '').trim(),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const patch = {
+      carrierCompanyName: companyName,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (phone) patch.carrierPhone = phone.replace(/^\+/, '');
+    await db.collection('carrierShipments').doc(orderId).set(patch, { merge: true });
   }
   if (carrier && carrier.notifySms === false) {
+    console.info('sms skip', { orderId, event: 'company_offer', carrierId, reason: 'notifySms_disabled' });
     return { skipped: true, reason: 'notifySms_disabled' };
   }
-  const phones = await companyOfferPhones(db, carrierId, carrier, shipment);
-  if (!phones.length) return { skipped: true, reason: 'no_phone', audience: 'company' };
-  const body = buildCompanyOfferBody(order, shipment, orderId, carrier || {});
-  const results = [];
-  for (const to of phones) {
-    const suffix = to.replace(/\D/g, '').slice(-6) || 'x';
-    results.push(
-      await sendIdempotentSms(db, {
-        orderId,
-        shipment,
-        to,
-        body,
-        jobKey: `offer_company_${carrierId || 'x'}_${suffix}`.slice(0, 80),
-        audience: 'company',
-        event: 'company_offer',
-      })
-    );
+  if (!phone) {
+    console.info('sms skip', {
+      orderId,
+      event: 'company_offer',
+      carrierId: carrierId || '',
+      reason: 'no_verified_phone',
+    });
+    return { skipped: true, reason: 'no_verified_phone', audience: 'company' };
   }
-  return { sent: results.some((item) => item?.sent), phones: phones.length, results };
+  const body = buildCompanyOfferBody(order, shipment, orderId, carrier || {});
+  const result = await sendIdempotentSms(db, {
+    orderId,
+    shipment,
+    to: phone,
+    body,
+    jobKey: `offer_company_${carrierId || 'x'}`.slice(0, 80),
+    audience: 'company',
+    event: 'company_offer',
+  });
+  return { sent: Boolean(result?.sent), phones: 1, results: [result], notificationPhone: phone.replace(/^\+/, '') };
 }
 
 /** SMS to mtumaji when a company has been found / offered. */
