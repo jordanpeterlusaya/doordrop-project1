@@ -1082,10 +1082,19 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     if (live.length) ranked = live;
   }
   const ref = db.collection('carrierShipments').doc(orderId);
+  const orderRef = db.collection('orders').doc(orderId);
+  const { isCustomerCancelledRecord, customerCancelShipmentPatch } = require('./carrier-cancel');
 
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
+    const orderSnap = await tx.get(orderRef);
     const shipment = snap.exists ? snap.data() : shipmentHint || null;
+    const liveOrder = orderSnap.exists ? { id: orderId, ...orderSnap.data() } : order;
+    if (isCustomerCancelledRecord(liveOrder) || isCustomerCancelledRecord(shipment)) {
+      const { patch } = customerCancelShipmentPatch(shipment, liveOrder);
+      tx.set(ref, patch, { merge: true });
+      return { skipped: true, reason: 'customer-cancelled' };
+    }
     if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
     if (offerIsOpen(shipment)) {
       return { skipped: true, reason: 'offer-open', carrierId: shipment.offeredCarrierId || null };
@@ -1210,9 +1219,19 @@ async function matchOrderById(db, orderId, options = {}) {
   const orderSnap = await db.collection('orders').doc(orderId).get();
   if (!orderSnap.exists) return { skipped: true };
   const order = { id: orderSnap.id, ...orderSnap.data() };
-  if (!isBusParcel(order)) return { skipped: true };
   const shipmentSnap = await db.collection('carrierShipments').doc(orderId).get();
   const shipment = shipmentSnap.exists ? shipmentSnap.data() : null;
+  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+  if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) {
+    await clearCarrierOfferOnCustomerCancel(
+      db,
+      orderId,
+      isCustomerCancelledRecord(order) ? order : { ...order, status: 'cancelled', cancelledBy: 'customer' },
+      shipment
+    );
+    return { skipped: true, reason: 'customer-cancelled' };
+  }
+  if (!isBusParcel(order)) return { skipped: true };
   await persistSenderPhone(db, orderId, order, shipment);
 
   // Order document already exists. Queue party SMS; do not call Mambo or fail the match.
@@ -1279,6 +1298,18 @@ async function acceptCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'car
   const snap = await ref.get();
   if (!snap.exists) throw new Error('Mzigo haupatikani.');
   const current = snap.data() || {};
+  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+  const orderSnap = await db.collection('orders').doc(orderId).get();
+  const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+  if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(current)) {
+    await clearCarrierOfferOnCustomerCancel(
+      db,
+      orderId,
+      order || { id: orderId, status: 'cancelled', cancelledBy: 'customer' },
+      current
+    );
+    throw new Error('Mteja amefuta oda.');
+  }
   if (current.carrierId) {
     if (String(current.carrierId) === String(carrierId)) return { already: true };
     throw new Error('Oda hii si yako tena.');
@@ -1360,6 +1391,24 @@ async function rejectCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'car
 async function syncCarrierShipment(db, orderId, before, after) {
   if (!after) return { skipped: true };
 
+  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+  const cancelOrderSnap = await db.collection('orders').doc(orderId).get();
+  const cancelOrder = cancelOrderSnap.exists ? { id: orderId, ...cancelOrderSnap.data() } : null;
+  if (isCustomerCancelledRecord(cancelOrder) || isCustomerCancelledRecord(after)) {
+    await clearCarrierOfferOnCustomerCancel(
+      db,
+      orderId,
+      cancelOrder || {
+        id: orderId,
+        status: 'cancelled',
+        cancelledBy: 'customer',
+        cancellationReason: after.cancelReason || 'Customer cancelled',
+      },
+      after
+    );
+    return { skipped: true, reason: 'customer-cancelled' };
+  }
+
   const beforeStatus = normalize(before?.shipmentStatus);
   const afterStatus = normalize(after.shipmentStatus);
   if (beforeStatus !== 'delivered' && afterStatus === 'delivered') {
@@ -1434,6 +1483,8 @@ async function advanceCarrierOffers(db) {
     db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(40).get(),
   ]);
   let advanced = 0;
+  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel, releaseOpenCustomerCancelledOffers } = require('./carrier-cancel');
+  const released = await releaseOpenCustomerCancelledOffers(db);
   // Assigned offers stay with the online company until they accept or reject.
   // There is no countdown that pulls the order away.
   for (const doc of waitingSnap.docs) {
@@ -1441,7 +1492,12 @@ async function advanceCarrierOffers(db) {
     if (shipment.carrierId || shipment.offeredCarrierId) continue;
     const orderSnap = await db.collection('orders').doc(doc.id).get();
     if (!orderSnap.exists || !isBusParcel(orderSnap.data())) continue;
-    const result = await offerNext(db, doc.id, { id: orderSnap.id, ...orderSnap.data() }, shipment);
+    const waitingOrder = { id: orderSnap.id, ...orderSnap.data() };
+    if (isCustomerCancelledRecord(waitingOrder) || isCustomerCancelledRecord(shipment)) {
+      await clearCarrierOfferOnCustomerCancel(db, doc.id, waitingOrder, shipment);
+      continue;
+    }
+    const result = await offerNext(db, doc.id, waitingOrder, shipment);
     if (result?.matched) advanced += 1;
   }
 
@@ -1480,7 +1536,7 @@ async function advanceCarrierOffers(db) {
 
   advanced += await backfillOpenDeclaredValues(db);
 
-  return { advanced };
+  return { advanced, releasedCustomerCancels: released };
 }
 
 module.exports = {

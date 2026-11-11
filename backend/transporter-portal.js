@@ -215,6 +215,29 @@ async function requireCarrierContext(req) {
   return { db, decoded, carrierId, carrier: { id: carrierId, ...carrierSnap.data() } };
 }
 
+async function assertCustomerStillOpen(db, shipment) {
+  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+  const orderId = String(shipment?.orderId || shipment?.id || '').trim();
+  let order = null;
+  if (orderId) {
+    const orderSnap = await db.collection('orders').doc(orderId).get();
+    if (orderSnap.exists) order = { id: orderSnap.id, ...orderSnap.data() };
+  }
+  if (!isCustomerCancelledRecord(shipment) && !isCustomerCancelledRecord(order)) return;
+  await clearCarrierOfferOnCustomerCancel(
+    db,
+    orderId || shipment.id,
+    order || {
+      id: shipment.id,
+      status: 'cancelled',
+      cancelledBy: 'customer',
+      cancellationReason: shipment.cancelReason || 'Customer cancelled',
+    },
+    shipment
+  );
+  throw conflict('The customer cancelled this order.');
+}
+
 async function shipmentForCarrier(db, carrierId, shipmentId) {
   const id = String(shipmentId || '').trim();
   if (!id) throw badRequest('Order id is required.');
@@ -231,6 +254,7 @@ async function handlePortalVerify(req) {
   const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   assertQuoteAccepted(shipment);
   if (shipment.carrierId !== carrierId) throw forbidden('Accept the order before verifying it.');
   const status = String(shipment.shipmentStatus || '');
@@ -266,6 +290,7 @@ async function handlePortalAccept(req) {
   const gate = eligibilityFor(carrier, owned);
   if (!gate.eligible) throw forbidden('Commission limit reached. Pay the outstanding balance before accepting new orders.');
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   assertQuoteAccepted(shipment);
   assertCanAccept(shipment, carrierId);
   const at = new Date().toISOString();
@@ -367,6 +392,7 @@ async function handlePortalTransit(req) {
   const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   if (shipment.carrierId !== carrierId) throw forbidden('Accept the order before starting the journey.');
   assertQuoteAccepted(shipment);
   if (shipment.shipmentStatus === 'in_transit') return { ok: true, already: true, shipmentId: shipment.id };
@@ -407,6 +433,7 @@ async function handlePortalJourney(req) {
   const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 16 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   if (shipment.carrierId !== carrierId || !['in_transit', 'arrived'].includes(String(shipment.shipmentStatus || ''))) {
     throw conflict('Journey updates are available after the order is in transit.');
   }
@@ -502,6 +529,7 @@ async function handlePortalDeliver(req) {
   const { db, decoded, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 16 * 1024);
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   if (shipment.carrierId !== carrierId) throw forbidden('This order is not yours.');
   if (shipment.shipmentStatus === 'delivered') return { ok: true, already: true, shipmentId: shipment.id };
   if (!['in_transit', 'arrived'].includes(String(shipment.shipmentStatus || ''))) {
@@ -545,6 +573,7 @@ async function handlePortalTrackingLink(req) {
   const { db, carrierId } = await requireCarrierContext(req);
   const body = await readJsonBodyLimited(req, 8 * 1024);
   const { shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   if (shipment.carrierId !== carrierId || shipment.shipmentStatus !== 'in_transit') {
     throw conflict('A tracking link can be sent while the order is in transit.');
   }
@@ -564,6 +593,7 @@ async function handlePortalQuote(req) {
   const amount = Math.round(Number(body.amountTzs) || 0);
   if (amount < 1000 || amount > 50000000) throw badRequest('Enter the delivery price in TZS.');
   const { ref, shipment } = await shipmentForCarrier(db, carrierId, body.shipmentId);
+  await assertCustomerStillOpen(db, shipment);
   const offeredToCompany = shipment.offeredCarrierId === carrierId || shipment.carrierId === carrierId;
   if (!offeredToCompany) throw forbidden('This order is not assigned to your company.');
   if (['cancelled', 'delivered'].includes(String(shipment.shipmentStatus || ''))) {

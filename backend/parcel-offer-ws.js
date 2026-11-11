@@ -257,6 +257,8 @@ async function handleCustomerCancel(socket, message) {
       {
         shipmentStatus: 'cancelled',
         offeredCarrierId: null,
+        carrierId: null,
+        haulStage: 'cancelled',
         cancelledBy: 'customer',
         cancelledAt: FieldValue.serverTimestamp(),
         cancelReason: 'Customer cancelled before company verified',
