@@ -32,7 +32,7 @@ import {
 const ADMIN_EMAIL = 'boyzeus11@gmail.com';
 /** Fallback only — prefer carrier deskStanding / streak tier. */
 const HAUL_FEE_RATE = 0.12;
-const OFFER_MS = 5 * 60 * 1000;
+const OFFER_MS = 75 * 1000;
 const TIER_FEE_RATES = [
   { minStreak: 500, feeRate: 0.06, feePercent: 6 },
   { minStreak: 250, feeRate: 0.08, feePercent: 8 },

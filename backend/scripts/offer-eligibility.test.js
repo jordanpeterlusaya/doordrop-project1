@@ -8,6 +8,9 @@ const {
   coverageForOrder,
   isBusParcel,
   isCarrierLive,
+  OFFER_TIMEOUT_MS,
+  offerIsOpen,
+  offerTimedOut,
   pickExclusiveCarrier,
   rankCarriers,
   shouldReleaseOpenOffer,
@@ -123,15 +126,54 @@ assert(pickExclusiveCarrier([firstOffer, other], new Set([firstOffer.carrierId, 
 const openPending = {
   shipmentStatus: 'assigned',
   offeredCarrierId: pendingLive.id,
-  offerExpiresAt: null,
+  offerExpiresAt: new Date(now + OFFER_TIMEOUT_MS).toISOString(),
+  offeredAt: fresh,
 };
 assert(shouldReleaseOpenOffer(openPending, pendingLive), 'open offer to a pending company is released');
 assert(!shouldReleaseOpenOffer({ ...openPending, carrierId: pendingLive.id }, pendingLive), 'accepted work is not released');
-assert(!shouldReleaseOpenOffer(openPending, approvedLive), 'open offer to an approved company stays');
+assert(!shouldReleaseOpenOffer(openPending, approvedLive), 'open offer to an approved company stays while not timed out');
 assert(!shouldReleaseOpenOffer({ shipmentStatus: 'cancelled', cancelledBy: 'customer', offeredCarrierId: pendingLive.id }, pendingLive), 'cancelled shipment is not an open offer');
+
+const openFresh = {
+  shipmentStatus: 'assigned',
+  offeredCarrierId: approvedLive.id,
+  offerExpiresAt: new Date(now + OFFER_TIMEOUT_MS).toISOString(),
+  offeredAt: fresh,
+};
+assert(offerIsOpen(openFresh, now), 'fresh offer with expiry is open');
+assert(!offerTimedOut(openFresh, now), 'fresh offer is not timed out');
+
+const silentNull = {
+  shipmentStatus: 'assigned',
+  offeredCarrierId: approvedLive.id,
+  offerExpiresAt: null,
+  offeredAt: new Date(now - OFFER_TIMEOUT_MS - 5_000).toISOString(),
+};
+assert(!offerIsOpen(silentNull, now), 'null offerExpiresAt past offeredAt+timeout is closed');
+assert(offerTimedOut(silentNull, now), 'silent approved holder past timeout is expired');
+
+const foreverNull = {
+  shipmentStatus: 'assigned',
+  offeredCarrierId: approvedLive.id,
+  offerExpiresAt: null,
+};
+assert(offerTimedOut(foreverNull, now), 'assigned hold with no deadline is treated as timed out');
 
 const cancelled = { ...darOrder, status: 'cancelled', cancelledBy: 'customer' };
 assert(isBusParcel(cancelled) === false, 'customer-cancelled order is not matched');
 assert(isBusParcel(darOrder) === true, 'open bus parcel is matched');
+
+const newDesk = { ...approvedLive, id: 'new-desk', ordersReceived: 0 };
+const platinum = {
+  ...approvedLive,
+  id: 'platinum-desk',
+  ordersReceived: 600,
+  deliveries: 500,
+  streak: 500,
+  deskStanding: { tier: { id: 'platinum' }, feeRate: 0.06, priorityBonus: 40, closure: false },
+};
+const fair = rankCarriers(darOrder, [newDesk, platinum], new Map(), new Map());
+assert(fair.length === 2, 'both live desks stay in the ranked pool');
+assert(fair.some((entry) => entry.carrierId === 'new-desk'), 'new verified desk is ranked alongside platinum');
 
 console.log('offer-eligibility: ok');

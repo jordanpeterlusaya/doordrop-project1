@@ -325,10 +325,10 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
 
 exports.advanceCarrierOffers = onSchedule(
   {
-    schedule: 'every 2 minutes',
+    schedule: 'every 1 minutes',
     region: 'us-central1',
     retryCount: 0,
-    timeoutSeconds: 60,
+    timeoutSeconds: 120,
     memory: '256MiB',
   },
   async () => {

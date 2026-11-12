@@ -1,6 +1,7 @@
 const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 
-const OFFER_TIMEOUT_MS = 5 * 60 * 1000;
+/** Exclusive offer window. Silent / non-responding desks lose the hold after this. */
+const OFFER_TIMEOUT_MS = 75 * 1000;
 /** Company portal must pulse portalOnlineAt within this window to receive new offers. */
 const PORTAL_ONLINE_MS = 3 * 60 * 1000;
 /** High-cancel penalty. Normal streak tiers are lower. */
@@ -17,7 +18,11 @@ const TIER_RULES = [
   { id: 'gold', minStreak: 250, feePercent: 8, feeRate: 0.08, priorityBonus: 16, payCeilingTzs: 100_000 },
   { id: 'platinum', minStreak: 500, feePercent: 6, feeRate: 0.06, priorityBonus: 40, payCeilingTzs: 150_000 },
 ];
-const MAX_OFFERS = 3;
+/** Soft safety cap only — decline chain walks the full eligible ranked list. */
+const MAX_OFFERS = 50;
+/** Modest boost so brand-new verified desks are not stuck forever behind platinum. */
+const NEW_DESK_FAIRNESS_BONUS = 12;
+const NEW_DESK_RECEIVED_CAP = 5;
 const DAR_TIME_ZONE = 'Africa/Dar_es_Salaam';
 
 const SHIPMENT_FLOW = [
@@ -394,6 +399,10 @@ function scoreCarrier(order, carrier, routes, vehicles) {
   if (standing.closure) return null;
   if ((Number(carrier.unpaidHaulFee) || 0) >= commissionPayCeiling(standing)) return null;
   score += standing.priorityBonus;
+  // New verified desks: small fairness bump so platinum live desks do not lock them out forever.
+  if (received < NEW_DESK_RECEIVED_CAP) {
+    score += Math.round(NEW_DESK_FAIRNESS_BONUS * ((NEW_DESK_RECEIVED_CAP - received) / NEW_DESK_RECEIVED_CAP));
+  }
   score = Math.max(1, Math.min(199, score));
   return {
     carrierId: carrier.id,
@@ -477,7 +486,7 @@ function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, optio
     )
     .filter(Boolean)
     .sort((left, right) => right.score - left.score || left.carrierId.localeCompare(right.carrierId))
-    .slice(0, MAX_OFFERS);
+    .slice(0, MAX_OFFERS); // high cap — never dead-end matching after a few declines
 }
 
 function cashSplit(amount, feeRate) {
@@ -511,11 +520,31 @@ function expiryMs(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** Absolute deadline for an exclusive offer. Null offerExpiresAt falls back to offeredAt + timeout. */
+function offerDeadlineMs(shipment) {
+  const expires = expiryMs(shipment?.offerExpiresAt);
+  if (expires) return expires;
+  const offered = expiryMs(shipment?.offeredAt);
+  if (offered) return offered + OFFER_TIMEOUT_MS;
+  const updated = expiryMs(shipment?.updatedAt);
+  if (updated) return updated + OFFER_TIMEOUT_MS;
+  return 0;
+}
+
 function offerIsOpen(shipment, now = Date.now()) {
   if (!shipment || shipment.carrierId) return false;
   if (normalize(shipment.shipmentStatus) !== 'assigned' || !shipment.offeredCarrierId) return false;
-  const expires = expiryMs(shipment.offerExpiresAt);
-  return !expires || expires > now;
+  const deadline = offerDeadlineMs(shipment);
+  // Never treat missing expiry as forever — that left silent approved desks blocking forever.
+  return deadline > now;
+}
+
+/** True when an exclusive hold has expired or was left with no usable deadline. */
+function offerTimedOut(shipment, now = Date.now()) {
+  if (!shipment || shipment.carrierId) return false;
+  if (normalize(shipment.shipmentStatus) !== 'assigned' || !shipment.offeredCarrierId) return false;
+  const deadline = offerDeadlineMs(shipment);
+  return !deadline || deadline <= now;
 }
 
 /** True when the company portal (or live offer socket) is active right now. */
@@ -1235,7 +1264,7 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
         arrivalTime: FieldValue.delete(),
         pickupMode: FieldValue.delete(),
         trackStep: FieldValue.delete(),
-        offerExpiresAt: null,
+        offerExpiresAt: Timestamp.fromMillis(Date.now() + OFFER_TIMEOUT_MS),
         offeredAt: FieldValue.serverTimestamp(),
         capacityReserved: false,
         declinedCarrierIds: [...declined],
@@ -1659,9 +1688,8 @@ async function advanceCarrierOffers(db) {
   let swept = 0;
   const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel, releaseOpenCustomerCancelledOffers } = require('./carrier-cancel');
   const released = await releaseOpenCustomerCancelledOffers(db);
-  // Approved companies keep an open offer until they accept or reject.
-  // Unapproved holders are released. There is no countdown for an approved desk.
-  // Stuck rows (cancelled, ineligible holder, or a company that already declined) are cleared first.
+  // Expire silent/expired exclusive holds (including approved desks with null offerExpiresAt).
+  // Unapproved holders are released without counting as a decline.
   for (const doc of assignedSnap.docs) {
     const shipment = { id: doc.id, ...(doc.data() || {}) };
     if (shipment.carrierId) continue;
@@ -1683,6 +1711,38 @@ async function advanceCarrierOffers(db) {
       continue;
     }
     const offeredNow = String(shipment.offeredCarrierId || '');
+    if (offeredNow && offerTimedOut(shipment)) {
+      const declined = new Set((shipment.declinedCarrierIds || []).map((id) => String(id || '')));
+      declined.add(offeredNow);
+      console.info('carrier offer expired', {
+        orderId: doc.id,
+        carrierId: offeredNow,
+        reason: 'offer-timeout',
+        deadlineMs: offerDeadlineMs(shipment) || null,
+      });
+      await doc.ref.set(
+        {
+          shipmentStatus: 'matching',
+          offeredCarrierId: null,
+          offerExpiresAt: null,
+          declinedCarrierIds: [...declined],
+          updatedAt: FieldValue.serverTimestamp(),
+          statusHistory: FieldValue.arrayUnion(historyEntry('matching', 'system-timeout')),
+        },
+        { merge: true }
+      );
+      swept += 1;
+      if (waitingOrder && isBusParcel(waitingOrder)) {
+        const result = await offerNext(db, doc.id, waitingOrder, {
+          ...shipment,
+          shipmentStatus: 'matching',
+          offeredCarrierId: null,
+          declinedCarrierIds: [...declined],
+        });
+        if (result?.matched) advanced += 1;
+      }
+      continue;
+    }
     if (offeredNow && offerIsOpen(shipment)) {
       const holderSnap = await db.collection('carriers').doc(offeredNow).get();
       const holder = holderSnap.exists ? { id: offeredNow, ...holderSnap.data() } : null;
@@ -1808,6 +1868,8 @@ async function advanceCarrierOffers(db) {
 module.exports = {
   CAPACITY_HOLD_STATUSES,
   HAUL_FEE_RATE,
+  MAX_OFFERS,
+  NEW_DESK_FAIRNESS_BONUS,
   OFFER_TIMEOUT_MS,
   PORTAL_ONLINE_MS,
   SHIPMENT_FLOW,
@@ -1816,6 +1878,9 @@ module.exports = {
   accountCanTakeOffers,
   claimOpenOffersForCarrier,
   isCarrierLive,
+  offerDeadlineMs,
+  offerIsOpen,
+  offerTimedOut,
   pickExclusiveCarrier,
   shouldReleaseOpenOffer,
   advanceCarrierOffers,
