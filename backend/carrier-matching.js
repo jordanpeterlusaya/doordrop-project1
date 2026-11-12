@@ -410,12 +410,50 @@ function scoreCarrier(order, carrier, routes, vehicles) {
   };
 }
 
-/** Rejected and suspended accounts never get offers. Pending is allowed only when the caller already kept live desks. */
-function accountCanTakeOffers(carrier) {
-  if (!carrier || carrier.offersPaused || carrier.fraudHold) return false;
+/**
+ * Why this company cannot be offered an order.
+ * Only status `verified` is approved. Pending stays registered but unapproved.
+ */
+function accountBlockReason(carrier) {
+  if (!carrier) return 'missing';
+  if (carrier.offersPaused) return 'paused';
+  if (carrier.fraudHold) return 'fraud-hold';
   const status = normalize(carrier.status);
-  if (status === 'rejected' || status === 'suspended') return false;
-  return status === 'verified' || status === 'pending';
+  if (status === 'verified') return '';
+  if (status === 'rejected') return 'rejected';
+  if (status === 'suspended') return 'suspended';
+  if (status === 'pending') return 'unapproved';
+  return 'unapproved';
+}
+
+function accountCanTakeOffers(carrier) {
+  return accountBlockReason(carrier) === '';
+}
+
+/**
+ * Approved companies registered before coverage was stored have a base region
+ * and zero coverage flags, so every order skips them as no-coverage.
+ * New registration already writes coverageAllTanzania. Fill that same default
+ * once, only after approval, and only when a base region exists.
+ */
+async function withVerifiedCoverage(db, carrier) {
+  if (!carrier?.id || normalize(carrier.status) !== 'verified') return carrier;
+  if (carrierHasCoverageDeclared(carrier)) return carrier;
+  if (!carrierBaseRegion(carrier)) return carrier;
+  try {
+    await db.collection('carriers').doc(carrier.id).set(
+      {
+        coverageAllTanzania: true,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    console.info('carrier coverage backfill', { carrierId: carrier.id, reason: 'verified-without-coverage' });
+  } catch (error) {
+    console.error('carrier coverage backfill failed', carrier.id, error?.message || error);
+    return carrier;
+  }
+  return { ...carrier, coverageAllTanzania: true };
 }
 
 function rankCarriers(order, carriers, routesByCarrier, vehiclesByCarrier, options = {}) {
@@ -495,6 +533,19 @@ function declinedCarrierIds(shipment) {
   return declined;
 }
 
+/** One company per offer. The shipment transaction is what makes the write exclusive. */
+function pickExclusiveCarrier(ranked, declined) {
+  const skip = declined instanceof Set ? declined : new Set(declined || []);
+  return (ranked || []).find((entry) => entry?.carrierId && !skip.has(entry.carrierId)) || null;
+}
+
+/** Open offers stay with an approved company. Unapproved or ineligible holders are released. */
+function shouldReleaseOpenOffer(shipment, holder) {
+  if (!shipment || shipment.carrierId) return false;
+  if (!offerIsOpen(shipment)) return false;
+  return !accountCanTakeOffers(holder);
+}
+
 async function loadNetwork(db, options = {}) {
   const prefer =
     options.preferCarrierIds instanceof Set
@@ -521,9 +572,15 @@ async function loadNetwork(db, options = {}) {
     const extras = await Promise.all(missing.map((id) => db.collection('carriers').doc(id).get()));
     extras.forEach(addDoc);
   }
-  // Verified companies, plus a registered company whose portal heartbeat is live.
-  // Rejected / suspended / paused stay out. Phone verification is not an offer gate.
-  const carriers = [...byId.values()].filter((carrier) => accountCanTakeOffers(carrier));
+  // Load verified companies and anyone with a fresh heartbeat so a new desk is visible.
+  // Unapproved, rejected, suspended, and paused companies are reported, then left out.
+  const carriers = [];
+  const skipped = [];
+  for (const carrier of byId.values()) {
+    const reason = accountBlockReason(carrier);
+    if (reason) skipped.push({ id: carrier.id, reason });
+    else carriers.push(carrier);
+  }
   const routesByCarrier = new Map();
   routeSnap.docs.forEach((doc) => {
     const data = { id: doc.id, ...doc.data() };
@@ -538,7 +595,7 @@ async function loadNetwork(db, options = {}) {
     list.push(data);
     vehiclesByCarrier.set(data.carrierId, list);
   });
-  return { carriers, routesByCarrier, vehiclesByCarrier };
+  return { carriers, skipped, routesByCarrier, vehiclesByCarrier };
 }
 
 async function loadHeldWeight(db, excludeOrderId) {
@@ -1061,14 +1118,22 @@ async function evaluateCarrierFraudHold(db, carrierId) {
 }
 
 async function offerNext(db, orderId, order, shipmentHint, options = {}) {
+  const started = Date.now();
   const preferCarrierIds =
     options.preferCarrierIds instanceof Set
       ? options.preferCarrierIds
       : options.preferCarrierIds
         ? new Set([...options.preferCarrierIds].map(String))
         : null;
-  const { carriers, routesByCarrier, vehiclesByCarrier } = await loadNetwork(db, { preferCarrierIds });
-  const openCarriers = carriers.filter((carrier) => accountCanTakeOffers(carrier));
+  const loaded = await loadNetwork(db, { preferCarrierIds });
+  const routesByCarrier = loaded.routesByCarrier;
+  const vehiclesByCarrier = loaded.vehiclesByCarrier;
+  const skipped = [...(loaded.skipped || [])];
+  const openCarriers = [];
+  for (const carrier of loaded.carriers || []) {
+    openCarriers.push(await withVerifiedCoverage(db, carrier));
+  }
+  const evaluated = skipped.length + openCarriers.length;
   const stats = await loadDeskStats(db, openCarriers.map((carrier) => carrier.id));
   const standingByCarrier = new Map();
   const eligible = [];
@@ -1076,15 +1141,22 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
   for (const carrier of openCarriers) {
     const standing = standingForCarrier(carrier, stats);
     if (standing.closure) {
+      skipped.push({ id: carrier.id, reason: 'closure' });
       await persistFraudHold(db, carrier, standing).catch((error) => {
         console.error('fraud hold failed', carrier.id, error?.message || error);
       });
       continue;
     }
     const unpaidHaulFee = stats.unpaid?.get(carrier.id) || 0;
-    if (unpaidHaulFee >= commissionPayCeiling(standing)) continue;
+    if (unpaidHaulFee >= commissionPayCeiling(standing)) {
+      skipped.push({ id: carrier.id, reason: 'commission-ceiling' });
+      continue;
+    }
     // Offers only reach companies with an active portal/session right now.
-    if (!isCarrierLive(carrier, now, preferCarrierIds)) continue;
+    if (!isCarrierLive(carrier, now, preferCarrierIds)) {
+      skipped.push({ id: carrier.id, reason: 'offline' });
+      continue;
+    }
     standingByCarrier.set(carrier.id, standing);
     eligible.push(carrier);
   }
@@ -1092,6 +1164,12 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     standingByCarrier,
     unpaidByCarrier: stats.unpaid,
   });
+  const rankedIds = new Set(ranked.map((entry) => entry.carrierId));
+  for (const carrier of eligible) {
+    if (rankedIds.has(carrier.id)) continue;
+    const coverage = coverageForOrder(order, carrier);
+    skipped.push({ id: carrier.id, reason: coverage.ok ? 'not-ranked' : coverage.reason });
+  }
   if (preferCarrierIds && preferCarrierIds.size) {
     const live = ranked.filter((entry) => preferCarrierIds.has(entry.carrierId));
     if (live.length) ranked = live;
@@ -1116,7 +1194,7 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     }
 
     const declined = declinedCarrierIds(shipment);
-    const chosen = ranked.find((entry) => !declined.has(entry.carrierId)) || null;
+    const chosen = pickExclusiveCarrier(ranked, declined);
 
     const base = shipmentPayload(order, orderId, shipment);
     const split = chosen ? cashSplit(base.cashExpected, chosen.haulFeeRate) : null;
@@ -1227,6 +1305,16 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     ]);
   }
 
+  console.info('carrier match', {
+    orderId,
+    evaluated,
+    live: eligible.length,
+    skipped,
+    assigned: result?.carrierId || null,
+    reason: result?.reason || (result?.matched ? 'assigned' : 'none'),
+    durationMs: Date.now() - started,
+  });
+
   return result;
 }
 
@@ -1244,9 +1332,27 @@ async function matchOrderById(db, orderId, options = {}) {
       isCustomerCancelledRecord(order) ? order : { ...order, status: 'cancelled', cancelledBy: 'customer' },
       shipment
     );
+    console.info('carrier match result', { orderId, matched: false, reason: 'customer-cancelled', carrierId: null, durationMs: 0 });
     return { skipped: true, reason: 'customer-cancelled' };
   }
   if (!isBusParcel(order)) return { skipped: true };
+  const started = Date.now();
+  console.info('order match start', {
+    orderId,
+    origin: orderOrigin(order),
+    destination: orderDestination(order),
+    status: String(order.status || ''),
+  });
+  const finish = (result) => {
+    console.info('carrier match result', {
+      orderId,
+      matched: Boolean(result?.matched),
+      reason: result?.reason || (result?.matched ? 'assigned' : 'none'),
+      carrierId: result?.carrierId || null,
+      durationMs: Date.now() - started,
+    });
+    return result;
+  };
   await persistSenderPhone(db, orderId, order, shipment);
 
   // Order document already exists. Queue party SMS; do not call Mambo or fail the match.
@@ -1292,19 +1398,71 @@ async function matchOrderById(db, orderId, options = {}) {
   }
 
   if (shipment?.carrierId) {
-    return { skipped: true, reason: 'accepted', carrierId: shipment.carrierId, matched: true, alreadyAccepted: true };
+    return finish({ skipped: true, reason: 'accepted', carrierId: shipment.carrierId, matched: true, alreadyAccepted: true });
   }
   if (offerIsOpen(shipment)) {
-    return {
-      skipped: true,
-      reason: 'offer-open',
-      matched: true,
-      carrierId: shipment.offeredCarrierId || null,
-      orderNumber: shipment.orderNumber || order.orderNumber || '',
-      destination: shipment.destination || '',
-    };
+    const holderId = String(shipment.offeredCarrierId || '').trim();
+    const holderSnap = holderId ? await db.collection('carriers').doc(holderId).get() : null;
+    const holder = holderSnap?.exists ? { id: holderId, ...holderSnap.data() } : null;
+    if (!shouldReleaseOpenOffer(shipment, holder)) {
+      return finish({
+        skipped: true,
+        reason: 'offer-open',
+        matched: true,
+        carrierId: holderId || null,
+        orderNumber: shipment.orderNumber || order.orderNumber || '',
+        destination: shipment.destination || '',
+      });
+    }
+    console.info('carrier offer release', {
+      orderId,
+      carrierId: holderId,
+      reason: accountBlockReason(holder) || 'ineligible',
+    });
+    await db.collection('carrierShipments').doc(orderId).set(
+      {
+        shipmentStatus: 'matching',
+        offeredCarrierId: null,
+        offerExpiresAt: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    shipment.offeredCarrierId = null;
+    shipment.shipmentStatus = 'matching';
+    shipment.offerExpiresAt = null;
   }
-  return offerNext(db, orderId, order, shipment, options);
+  return finish(await offerNext(db, orderId, order, shipment, options));
+}
+
+/** Pull waiting orders onto one approved desk that is live right now. */
+async function claimOpenOffersForCarrier(db, carrierId) {
+  const id = String(carrierId || '').trim();
+  if (!id) return { claimed: 0, reason: 'missing' };
+  const snap = await db.collection('carriers').doc(id).get();
+  if (!snap.exists) return { claimed: 0, reason: 'missing' };
+  const carrier = await withVerifiedCoverage(db, { id, ...snap.data() });
+  const block = accountBlockReason(carrier);
+  if (block) return { claimed: 0, reason: block };
+  if (!isCarrierLive(carrier)) return { claimed: 0, reason: 'offline' };
+  const waiting = await db.collection('carrierShipments').where('shipmentStatus', 'in', ['matching', 'assigned']).limit(30).get();
+  let claimed = 0;
+  for (const doc of waiting.docs) {
+    const shipment = doc.data() || {};
+    if (shipment.carrierId) continue;
+    if (offerIsOpen(shipment)) {
+      const holderId = String(shipment.offeredCarrierId || '').trim();
+      if (!holderId || holderId === id) continue;
+      const holderSnap = await db.collection('carriers').doc(holderId).get();
+      const holder = holderSnap.exists ? { id: holderId, ...holderSnap.data() } : null;
+      if (!shouldReleaseOpenOffer(shipment, holder)) continue;
+    }
+    const result = await matchOrderById(db, doc.id, { preferCarrierIds: new Set([id]) });
+    if (result?.matched && String(result.carrierId || '') === id) claimed += 1;
+    if (claimed >= 5) break;
+  }
+  console.info('carrier approval claim', { carrierId: id, claimed });
+  return { claimed };
 }
 
 /** Accept an open parcel offer from the carrier WebSocket (same write as the agents desk). */
@@ -1501,9 +1659,9 @@ async function advanceCarrierOffers(db) {
   let swept = 0;
   const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel, releaseOpenCustomerCancelledOffers } = require('./carrier-cancel');
   const released = await releaseOpenCustomerCancelledOffers(db);
-  // Assigned offers stay with the online company until they accept or reject.
-  // There is no countdown that pulls the order away.
-  // Stuck rows (cancelled, or still pointed at a company that already declined) are cleared first.
+  // Approved companies keep an open offer until they accept or reject.
+  // Unapproved holders are released. There is no countdown for an approved desk.
+  // Stuck rows (cancelled, ineligible holder, or a company that already declined) are cleared first.
   for (const doc of assignedSnap.docs) {
     const shipment = { id: doc.id, ...(doc.data() || {}) };
     if (shipment.carrierId) continue;
@@ -1523,6 +1681,37 @@ async function advanceCarrierOffers(db) {
       );
       if (cleared?.cleared) swept += 1;
       continue;
+    }
+    const offeredNow = String(shipment.offeredCarrierId || '');
+    if (offeredNow && offerIsOpen(shipment)) {
+      const holderSnap = await db.collection('carriers').doc(offeredNow).get();
+      const holder = holderSnap.exists ? { id: offeredNow, ...holderSnap.data() } : null;
+      if (shouldReleaseOpenOffer(shipment, holder)) {
+        console.info('carrier offer release', {
+          orderId: doc.id,
+          carrierId: offeredNow,
+          reason: accountBlockReason(holder) || 'ineligible',
+        });
+        await doc.ref.set(
+          {
+            shipmentStatus: 'matching',
+            offeredCarrierId: null,
+            offerExpiresAt: null,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        swept += 1;
+        if (waitingOrder && isBusParcel(waitingOrder)) {
+          const result = await offerNext(db, doc.id, waitingOrder, {
+            ...shipment,
+            shipmentStatus: 'matching',
+            offeredCarrierId: null,
+          });
+          if (result?.matched) advanced += 1;
+        }
+        continue;
+      }
     }
     const declined = new Set((shipment.declinedCarrierIds || []).map((id) => String(id || '')));
     const offered = String(shipment.offeredCarrierId || '');
@@ -1623,8 +1812,12 @@ module.exports = {
   PORTAL_ONLINE_MS,
   SHIPMENT_FLOW,
   acceptCarrierOfferViaWs,
+  accountBlockReason,
   accountCanTakeOffers,
+  claimOpenOffersForCarrier,
   isCarrierLive,
+  pickExclusiveCarrier,
+  shouldReleaseOpenOffer,
   advanceCarrierOffers,
   cashSplit,
   carrierStanding,

@@ -132,7 +132,7 @@ assert(goldScore.haulFeeRate === 0.17 && platScore.haulFeeRate === 0.15, 'offer 
 assert(punishedScore.haulFeeRate === 0.2 && punishedScore.score < goldScore.score, 'high cancel loses the discount and the priority');
 assert(!scoreCarrier(darToMwanza, { ...darRegions, id: 'paused', streak: 500, offersPaused: true }, [staleRoute], [{ status: 'active' }]), 'paused carrier gets no offer');
 assert(accountCanTakeOffers({ status: 'verified' }), 'verified account can be offered');
-assert(accountCanTakeOffers({ status: 'pending' }), 'pending desk is not dropped before the live check');
+assert(!accountCanTakeOffers({ status: 'pending' }), 'pending is unapproved and is not offered');
 assert(!accountCanTakeOffers({ status: 'pending', offersPaused: true }), 'paused pending stays out');
 assert(!accountCanTakeOffers({ status: 'rejected' }), 'rejected stays out');
 assert(!accountCanTakeOffers({ status: 'suspended' }), 'suspended stays out');

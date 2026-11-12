@@ -766,28 +766,12 @@ async function handlePortalPresence(req) {
     { merge: true }
   );
 
-  // Pull waiting jobs onto this live portal session.
+  // Pull waiting jobs onto this live portal session. Unapproved desks are not offered.
   let claimed = 0;
   try {
-    const { matchOrderById, isBusParcel } = require('./carrier-matching');
-    const waiting = await db.collection('carrierShipments').where('shipmentStatus', '==', 'matching').limit(20).get();
-    const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
-    for (const doc of waiting.docs) {
-      const shipment = { id: doc.id, ...(doc.data() || {}) };
-      const orderSnap = await db.collection('orders').doc(doc.id).get();
-      if (!orderSnap.exists) continue;
-      const order = { id: orderSnap.id, ...orderSnap.data() };
-      if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) {
-        await clearCarrierOfferOnCustomerCancel(db, doc.id, order, shipment).catch((error) => {
-          console.error('portal presence cancel clear failed', doc.id, error?.message || error);
-        });
-        continue;
-      }
-      if (order.status === 'cancelled' || !isBusParcel(order)) continue;
-      const result = await matchOrderById(db, doc.id, { preferCarrierIds: new Set([carrierId]) });
-      if (result?.matched && String(result.carrierId || '') === carrierId) claimed += 1;
-      if (claimed >= 5) break;
-    }
+    const { claimOpenOffersForCarrier } = require('./carrier-matching');
+    const claim = await claimOpenOffersForCarrier(db, carrierId);
+    claimed = Number(claim?.claimed) || 0;
   } catch (error) {
     console.error('portal presence rematch failed', carrierId, error?.message || error);
   }

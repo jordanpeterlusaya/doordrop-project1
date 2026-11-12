@@ -337,6 +337,36 @@ exports.advanceCarrierOffers = onSchedule(
   }
 );
 
+/** Approval is a status flip to verified. Fill missing coverage, then offer waiting orders if the desk is live. */
+exports.onCarrierApproved = onDocumentUpdated(
+  {
+    document: 'carriers/{carrierId}',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 5,
+  },
+  async (event) => {
+    applyRuntimeSecrets();
+    const before = event.data?.before?.data() || null;
+    const after = event.data?.after?.data() || null;
+    if (!after) return;
+    const beforeStatus = String(before?.status || '').trim().toLowerCase();
+    const afterStatus = String(after.status || '').trim().toLowerCase();
+    if (beforeStatus === 'verified' || afterStatus !== 'verified') return;
+    const carrierId = event.params.carrierId;
+    console.info('carrier approved', { carrierId });
+    try {
+      const { claimOpenOffersForCarrier } = require('./carrier-matching');
+      await claimOpenOffersForCarrier(getFirestoreDb(), carrierId);
+    } catch (error) {
+      console.error('onCarrierApproved failed', carrierId, error?.message || error);
+    }
+  }
+);
+
 exports.onCarrierShipmentRematch = onDocumentUpdated(
   {
     document: 'carrierShipments/{orderId}',
