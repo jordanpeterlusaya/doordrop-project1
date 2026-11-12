@@ -576,9 +576,49 @@ function buildOrderPlacedRecipientBody(order, shipment, orderId) {
   return body.slice(0, 320);
 }
 
+const OFFER_SMS_COUNTRY_CODES = ['255', '254', '256', '250', '257', '265', '260', '258', '243', '971'];
+
+/**
+ * Hide exactly two subscriber digits in a company-offer SMS.
+ * Country code and a leading trunk 0 stay visible: 0715127646 → 0715**7646,
+ * +255715127646 → 255715**7646. Short values lose only digits that exist.
+ */
+function maskOfferSmsPhone(raw) {
+  let digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+  for (const code of OFFER_SMS_COUNTRY_CODES) {
+    const doubled = `${code}${code}`;
+    while (digits.startsWith(doubled) && digits.length > code.length + 6) {
+      digits = digits.slice(code.length);
+    }
+  }
+  let country = '';
+  let local = digits;
+  if (!digits.startsWith('0')) {
+    for (const code of OFFER_SMS_COUNTRY_CODES) {
+      if (digits.startsWith(code) && digits.length > code.length) {
+        country = code;
+        local = digits.slice(code.length);
+        break;
+      }
+    }
+  }
+  if (country && local.startsWith('0')) local = local.slice(1);
+  if (!local) return country;
+  const prefer = !country && digits.startsWith('0') ? 4 : 3;
+  const chars = local.split('');
+  const hide = Math.min(2, chars.length);
+  let start = prefer;
+  if (start + hide > chars.length) start = chars.length - hide;
+  for (let i = 0; i < hide; i += 1) chars[start + i] = '*';
+  return `${country}${chars.join('')}`;
+}
+
 function buildCompanyOfferBody(order, shipment, orderId, carrier) {
   const code = parcelCodeOf(shipment || order, orderId);
   const { senderName, senderPhone, recipientName, recipientPhone } = partyNames(order, shipment);
+  const maskedSenderPhone = maskOfferSmsPhone(senderPhone);
+  const maskedRecipientPhone = maskOfferSmsPhone(recipientPhone);
   const pickup = clipSms(shipment?.pickupLabel || shipment?.origin || order?.pickupLabel || '', 36);
   const dest = clipSms(shipment?.destination || order?.outsideDestinationCity || '', 36);
   const cargo = clipSms(
@@ -603,8 +643,8 @@ function buildCompanyOfferBody(order, shipment, orderId, carrier) {
   if (pickup && dest) body += ` ${pickup} → ${dest}.`;
   else if (dest) body += ` Kwenda ${dest}.`;
   if (cargo) body += ` ${cargo}.`;
-  body += ` Mtumaji: ${clipSms(senderName, 20)}${senderPhone ? ` ${clipSms(senderPhone, 14)}` : ''}.`;
-  body += ` Mpokeaji: ${clipSms(recipientName, 20)}${recipientPhone ? ` ${clipSms(recipientPhone, 14)}` : ''}.`;
+  body += ` Mtumaji: ${clipSms(senderName, 20)}${maskedSenderPhone ? ` ${clipSms(maskedSenderPhone, 18)}` : ''}.`;
+  body += ` Mpokeaji: ${clipSms(recipientName, 20)}${maskedRecipientPhone ? ` ${clipSms(maskedRecipientPhone, 18)}` : ''}.`;
   if (price) body += ` ${price}.`;
   body += ' Imefika kwenye HAUL. Kubali kwenye portal au Agents.';
   return body.slice(0, 320);
@@ -963,6 +1003,7 @@ module.exports = {
   buildArrivalBody,
   buildBody,
   buildCompanyOfferBody,
+  maskOfferSmsPhone,
   buildOrderPlacedRecipientBody,
   buildOrderPlacedSenderBody,
   buildSenderCompanyFoundBody,
