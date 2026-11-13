@@ -340,10 +340,56 @@ async function handlePortalAccept(req) {
       }
     }
   }
-  await db.runTransaction(async (tx) => {
-    const fresh = await tx.get(ref);
-    if (!fresh.exists) throw notFound('Order not found.');
-    assertCanAccept({ id: fresh.id, ...fresh.data() }, carrierId);
+  const acceptOutcome = await db.runTransaction(async (tx) => {
+    const freshSnap = await tx.get(ref);
+    if (!freshSnap.exists) throw notFound('Order not found.');
+    const fresh = { id: freshSnap.id, ...freshSnap.data() };
+    let liveOrder = null;
+    if (orderId) {
+      const orderSnap = await tx.get(db.collection('orders').doc(orderId));
+      if (orderSnap.exists) liveOrder = { id: orderId, ...orderSnap.data() };
+    }
+    const {
+      acceptDecision,
+      acceptIdempotencyKey,
+      cancelIdempotencyKey,
+      idempotencyDocId,
+      queueDeliveryEvent,
+    } = require('./order-reliability');
+    const decision = acceptDecision(fresh, carrierId, Date.now(), liveOrder);
+    if (!decision.ok && decision.reason === 'cancelled') {
+      const { customerCancelShipmentPatch } = require('./carrier-cancel');
+      const cancelKey = cancelIdempotencyKey(orderId || fresh.id);
+      const cancelIdem = await tx.get(db.collection('idempotency').doc(idempotencyDocId(cancelKey)));
+      const { patch: cancelPatch } = customerCancelShipmentPatch(fresh, liveOrder || { status: 'cancelled', cancelledBy: 'customer' });
+      if (cancelIdem.exists) delete cancelPatch.statusHistory;
+      tx.set(ref, cancelPatch, { merge: true });
+      if (!cancelIdem.exists) {
+        const notifyCarrierId = String(fresh.offeredCarrierId || fresh.carrierId || '');
+        queueDeliveryEvent(tx, db, {
+          eventId: `cancel_${orderId || fresh.id}`,
+          type: 'shipment.cancelled',
+          idempotencyKey: cancelKey,
+          orderId: orderId || fresh.id,
+          carrierId: notifyCarrierId,
+          payload: { carrierId: notifyCarrierId, orderNumber: String(liveOrder?.orderNumber || fresh.orderNumber || '') },
+        });
+      }
+      return { cancelled: true };
+    }
+    if (!decision.ok) {
+      if (decision.already) throw conflict('This order is already accepted.');
+      if (decision.reason === 'taken-by-other') throw conflict('This order is already accepted by another company.');
+      if (decision.reason === 'expired') throw conflict('This offer has expired.');
+      throw conflict('This order is no longer available to accept.');
+    }
+    const acceptKey = acceptIdempotencyKey(orderId || fresh.id);
+    const idemSnap = await tx.get(db.collection('idempotency').doc(idempotencyDocId(acceptKey)));
+    if (idemSnap.exists) {
+      const prev = String(idemSnap.data()?.carrierId || '');
+      if (prev && prev !== carrierId) throw conflict('This order is already accepted by another company.');
+      throw conflict('This order is already accepted.');
+    }
     const patch = {
       carrierId,
       shipmentStatus: 'accepted',
@@ -387,7 +433,17 @@ async function handlePortalAccept(req) {
         { merge: true }
       );
     }
+    queueDeliveryEvent(tx, db, {
+      eventId: `accept_${orderId || fresh.id}`,
+      type: 'shipment.accepted',
+      idempotencyKey: acceptKey,
+      orderId: orderId || fresh.id,
+      carrierId,
+      payload: { carrierId, fee },
+    });
+    return { accepted: true };
   });
+  if (acceptOutcome?.cancelled) throw conflict('The customer cancelled this order.');
   await mirrorCustomer(db, { ...shipment, carrierId, shipmentStatus: 'accepted', trackStep: 'received', cashExpected: fee });
   const party = {
     senderName: String(orderExtras.senderName || shipment.senderName || shipment.customerName || '').trim(),

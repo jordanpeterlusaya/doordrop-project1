@@ -1,4 +1,5 @@
 const { onRequest } = require('firebase-functions/v2/https');
+const { onMessagePublished } = require('firebase-functions/v2/pubsub');
 const { onDocumentCreated, onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineString } = require('firebase-functions/params');
@@ -252,7 +253,8 @@ exports.onParcelOrderMatchCarrier = onDocumentCreated(
   {
     document: 'orders/{orderId}',
     region: 'us-central1',
-    retry: false,
+    // Retry is safe: offerNext records idempotency in the same transaction as the shipment.
+    retry: true,
     timeoutSeconds: 30,
     memory: '256MiB',
     minInstances: 1,
@@ -277,7 +279,7 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
   {
     document: 'orders/{orderId}',
     region: 'us-central1',
-    retry: false,
+    retry: true,
     timeoutSeconds: 30,
     memory: '256MiB',
     minInstances: 0,
@@ -320,6 +322,61 @@ exports.onParcelOrderMatchCarrierUpdate = onDocumentUpdated(
     } catch (error) {
       console.error('onParcelOrderMatchCarrierUpdate failed', orderId, error);
     }
+  }
+);
+
+/** Durable side effects for cargo offers. The shipment write already committed with this event. */
+exports.onCargoOutboxCreated = onDocumentCreated(
+  {
+    document: 'outbox/{eventId}',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    minInstances: 0,
+    maxInstances: 10,
+  },
+  async (event) => {
+    applyRuntimeSecrets();
+    const eventId = event.params.eventId;
+    if (!event.data) return;
+    try {
+      const { processOutboxEvent, publishOutboxWake } = require('./order-reliability');
+      const data = event.data.data() || {};
+      const wake = await publishOutboxWake(eventId, data.orderId || '');
+      if (wake?.published) {
+        console.info('outbox pubsub wake', { eventId, topic: wake.topic });
+      }
+      await processOutboxEvent(getFirestoreDb(), eventId);
+    } catch (error) {
+      console.error('onCargoOutboxCreated failed', eventId, error?.message || error);
+      throw error;
+    }
+  }
+);
+
+/** Pub/Sub subscriber for cargo-order-events. Idempotent with onCargoOutboxCreated. */
+exports.consumeCargoOutbox = onMessagePublished(
+  {
+    topic: 'cargo-order-events',
+    region: 'us-central1',
+    retry: false,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    maxInstances: 10,
+  },
+  async (event) => {
+    applyRuntimeSecrets();
+    let payload = {};
+    try {
+      payload = event.data.message.json || {};
+    } catch {
+      payload = {};
+    }
+    const eventId = String(payload.eventId || '').trim();
+    if (!eventId) return;
+    const { processOutboxEvent } = require('./order-reliability');
+    await processOutboxEvent(getFirestoreDb(), eventId);
   }
 );
 

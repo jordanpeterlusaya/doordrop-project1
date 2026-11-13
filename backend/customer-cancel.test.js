@@ -33,11 +33,11 @@ const cases = [
   null,
 ];
 
-const portalSrc = fs.readFileSync(path.join(__dirname, '../haul-cargo-transporters/app.js'), 'utf8');
-const start = portalSrc.indexOf('const NON_CUSTOMER_CANCEL');
-const end = portalSrc.indexOf('function transporterShipment');
-if (start < 0 || end < start) throw new Error('portal customerCancelled block not found');
-const portal = new Function(`${portalSrc.slice(start, end)}; return customerCancelled;`)();
+const portalSrc = fs.readFileSync(path.join(__dirname, '../haul-cargo-transporters/order-flow.mjs'), 'utf8');
+const actors = portalSrc.match(/const NON_CUSTOMER_ACTORS = new Set\(\[[^\]]*\]\);/);
+const fn = portalSrc.match(/export function customerCancelled\(input\) \{[\s\S]*?\n\}/);
+if (!actors || !fn) throw new Error('portal customerCancelled block not found');
+const portal = new Function(`${actors[0]}\n${fn[0].replace(/^export /m, '')}\nreturn customerCancelled;`)();
 
 for (const sample of cases) {
   const backend = isCustomerCancelledRecord(sample);

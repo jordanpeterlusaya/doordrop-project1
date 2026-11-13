@@ -246,38 +246,26 @@ async function handleCustomerCancel(socket, message) {
 
   const shipSnap = await db.collection('carrierShipments').doc(orderId).get();
   const shipment = shipSnap.exists ? shipSnap.data() : null;
-  if (shipment?.carrierId) {
-    send(socket, { type: 'accepted', orderId, carrierId: shipment.carrierId });
+  const { clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+  const cleared = await clearCarrierOfferOnCustomerCancel(
+    db,
+    orderId,
+    {
+      ...order,
+      id: orderId,
+      status: 'cancelled',
+      cancelledBy: 'customer',
+      cancellationReason: 'Customer cancelled before company verified',
+    },
+    shipment,
+    { preserveAccepted: true }
+  );
+  if (cleared?.reason === 'already-accepted') {
+    send(socket, { type: 'accepted', orderId, carrierId: cleared.carrierId || shipment?.carrierId });
     return;
   }
 
   const offeredId = String(shipment?.offeredCarrierId || '').trim();
-  if (shipSnap.exists) {
-    await shipSnap.ref.set(
-      {
-        shipmentStatus: 'cancelled',
-        offeredCarrierId: null,
-        carrierId: null,
-        haulStage: 'cancelled',
-        cancelledBy: 'customer',
-        cancelledAt: FieldValue.serverTimestamp(),
-        cancelReason: 'Customer cancelled before company verified',
-      },
-      { merge: true }
-    );
-  }
-  await db.collection('orders').doc(orderId).set(
-    {
-      status: 'cancelled',
-      haulStage: 'cancelled',
-      cancellationReason: 'Customer cancelled before company verified',
-      cancelledBy: 'customer',
-      cancelledAt: FieldValue.serverTimestamp(),
-      carrierMatchStatus: 'cancelled',
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
 
   const payload = { type: 'cancelled', orderId, by: 'customer' };
   broadcast(customersByOrder, orderId, payload);

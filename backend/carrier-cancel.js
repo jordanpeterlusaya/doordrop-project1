@@ -33,6 +33,8 @@ function customerCancelShipmentPatch(shipment, order) {
     offeredCarrierId: null,
     cancelledBy: 'customer',
     haulStage: 'cancelled',
+    reassignBlocked: true,
+    assignmentLocked: 'customer-cancel',
     cancelReason: reason,
     cancelledAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -62,12 +64,95 @@ function offerAlreadyCleared(shipment) {
   return (status === 'cancelled' || status === 'canceled') && !shipment.carrierId;
 }
 
+/** One inbox row + one push per cancelled order, including outbox retries. */
+async function deliverShipmentCancelled(db, { orderId, carrierId, orderNumber }) {
+  const id = String(carrierId || '').trim();
+  const shipmentId = String(orderId || '').trim();
+  if (!id || !shipmentId) return { skipped: true, reason: 'missing' };
+  const { claimIdempotentEffect, finishIdempotentEffect } = require('./order-reliability');
+  const effectKey = `push_cancel_${shipmentId}`;
+  const claim = await claimIdempotentEffect(db, effectKey);
+  if (claim === 'done' || claim === 'busy') return { skipped: true, reason: claim };
+  const title = 'Oda imefutwa';
+  const body = `${orderNumber || shipmentId} · mteja amefuta oda`;
+  try {
+    await db.collection('carriers').doc(id).collection('notifications').doc(`cancel_${shipmentId}`).set(
+      {
+        title,
+        body,
+        orderId: shipmentId,
+        type: 'carrier_offer_cancelled',
+        createdAt: FieldValue.serverTimestamp(),
+        read: false,
+      },
+      { merge: true }
+    );
+    const { collectCarrierPushTokens } = require('./carrier-push');
+    const tokens = await collectCarrierPushTokens(db, id);
+    const data = {
+      type: 'carrier_offer_cancelled',
+      orderId: shipmentId,
+      orderNumber: String(orderNumber || ''),
+    };
+    if (tokens.expo.length) {
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          tokens.expo.map((to) => ({
+            to,
+            sound: 'default',
+            title,
+            body,
+            priority: 'high',
+            channelId: 'carrier_offers',
+            data,
+          }))
+        ),
+        signal: AbortSignal.timeout(12_000),
+      }).catch(() => null);
+    }
+    if (tokens.fcm.length) {
+      const { getMessaging } = require('firebase-admin/messaging');
+      const messaging = getMessaging();
+      for (const token of tokens.fcm) {
+        try {
+          await messaging.send({
+            token,
+            notification: { title, body },
+            data,
+            android: {
+              priority: 'high',
+              notification: { channelId: 'carrier_offers', sound: 'default' },
+            },
+          });
+        } catch {
+          // ignore per-token failures
+        }
+      }
+    }
+    await finishIdempotentEffect(db, effectKey);
+    return { sent: true };
+  } catch (error) {
+    await finishIdempotentEffect(db, effectKey, error);
+    console.warn('carrier-cancel push failed', {
+      orderId: shipmentId,
+      carrierId: id,
+      reason: error?.message || 'error',
+    });
+    return { sent: false, reason: error?.message || 'error' };
+  }
+}
+
 /**
  * When a customer cancels, drop the offer from the company desk.
  * Pre-pickup assignments lose offeredCarrierId and carrierId so portal queries stop returning them.
  * Cargo already picked up keeps carrierId, but is stamped so the portal hides it.
  */
-async function clearCarrierOfferOnCustomerCancel(db, orderId, order, shipmentHint) {
+async function clearCarrierOfferOnCustomerCancel(db, orderId, order, shipmentHint, options = {}) {
   if (!orderId || !order) return { skipped: true, reason: 'missing' };
   const hinted = shipmentHint || null;
   if (!isCustomerCancelledRecord(order) && !isCustomerCancelledRecord(hinted)) {
@@ -75,32 +160,37 @@ async function clearCarrierOfferOnCustomerCancel(db, orderId, order, shipmentHin
   }
 
   const shipmentRef = db.collection('carrierShipments').doc(orderId);
-  const snap = hinted ? null : await shipmentRef.get();
-  if (!hinted && snap && !snap.exists) {
-    return { skipped: true, reason: 'no-shipment' };
-  }
-
-  const shipment = hinted || snap.data() || {};
-  if (offerAlreadyCleared(shipment)) {
-    return { skipped: true, reason: 'already-cleared' };
-  }
-
-  const { patch, postPickup, reason } = customerCancelShipmentPatch(shipment, order);
-  const notifyCarrierId = String(shipment.offeredCarrierId || shipment.carrierId || '').trim();
-  if (postPickup) {
-    console.warn('carrier-cancel hiding post-pickup from transporter', {
-      orderId,
-      status: shipment.shipmentStatus || '',
-      track: shipment.trackStep || '',
-    });
-  }
-
-  await shipmentRef.set(patch, { merge: true });
-
   const orderRef = db.collection('orders').doc(orderId);
-  const orderSnap = await orderRef.get();
-  if (orderSnap.exists) {
-    const liveOrder = orderSnap.data() || {};
+  const preserveAccepted = options.preserveAccepted === true;
+  const {
+    cancelIdempotencyKey,
+    idempotencyDocId,
+    queueDeliveryEvent,
+  } = require('./order-reliability');
+  const cancelKey = cancelIdempotencyKey(orderId);
+
+  const result = await db.runTransaction(async (tx) => {
+    const shipSnap = await tx.get(shipmentRef);
+    const orderSnap = await tx.get(orderRef);
+    const idemSnap = await tx.get(db.collection('idempotency').doc(idempotencyDocId(cancelKey)));
+    const shipment = shipSnap.exists ? shipSnap.data() || {} : hinted || {};
+    if (preserveAccepted && shipment.carrierId) {
+      return { skipped: true, reason: 'already-accepted', carrierId: String(shipment.carrierId) };
+    }
+    const hasShipment = shipSnap.exists || Boolean(hinted);
+    if (!hasShipment && !orderSnap.exists) {
+      return { skipped: true, reason: 'no-shipment' };
+    }
+    if (offerAlreadyCleared(shipment) && idemSnap.exists) {
+      return { skipped: true, reason: 'already-cleared' };
+    }
+
+    const { patch, postPickup, reason } = customerCancelShipmentPatch(shipment, order);
+    if (idemSnap.exists || offerAlreadyCleared(shipment)) delete patch.statusHistory;
+    const notifyCarrierId = String(shipment.offeredCarrierId || shipment.carrierId || '').trim();
+    if (hasShipment) tx.set(shipmentRef, patch, { merge: true });
+
+    const liveOrder = orderSnap.exists ? orderSnap.data() || {} : {};
     const orderPatch = {
       haulStage: 'cancelled',
       carrierMatchStatus: 'cancelled',
@@ -114,76 +204,46 @@ async function clearCarrierOfferOnCustomerCancel(db, orderId, order, shipmentHin
       orderPatch.cancellationReason = reason;
       orderPatch.cancelledAt = FieldValue.serverTimestamp();
     }
-    await orderRef.set(orderPatch, { merge: true });
-  }
-
-  if (notifyCarrierId) {
-    const title = 'Oda imefutwa';
-    const body = `${order.orderNumber || orderId} · mteja amefuta oda`;
-    await db.collection('carriers').doc(notifyCarrierId).collection('notifications').doc().set({
-      title,
-      body,
-      orderId,
-      type: 'carrier_offer_cancelled',
-      createdAt: FieldValue.serverTimestamp(),
-      read: false,
-    });
-
-    try {
-      const { collectCarrierPushTokens, isExpoPushToken } = require('./carrier-push');
-      const tokens = await collectCarrierPushTokens(db, notifyCarrierId);
-      const data = {
-        type: 'carrier_offer_cancelled',
-        orderId: String(orderId),
-        orderNumber: String(order.orderNumber || ''),
-      };
-      const expoMessages = tokens.expo.map((to) => ({
-        to,
-        sound: 'default',
-        title,
-        body,
-        priority: 'high',
-        channelId: 'carrier_offers',
-        data,
-      }));
-      if (expoMessages.length) {
-        await fetch('https://exp.host/--/api/v2/push/send', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(expoMessages),
-          signal: AbortSignal.timeout(12_000),
-        }).catch(() => null);
-      }
-      if (tokens.fcm.length) {
-        const { getMessaging } = require('firebase-admin/messaging');
-        const messaging = getMessaging();
-        for (const token of tokens.fcm) {
-          try {
-            await messaging.send({
-              token,
-              notification: { title, body },
-              data,
-              android: {
-                priority: 'high',
-                notification: { channelId: 'carrier_offers', sound: 'default' },
-              },
-            });
-          } catch {
-            // ignore per-token failures
-          }
-        }
-      }
-      void isExpoPushToken;
-    } catch (error) {
-      console.warn('carrier-cancel push failed', {
+    if (orderSnap.exists) tx.set(orderRef, orderPatch, { merge: true });
+    if (!idemSnap.exists) {
+      queueDeliveryEvent(tx, db, {
+        eventId: `cancel_${orderId}`,
+        type: 'shipment.cancelled',
+        idempotencyKey: cancelKey,
         orderId,
         carrierId: notifyCarrierId,
-        reason: error?.message || 'error',
+        payload: {
+          carrierId: notifyCarrierId,
+          orderNumber: String(order.orderNumber || shipment.orderNumber || ''),
+          postPickup: Boolean(postPickup),
+        },
       });
     }
+    return {
+      cleared: true,
+      carrierId: notifyCarrierId || null,
+      postPickup,
+      duplicate: idemSnap.exists,
+      orderNumber: String(order.orderNumber || shipment.orderNumber || ''),
+    };
+  });
+
+  if (!result?.cleared) return result || { skipped: true };
+  const { postPickup } = result;
+  const notifyCarrierId = String(result.carrierId || '').trim();
+  if (postPickup) {
+    console.warn('carrier-cancel hiding post-pickup from transporter', {
+      orderId,
+      status: hinted?.shipmentStatus || '',
+      track: hinted?.trackStep || '',
+    });
+  }
+  if (notifyCarrierId && !result.duplicate) {
+    await deliverShipmentCancelled(db, {
+      orderId,
+      carrierId: notifyCarrierId,
+      orderNumber: result.orderNumber || order.orderNumber || '',
+    });
   }
 
   console.info('carrier-cancel cleared offer', {
@@ -231,6 +291,7 @@ module.exports = {
   DESK_STATUSES,
   clearCarrierOfferOnCustomerCancel,
   customerCancelShipmentPatch,
+  deliverShipmentCancelled,
   isCustomerCancelledRecord,
   releaseOpenCustomerCancelledOffers,
 };

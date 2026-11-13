@@ -89,10 +89,15 @@ async function sendFcmMessages(tokens, { title, body, data }) {
  */
 async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, destination, score }) {
   if (!carrierId || !orderId) return { skipped: true, reason: 'missing-ids' };
+  const { claimIdempotentEffect, finishIdempotentEffect } = require('./order-reliability');
+  const effectKey = `push_offer_${orderId}_${carrierId}`;
+  const claim = await claimIdempotentEffect(db, effectKey);
+  if (claim === 'done' || claim === 'busy') return { skipped: true, reason: claim };
 
   const carrierSnap = await db.collection('carriers').doc(carrierId).get();
   const carrier = carrierSnap.exists ? carrierSnap.data() : {};
   if (carrier.notifyPortal === false) {
+    await finishIdempotentEffect(db, effectKey);
     return { skipped: true, reason: 'notifyPortal_disabled' };
   }
 
@@ -114,6 +119,7 @@ async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, dest
   const tokens = await collectCarrierPushTokens(db, carrierId);
   if (!tokens.expo.length && !tokens.fcm.length) {
     console.info('carrier-push skip', { carrierId, orderId, reason: 'no-token' });
+    await finishIdempotentEffect(db, effectKey);
     return { queuedInbox: true, pushSent: 0 };
   }
 
@@ -144,8 +150,10 @@ async function notifyCarrierNewOffer(db, { carrierId, orderId, orderNumber, dest
       pushSent,
       ok: expoResult.ok !== false,
     });
+    await finishIdempotentEffect(db, effectKey);
     return { queuedInbox: true, pushSent, ok: pushSent > 0 };
   } catch (error) {
+    await finishIdempotentEffect(db, effectKey, error);
     console.warn('carrier-push failed', { carrierId, orderId, reason: error?.message || 'error' });
     return { queuedInbox: true, pushSent: 0, error: true };
   }

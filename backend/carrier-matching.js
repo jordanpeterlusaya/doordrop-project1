@@ -588,18 +588,39 @@ async function parkStaleShipment(db, orderId, shipment, reason = 'stale') {
   if (!['matching', 'assigned', 'new'].includes(status) && status) {
     return { skipped: true, reason: 'active-flow' };
   }
-  await db.collection('carrierShipments').doc(orderId).set(
-    {
-      shipmentStatus: 'expired',
-      offeredCarrierId: null,
-      offerExpiresAt: null,
-      matchClosedReason: String(reason || 'stale').slice(0, 64),
-      matchClosedAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-      statusHistory: FieldValue.arrayUnion(historyEntry('expired', `system-${reason || 'stale'}`)),
-    },
-    { merge: true }
-  );
+  const { idempotencyDocId, queueDeliveryEvent, staleIdempotencyKey } = require('./order-reliability');
+  const staleKey = staleIdempotencyKey(orderId);
+  const closedReason = String(reason || 'stale').slice(0, 64);
+  await db.runTransaction(async (tx) => {
+    const liveSnap = await tx.get(db.collection('carrierShipments').doc(orderId));
+    const live = liveSnap.exists ? liveSnap.data() : shipment;
+    if (live?.carrierId) return;
+    const liveStatus = normalize(live?.shipmentStatus);
+    if (liveStatus === 'expired' || liveStatus === 'delivered' || liveStatus === 'cancelled') return;
+    const idemSnap = await tx.get(db.collection('idempotency').doc(idempotencyDocId(staleKey)));
+    tx.set(
+      db.collection('carrierShipments').doc(orderId),
+      {
+        shipmentStatus: 'expired',
+        offeredCarrierId: null,
+        offerExpiresAt: null,
+        matchClosedReason: closedReason,
+        matchClosedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        statusHistory: FieldValue.arrayUnion(historyEntry('expired', `system-${closedReason}`)),
+      },
+      { merge: true }
+    );
+    if (!idemSnap.exists) {
+      queueDeliveryEvent(tx, db, {
+        eventId: `stale_${orderId}`,
+        type: 'shipment.parked',
+        idempotencyKey: staleKey,
+        orderId,
+        payload: { reason: closedReason },
+      });
+    }
+  });
   console.info('carrier shipment parked', { orderId, reason: reason || 'stale' });
   return { parked: true, reason: reason || 'stale' };
 }
@@ -1269,6 +1290,14 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
   const ref = db.collection('carrierShipments').doc(orderId);
   const orderRef = db.collection('orders').doc(orderId);
   const { isCustomerCancelledRecord, customerCancelShipmentPatch } = require('./carrier-cancel');
+  const {
+    cancelIdempotencyKey,
+    idempotencyDocId,
+    offerIdempotencyKey,
+    queueDeliveryEvent,
+    shipmentBlocksOffer,
+    waitIdempotencyKey,
+  } = require('./order-reliability');
 
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -1276,11 +1305,31 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     const shipment = snap.exists ? snap.data() : shipmentHint || null;
     const liveOrder = orderSnap.exists ? { id: orderId, ...orderSnap.data() } : order;
     if (isCustomerCancelledRecord(liveOrder) || isCustomerCancelledRecord(shipment)) {
+      const cancelKey = cancelIdempotencyKey(orderId);
+      const cancelIdem = await tx.get(db.collection('idempotency').doc(idempotencyDocId(cancelKey)));
       const { patch } = customerCancelShipmentPatch(shipment, liveOrder);
+      patch.reassignBlocked = true;
+      patch.assignmentLocked = 'customer-cancel';
+      if (cancelIdem.exists) delete patch.statusHistory;
       tx.set(ref, patch, { merge: true });
+      if (!cancelIdem.exists) {
+        const notifyCarrierId = String(shipment?.offeredCarrierId || shipment?.carrierId || '');
+        queueDeliveryEvent(tx, db, {
+          eventId: `cancel_${orderId}`,
+          type: 'shipment.cancelled',
+          idempotencyKey: cancelKey,
+          orderId,
+          carrierId: notifyCarrierId,
+          payload: {
+            carrierId: notifyCarrierId,
+            orderNumber: String(liveOrder?.orderNumber || shipment?.orderNumber || ''),
+          },
+        });
+      }
       return { skipped: true, reason: 'customer-cancelled' };
     }
-    if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
+    const blocked = shipmentBlocksOffer(shipment);
+    if (blocked) return { skipped: true, reason: blocked === 'accepted' ? 'accepted' : blocked };
     if (offerIsOpen(shipment)) {
       return { skipped: true, reason: 'offer-open', carrierId: shipment.offeredCarrierId || null };
     }
@@ -1299,6 +1348,8 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
         // Idempotent: cron / retries must not spam statusHistory or desk listeners.
         return { matched: false, skipped: true, reason: 'waiting-for-carrier' };
       }
+      const waitKey = waitIdempotencyKey(orderId);
+      const waitIdem = await tx.get(db.collection('idempotency').doc(idempotencyDocId(waitKey)));
       tx.set(
         ref,
         {
@@ -1314,7 +1365,27 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
         },
         { merge: true }
       );
+      if (!waitIdem.exists) {
+        queueDeliveryEvent(tx, db, {
+          eventId: `wait_${orderId}`,
+          type: 'shipment.waiting',
+          idempotencyKey: waitKey,
+          orderId,
+          payload: { orderNumber: String(base.orderNumber || '') },
+        });
+      }
       return { matched: false };
+    }
+
+    const epoch = Math.max(1, Math.round(Number(shipment?.offerEpoch) || 0) + 1);
+    const offerKey = offerIdempotencyKey(orderId, epoch);
+    const offerIdem = await tx.get(db.collection('idempotency').doc(idempotencyDocId(offerKey)));
+    if (offerIdem.exists) {
+      return {
+        skipped: true,
+        reason: 'duplicate-event',
+        carrierId: String(offerIdem.data()?.carrierId || chosen.carrierId || ''),
+      };
     }
 
     const expiresAt = Timestamp.fromMillis(Date.now() + OFFER_TIMEOUT_MS);
@@ -1328,6 +1399,7 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
           : {}),
         shipmentStatus: 'assigned',
         pickupStatus: 'assigned',
+        offerEpoch: epoch,
         offeredCarrierId: chosen.carrierId,
         offerScore: chosen.score,
         routeId: null,
@@ -1345,6 +1417,19 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
       { merge: true }
     );
     tx.set(db.collection('carriers').doc(chosen.carrierId), { ordersReceived: FieldValue.increment(1) }, { merge: true });
+    queueDeliveryEvent(tx, db, {
+      eventId: `offer_${orderId}_${epoch}`,
+      type: 'shipment.offered',
+      idempotencyKey: offerKey,
+      orderId,
+      carrierId: chosen.carrierId,
+      payload: {
+        carrierId: chosen.carrierId,
+        orderNumber: base.orderNumber || '',
+        destination: base.destination || '',
+        score: chosen.score || null,
+      },
+    });
     return {
       matched: true,
       carrierId: chosen.carrierId,
@@ -1587,50 +1672,116 @@ async function claimOpenOffersForCarrier(db, carrierId) {
 /** Accept an open parcel offer from the carrier WebSocket (same write as the agents desk). */
 async function acceptCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'carrier-ws') {
   const ref = db.collection('carrierShipments').doc(orderId);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Mzigo haupatikani.');
-  const current = snap.data() || {};
-  const { isCustomerCancelledRecord, clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
-  const orderSnap = await db.collection('orders').doc(orderId).get();
-  const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
-  if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(current)) {
+  const orderRef = db.collection('orders').doc(orderId);
+  const {
+    acceptDecision,
+    acceptIdempotencyKey,
+    cancelIdempotencyKey,
+    idempotencyDocId,
+    queueDeliveryEvent,
+  } = require('./order-reliability');
+  const { clearCarrierOfferOnCustomerCancel, customerCancelShipmentPatch } = require('./carrier-cancel');
+  const outcome = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      const missing = new Error('Mzigo haupatikani.');
+      missing.code = 'missing';
+      throw missing;
+    }
+    const current = snap.data() || {};
+    const orderSnap = await tx.get(orderRef);
+    const order = orderSnap.exists ? { id: orderId, ...orderSnap.data() } : null;
+    const decision = acceptDecision(current, carrierId, Date.now(), order);
+    if (!decision.ok && decision.reason === 'cancelled') {
+      const cancelKey = cancelIdempotencyKey(orderId);
+      const cancelIdem = await tx.get(db.collection('idempotency').doc(idempotencyDocId(cancelKey)));
+      const { patch } = customerCancelShipmentPatch(current, order || { cancelledBy: 'customer', status: 'cancelled' });
+      patch.reassignBlocked = true;
+      patch.assignmentLocked = 'customer-cancel';
+      if (cancelIdem.exists) delete patch.statusHistory;
+      tx.set(ref, patch, { merge: true });
+      if (!cancelIdem.exists) {
+        const notifyCarrierId = String(current.offeredCarrierId || current.carrierId || '');
+        queueDeliveryEvent(tx, db, {
+          eventId: `cancel_${orderId}`,
+          type: 'shipment.cancelled',
+          idempotencyKey: cancelKey,
+          orderId,
+          carrierId: notifyCarrierId,
+          payload: {
+            carrierId: notifyCarrierId,
+            orderNumber: String(order?.orderNumber || current.orderNumber || ''),
+          },
+        });
+      }
+      return { cancel: true, current, order };
+    }
+    if (!decision.ok && decision.already) return { already: true };
+    if (!decision.ok && decision.reason === 'expired') {
+      const expired = new Error('Muda umeisha.');
+      expired.code = 'expired';
+      throw expired;
+    }
+    if (!decision.ok) {
+      const taken = new Error('Oda hii si yako tena.');
+      taken.code = 'taken';
+      throw taken;
+    }
+    const acceptKey = acceptIdempotencyKey(orderId);
+    const idemSnap = await tx.get(db.collection('idempotency').doc(idempotencyDocId(acceptKey)));
+    if (idemSnap.exists) {
+      const prevCarrier = String(idemSnap.data()?.carrierId || '');
+      if (prevCarrier && prevCarrier !== String(carrierId)) {
+        const taken = new Error('Oda hii si yako tena.');
+        taken.code = 'taken';
+        throw taken;
+      }
+      return { already: true };
+    }
+    tx.set(
+      ref,
+      {
+        carrierId,
+        shipmentStatus: 'accepted',
+        trackStep: 'received',
+        pickupStatus: 'assigned',
+        acceptedAt: FieldValue.serverTimestamp(),
+        statusHistory: FieldValue.arrayUnion({
+          status: 'received',
+          label: 'Imekubaliwa',
+          at: new Date().toISOString(),
+          actor: actorEmail || 'carrier-ws',
+        }),
+      },
+      { merge: true }
+    );
+    tx.set(db.collection('carriers').doc(carrierId), { accepted: FieldValue.increment(1) }, { merge: true });
+    queueDeliveryEvent(tx, db, {
+      eventId: `accept_${orderId}`,
+      type: 'shipment.accepted',
+      idempotencyKey: acceptKey,
+      orderId,
+      carrierId,
+      payload: { carrierId },
+    });
+    return { accepted: true, current };
+  });
+  if (outcome?.cancel) {
     await clearCarrierOfferOnCustomerCancel(
       db,
       orderId,
-      order || { id: orderId, status: 'cancelled', cancelledBy: 'customer' },
-      current
+      outcome.order || { id: orderId, status: 'cancelled', cancelledBy: 'customer' },
+      outcome.current
     );
     throw new Error('Mteja amefuta oda.');
   }
-  if (current.carrierId) {
-    if (String(current.carrierId) === String(carrierId)) return { already: true };
-    throw new Error('Oda hii si yako tena.');
-  }
-  if (String(current.offeredCarrierId || '') !== String(carrierId) || normalize(current.shipmentStatus) !== 'assigned') {
-    throw new Error('Oda hii si yako tena.');
-  }
-  const expires = expiryMs(current.offerExpiresAt);
-  if (expires && expires <= Date.now()) throw new Error('Muda umeisha.');
-
-  await ref.set(
-    {
-      carrierId,
-      shipmentStatus: 'accepted',
-      trackStep: 'received',
-      pickupStatus: 'assigned',
-      acceptedAt: FieldValue.serverTimestamp(),
-      statusHistory: FieldValue.arrayUnion({
-        status: 'received',
-        label: 'Imekubaliwa',
-        at: new Date().toISOString(),
-        actor: actorEmail || 'carrier-ws',
-      }),
-    },
-    { merge: true }
-  );
-  await db.collection('carriers').doc(carrierId).set({ accepted: FieldValue.increment(1) }, { merge: true });
+  if (outcome?.already) return { already: true };
   const fresh = await ref.get();
-  await mirrorBusOnOrder(db, orderId, fresh.exists ? fresh.data() : { ...current, carrierId, shipmentStatus: 'accepted', trackStep: 'received' });
+  await mirrorBusOnOrder(
+    db,
+    orderId,
+    fresh.exists ? fresh.data() : { carrierId, shipmentStatus: 'accepted', trackStep: 'received' }
+  );
   return { accepted: true, carrierId };
 }
 
@@ -1646,7 +1797,30 @@ async function rejectCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'car
   }
 
   const decisionRef = db.collection('carriers').doc(carrierId).collection('decisions').doc(orderId);
-  await db.runTransaction(async (tx) => {
+  const orderRef = db.collection('orders').doc(orderId);
+  const {
+    idempotencyDocId,
+    queueDeliveryEvent,
+    releaseIdempotencyKey,
+    shipmentBlocksOffer,
+  } = require('./order-reliability');
+  const { isCustomerCancelledRecord } = require('./carrier-cancel');
+  const released = await db.runTransaction(async (tx) => {
+    const liveSnap = await tx.get(ref);
+    if (!liveSnap.exists) throw new Error('Mzigo haupatikani.');
+    const live = liveSnap.data() || {};
+    const orderSnap = await tx.get(orderRef);
+    const order = orderSnap.exists ? { id: orderId, ...orderSnap.data() } : null;
+    if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(live) || shipmentBlocksOffer(live) === 'customer-cancelled') {
+      return { cancelled: true, order, live };
+    }
+    if (live.carrierId) throw new Error('Oda imeshakubaliwa.');
+    if (String(live.offeredCarrierId || '') !== String(carrierId) || normalize(live.shipmentStatus) !== 'assigned') {
+      throw new Error('Oda hii si yako tena.');
+    }
+    const releaseKey = releaseIdempotencyKey(orderId, carrierId);
+    const idemSnap = await tx.get(db.collection('idempotency').doc(idempotencyDocId(releaseKey)));
+    if (idemSnap.exists) return { duplicate: true, order };
     tx.update(ref, {
       shipmentStatus: 'matching',
       offeredCarrierId: null,
@@ -1663,18 +1837,36 @@ async function rejectCarrierOfferViaWs(db, orderId, carrierId, actorEmail = 'car
     tx.set(decisionRef, {
       shipmentId: orderId,
       decision: 'rejected',
-      parcelCode: String(current.parcelCode || current.orderNumber || ''),
-      destination: String(current.destination || ''),
-      weightKg: Number(current.weightKg) || 0,
+      parcelCode: String(live.parcelCode || live.orderNumber || ''),
+      destination: String(live.destination || ''),
+      weightKg: Number(live.weightKg) || 0,
       actor: actorEmail || 'carrier-ws',
       atIso: new Date().toISOString(),
       at: FieldValue.serverTimestamp(),
     });
     tx.set(db.collection('carriers').doc(carrierId), { rejected: FieldValue.increment(1) }, { merge: true });
+    queueDeliveryEvent(tx, db, {
+      eventId: `release_${orderId}_${carrierId}`,
+      type: 'shipment.released',
+      idempotencyKey: releaseKey,
+      orderId,
+      carrierId,
+      payload: { carrierId },
+    });
+    return { released: true, order };
   });
+  if (released?.cancelled) {
+    const { clearCarrierOfferOnCustomerCancel } = require('./carrier-cancel');
+    await clearCarrierOfferOnCustomerCancel(
+      db,
+      orderId,
+      released.order || { id: orderId, status: 'cancelled', cancelledBy: 'customer' },
+      released.live
+    );
+    return { matched: false, rejected: false, reason: 'customer-cancelled' };
+  }
 
-  const orderSnap = await db.collection('orders').doc(orderId).get();
-  const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+  const order = released?.order || null;
   if (!order) return { matched: false, rejected: true };
   const next = await offerNext(db, orderId, order, { ...current, offeredCarrierId: null, shipmentStatus: 'matching' }, options);
   return { ...next, rejected: true, previousCarrierId: carrierId };
@@ -1950,11 +2142,14 @@ async function advanceCarrierOffers(db) {
       // Fallback if composite index is missing: scan a small page and filter in memory.
       db.collection('orders').where('flow', '==', 'parcel').where('parcelScope', '==', 'outside').where('status', '==', 'pending_assignment').limit(30).get()
     );
+  const { shipmentAwaitingFirstOffer } = require('./order-reliability');
   for (const doc of orphanOrdersSnap.docs) {
     const order = { id: doc.id, ...doc.data() };
     if (!isBusParcel(order) || !isFreshForOffer(order, null)) continue;
     const shipmentSnap = await db.collection('carrierShipments').doc(doc.id).get();
-    if (shipmentSnap.exists) continue;
+    // A party-field shell is not an offer. Skipping every existing doc dropped orders
+    // when the create trigger died after persistSenderPhone and before offerNext.
+    if (shipmentSnap.exists && !shipmentAwaitingFirstOffer(shipmentSnap.data())) continue;
     const result = await matchOrderById(db, doc.id);
     if (result?.matched) advanced += 1;
   }
@@ -1977,7 +2172,15 @@ async function advanceCarrierOffers(db) {
 
   advanced += await backfillOpenDeclaredValues(db);
 
-  return { advanced, swept, releasedCustomerCancels: released };
+  let outbox = { checked: 0, done: 0, dead: 0, failed: 0, skipped: 0 };
+  try {
+    const { drainOutbox } = require('./order-reliability');
+    outbox = await drainOutbox(db);
+  } catch (error) {
+    console.error('outbox drain failed', error?.message || error);
+  }
+
+  return { advanced, swept, releasedCustomerCancels: released, outbox };
 }
 
 module.exports = {

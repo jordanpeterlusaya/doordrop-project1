@@ -64,6 +64,58 @@ assert(visibleTo(mine, 'co-a') && !visibleTo(theirs, 'co-a'), 'transporter isola
 assert(visibleTo({ ...mine, carrierId: 'co-a', offeredCarrierId: 'co-a' }, 'co-a'), 'owned rows stay visible');
 assert(!visibleTo({ ...mine, carrierId: 'co-b', offeredCarrierId: 'co-b' }, 'co-a'), 'other owned rows stay hidden');
 
+const {
+  acceptDecision,
+  acceptIdempotencyKey,
+  nextOutboxState,
+  offerIdempotencyKey,
+  shipmentAwaitingFirstOffer,
+  shipmentBlocksOffer,
+  visibleToCarrier,
+} = require('../order-reliability');
+
+assert(visibleToCarrier(mine, 'co-a') && !visibleToCarrier(theirs, 'co-a'), 'isolation helper matches the desk query');
+assert(acceptDecision(open, 'co-b').reason === 'not-offered', 'real accept decision rejects the other company');
+assert(acceptDecision(open, 'co-a').ok === true, 'holder may accept');
+
+const cancelledShipment = {
+  ...open,
+  shipmentStatus: 'cancelled',
+  cancelledBy: 'customer',
+  offeredCarrierId: null,
+  reassignBlocked: true,
+  assignmentLocked: 'customer-cancel',
+};
+const cancelledOrder = { status: 'cancelled', cancelledBy: 'customer' };
+const cancelWins = acceptDecision(cancelledShipment, 'co-a', Date.now(), cancelledOrder);
+assert(!cancelWins.ok && cancelWins.reason === 'cancelled', 'cancel committed before accept loses cleanly');
+const acceptedFirst = { ...open, carrierId: 'co-a', shipmentStatus: 'accepted' };
+assert(acceptDecision(acceptedFirst, 'co-b').reason === 'taken-by-other', 'accept committed before the other company loses');
+assert(shipmentBlocksOffer(cancelledShipment) === 'customer-cancelled', 'cancelled shipment is never reoffered');
+
+const seen = new Set();
+function assignOnce(orderId, epoch, carrierId) {
+  const key = offerIdempotencyKey(orderId, epoch);
+  if (seen.has(key)) return { duplicate: true, carrierId: null };
+  seen.add(key);
+  return { duplicate: false, carrierId, key };
+}
+const firstEvent = assignOnce('order-1', 1, 'co-a');
+const replay = assignOnce('order-1', 1, 'co-b');
+assert(firstEvent.duplicate === false && firstEvent.carrierId === 'co-a', 'first offer event assigns one company');
+assert(replay.duplicate === true && replay.carrierId === null, 'duplicate event does not assign a second company');
+assert(acceptIdempotencyKey('order-1') === acceptIdempotencyKey('order-1'), 'accept idempotency key is stable');
+
+let outboxEvent = { attempts: 0, status: 'pending' };
+for (let i = 0; i < 7; i += 1) outboxEvent = nextOutboxState(outboxEvent, { now: 0, error: 'sms down' });
+assert(outboxEvent.status === 'pending' && outboxEvent.attempts === 7, 'outbox keeps retrying before the cap');
+outboxEvent = nextOutboxState(outboxEvent, { now: 0, error: 'sms down' });
+assert(outboxEvent.status === 'dead' && outboxEvent.attempts === 8, 'eighth failure is dead-lettered');
+
+assert(shipmentAwaitingFirstOffer({ customerName: 'Asha', senderPhone: '255700000000' }) === true, 'status-less shell still needs an offer');
+assert(shipmentBlocksOffer({ shipmentStatus: 'expired', matchClosedReason: 'stale-assigned' }) === 'stale', 'parked stale shipment is not reoffered');
+assert(shipmentAwaitingFirstOffer({ shipmentStatus: 'expired', matchClosedReason: 'stale-assigned' }) === false, 'stale shell is not treated as a missed create');
+
 /** Duplicate CF / cron: open offer short-circuits a second match. */
 function offerIsOpen(shipment, now = Date.now()) {
   if (!shipment || shipment.carrierId) return false;

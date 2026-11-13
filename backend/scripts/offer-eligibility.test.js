@@ -185,6 +185,8 @@ assert(isFreshForOffer(freshOrder, { shipmentStatus: 'matching' }, now), 'recent
 assert(!isFreshForOffer(staleOrder, { shipmentStatus: 'matching' }, now), 'old matching order is not re-offered');
 assert(!isFreshForOffer(freshOrder, { shipmentStatus: 'matching', carrierId: 'x' }, now), 'accepted shipment is not re-offered');
 assert(!isFreshForOffer({ ...freshOrder, status: 'cancelled', cancelledBy: 'customer' }, { shipmentStatus: 'matching' }, now), 'cancelled order is not offered');
+assert(!isFreshForOffer(staleOrder, { shipmentStatus: 'assigned', offeredCarrierId: approvedLive.id }, now), 'stale exclusive hold is not reoffered');
+assert(!isFreshForOffer(freshOrder, { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' }, now), 'parked shipment is not reoffered');
 
 assert(OFFER_TIMEOUT_MS === 75 * 1000, 'OFFER_TIMEOUT_MS is the exclusive hold window');
 assert(MAX_OFFERS >= 50, 'decline chain is not capped at a tiny MAX_OFFERS');
