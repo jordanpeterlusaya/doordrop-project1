@@ -6,8 +6,11 @@ const {
   accountBlockReason,
   accountCanTakeOffers,
   coverageForOrder,
+  FRESH_ORDER_MATCH_MS,
   isBusParcel,
   isCarrierLive,
+  isFreshForOffer,
+  MAX_OFFERS,
   OFFER_TIMEOUT_MS,
   offerIsOpen,
   offerTimedOut,
@@ -175,5 +178,24 @@ const platinum = {
 const fair = rankCarriers(darOrder, [newDesk, platinum], new Map(), new Map());
 assert(fair.length === 2, 'both live desks stay in the ranked pool');
 assert(fair.some((entry) => entry.carrierId === 'new-desk'), 'new verified desk is ranked alongside platinum');
+
+const freshOrder = { ...darOrder, createdAt: new Date(now - 5 * 60 * 1000).toISOString() };
+const staleOrder = { ...darOrder, createdAt: new Date(now - FRESH_ORDER_MATCH_MS - 60_000).toISOString() };
+assert(isFreshForOffer(freshOrder, { shipmentStatus: 'matching' }, now), 'recent order is fresh for offer');
+assert(!isFreshForOffer(staleOrder, { shipmentStatus: 'matching' }, now), 'old matching order is not re-offered');
+assert(!isFreshForOffer(freshOrder, { shipmentStatus: 'matching', carrierId: 'x' }, now), 'accepted shipment is not re-offered');
+assert(!isFreshForOffer({ ...freshOrder, status: 'cancelled', cancelledBy: 'customer' }, { shipmentStatus: 'matching' }, now), 'cancelled order is not offered');
+
+assert(OFFER_TIMEOUT_MS === 75 * 1000, 'OFFER_TIMEOUT_MS is the exclusive hold window');
+assert(MAX_OFFERS >= 50, 'decline chain is not capped at a tiny MAX_OFFERS');
+
+const timed = {
+  shipmentStatus: 'assigned',
+  offeredCarrierId: approvedLive.id,
+  offerExpiresAt: new Date(now - 1).toISOString(),
+  offeredAt: fresh,
+};
+assert(offerTimedOut(timed, now), 'past offerExpiresAt is timed out for rematch');
+assert(!offerIsOpen(timed, now), 'timed out offer is not open');
 
 console.log('offer-eligibility: ok');

@@ -4,6 +4,11 @@ const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const OFFER_TIMEOUT_MS = 75 * 1000;
 /** Company portal must pulse portalOnlineAt within this window to receive new offers. */
 const PORTAL_ONLINE_MS = 3 * 60 * 1000;
+/**
+ * Only freshly created customer orders may be offered / claimed / rematched.
+ * Stale matching rows must not flood live desks as if they were new.
+ */
+const FRESH_ORDER_MATCH_MS = 2 * 60 * 60 * 1000;
 /** High-cancel penalty. Normal streak tiers are lower. */
 const HAUL_FEE_RATE = 0.15;
 /**
@@ -547,6 +552,58 @@ function offerTimedOut(shipment, now = Date.now()) {
   return !deadline || deadline <= now;
 }
 
+/** Prefer the customer order createdAt; shipment timestamps are fallback only. */
+function orderCreatedMs(order, shipment) {
+  return (
+    expiryMs(order?.createdAt) ||
+    expiryMs(shipment?.orderCreatedAt) ||
+    expiryMs(shipment?.createdAt) ||
+    0
+  );
+}
+
+/**
+ * True when this order is still eligible to be offered to companies.
+ * Cancelled / accepted work never qualifies. Missing createdAt is treated as
+ * not fresh for claim/cron (create-trigger match still runs for the new id).
+ */
+function isFreshForOffer(order, shipment, now = Date.now()) {
+  const { isCustomerCancelledRecord } = require('./carrier-cancel');
+  if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) return false;
+  if (shipment?.carrierId) return false;
+  const status = normalize(shipment?.shipmentStatus);
+  if (status === 'expired' || status === 'delivered' || status === 'cancelled') return false;
+  const created = orderCreatedMs(order, shipment);
+  if (!created) return false;
+  return now - created <= FRESH_ORDER_MATCH_MS;
+}
+
+/** Park a never-accepted stale row so desks and cron stop seeing it. */
+async function parkStaleShipment(db, orderId, shipment, reason = 'stale') {
+  const status = normalize(shipment?.shipmentStatus);
+  if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
+  if (status === 'expired' || status === 'delivered' || status === 'cancelled') {
+    return { skipped: true, reason: status || 'closed' };
+  }
+  if (!['matching', 'assigned', 'new'].includes(status) && status) {
+    return { skipped: true, reason: 'active-flow' };
+  }
+  await db.collection('carrierShipments').doc(orderId).set(
+    {
+      shipmentStatus: 'expired',
+      offeredCarrierId: null,
+      offerExpiresAt: null,
+      matchClosedReason: String(reason || 'stale').slice(0, 64),
+      matchClosedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      statusHistory: FieldValue.arrayUnion(historyEntry('expired', `system-${reason || 'stale'}`)),
+    },
+    { merge: true }
+  );
+  console.info('carrier shipment parked', { orderId, reason: reason || 'stale' });
+  return { parked: true, reason: reason || 'stale' };
+}
+
 /** True when the company portal (or live offer socket) is active right now. */
 function isCarrierLive(carrier, now = Date.now(), preferCarrierIds = null) {
   if (!carrier) return false;
@@ -886,6 +943,12 @@ function shipmentPayload(order, orderId, shipment) {
     cashStatus: shipment?.cashStatus || 'unpaid',
     updatedAt: FieldValue.serverTimestamp(),
     createdAt: shipment?.createdAt || FieldValue.serverTimestamp(),
+    // Keep customer create time on the shipment so freshness checks survive order reads failing.
+    orderCreatedAt:
+      shipment?.orderCreatedAt ||
+      order?.createdAt ||
+      shipment?.createdAt ||
+      FieldValue.serverTimestamp(),
   };
 }
 
@@ -1228,6 +1291,14 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
     const base = shipmentPayload(order, orderId, shipment);
     const split = chosen ? cashSplit(base.cashExpected, chosen.haulFeeRate) : null;
     if (!chosen) {
+      const alreadyWaiting =
+        normalize(shipment?.shipmentStatus) === 'matching' &&
+        !shipment?.offeredCarrierId &&
+        !shipment?.carrierId;
+      if (alreadyWaiting) {
+        // Idempotent: cron / retries must not spam statusHistory or desk listeners.
+        return { matched: false, skipped: true, reason: 'waiting-for-carrier' };
+      }
       tx.set(
         ref,
         {
@@ -1246,6 +1317,7 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
       return { matched: false };
     }
 
+    const expiresAt = Timestamp.fromMillis(Date.now() + OFFER_TIMEOUT_MS);
     tx.set(
       ref,
       {
@@ -1264,7 +1336,7 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
         arrivalTime: FieldValue.delete(),
         pickupMode: FieldValue.delete(),
         trackStep: FieldValue.delete(),
-        offerExpiresAt: Timestamp.fromMillis(Date.now() + OFFER_TIMEOUT_MS),
+        offerExpiresAt: expiresAt,
         offeredAt: FieldValue.serverTimestamp(),
         capacityReserved: false,
         declinedCarrierIds: [...declined],
@@ -1273,7 +1345,15 @@ async function offerNext(db, orderId, order, shipmentHint, options = {}) {
       { merge: true }
     );
     tx.set(db.collection('carriers').doc(chosen.carrierId), { ordersReceived: FieldValue.increment(1) }, { merge: true });
-    return { matched: true, carrierId: chosen.carrierId, score: chosen.score, routeLabel: chosen.routeLabel, orderNumber: base.orderNumber, destination: base.destination };
+    return {
+      matched: true,
+      carrierId: chosen.carrierId,
+      score: chosen.score,
+      routeLabel: chosen.routeLabel,
+      orderNumber: base.orderNumber,
+      destination: base.destination,
+      offerExpiresAtMs: expiresAt.toMillis(),
+    };
   });
 
   if (!result?.skipped && isBusParcel(order)) {
@@ -1464,7 +1544,7 @@ async function matchOrderById(db, orderId, options = {}) {
   return finish(await offerNext(db, orderId, order, shipment, options));
 }
 
-/** Pull waiting orders onto one approved desk that is live right now. */
+/** Pull only fresh waiting orders onto one approved desk that is live right now. */
 async function claimOpenOffersForCarrier(db, carrierId) {
   const id = String(carrierId || '').trim();
   if (!id) return { claimed: 0, reason: 'missing' };
@@ -1476,9 +1556,19 @@ async function claimOpenOffersForCarrier(db, carrierId) {
   if (!isCarrierLive(carrier)) return { claimed: 0, reason: 'offline' };
   const waiting = await db.collection('carrierShipments').where('shipmentStatus', 'in', ['matching', 'assigned']).limit(30).get();
   let claimed = 0;
+  let skippedStale = 0;
   for (const doc of waiting.docs) {
     const shipment = doc.data() || {};
     if (shipment.carrierId) continue;
+    const orderSnap = await db.collection('orders').doc(doc.id).get();
+    const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+    if (!isFreshForOffer(order, shipment)) {
+      skippedStale += 1;
+      if (normalize(shipment.shipmentStatus) === 'matching' || (normalize(shipment.shipmentStatus) === 'assigned' && !shipment.carrierId)) {
+        await parkStaleShipment(db, doc.id, shipment, 'stale-claim');
+      }
+      continue;
+    }
     if (offerIsOpen(shipment)) {
       const holderId = String(shipment.offeredCarrierId || '').trim();
       if (!holderId || holderId === id) continue;
@@ -1490,8 +1580,8 @@ async function claimOpenOffersForCarrier(db, carrierId) {
     if (result?.matched && String(result.carrierId || '') === id) claimed += 1;
     if (claimed >= 5) break;
   }
-  console.info('carrier approval claim', { carrierId: id, claimed });
-  return { claimed };
+  console.info('carrier approval claim', { carrierId: id, claimed, skippedStale });
+  return { claimed, skippedStale };
 }
 
 /** Accept an open parcel offer from the carrier WebSocket (same write as the agents desk). */
@@ -1676,6 +1766,12 @@ async function syncCarrierShipment(db, orderId, before, after) {
     }
   }
   if (!rejectedOrReleased) return { skipped: true };
+  const orderSnap = await db.collection('orders').doc(orderId).get();
+  const liveOrder = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+  if (!isFreshForOffer(liveOrder, after)) {
+    await parkStaleShipment(db, orderId, after, 'stale-rematch');
+    return { skipped: true, reason: 'stale' };
+  }
   return matchOrderById(db, orderId);
 }
 
@@ -1711,6 +1807,13 @@ async function advanceCarrierOffers(db) {
       continue;
     }
     const offeredNow = String(shipment.offeredCarrierId || '');
+    const fresh = isFreshForOffer(waitingOrder, shipment);
+    if (!fresh) {
+      // Drop stale exclusive holds from desks; do not rematch / resurrect.
+      const parked = await parkStaleShipment(db, doc.id, shipment, 'stale-assigned');
+      if (parked?.parked) swept += 1;
+      continue;
+    }
     if (offeredNow && offerTimedOut(shipment)) {
       const declined = new Set((shipment.declinedCarrierIds || []).map((id) => String(id || '')));
       declined.add(offeredNow);
@@ -1732,7 +1835,8 @@ async function advanceCarrierOffers(db) {
         { merge: true }
       );
       swept += 1;
-      if (waitingOrder && isBusParcel(waitingOrder)) {
+      // Timeout rematch only for fresh customer orders — never revive old piles.
+      if (waitingOrder && isBusParcel(waitingOrder) && isFreshForOffer(waitingOrder, { ...shipment, offeredCarrierId: null })) {
         const result = await offerNext(db, doc.id, waitingOrder, {
           ...shipment,
           shipmentStatus: 'matching',
@@ -1762,7 +1866,7 @@ async function advanceCarrierOffers(db) {
           { merge: true }
         );
         swept += 1;
-        if (waitingOrder && isBusParcel(waitingOrder)) {
+        if (waitingOrder && isBusParcel(waitingOrder) && isFreshForOffer(waitingOrder, { ...shipment, offeredCarrierId: null })) {
           const result = await offerNext(db, doc.id, waitingOrder, {
             ...shipment,
             shipmentStatus: 'matching',
@@ -1786,7 +1890,7 @@ async function advanceCarrierOffers(db) {
       { merge: true }
     );
     swept += 1;
-    if (!waitingOrder || !isBusParcel(waitingOrder)) continue;
+    if (!waitingOrder || !isBusParcel(waitingOrder) || !isFreshForOffer(waitingOrder, { ...shipment, offeredCarrierId: null })) continue;
     const result = await offerNext(db, doc.id, waitingOrder, {
       ...shipment,
       shipmentStatus: 'matching',
@@ -1807,6 +1911,11 @@ async function advanceCarrierOffers(db) {
     if (!isBusParcel(waitingOrder)) continue;
     let current = shipment;
     if (current.carrierId) continue;
+    if (!isFreshForOffer(waitingOrder, current)) {
+      const parked = await parkStaleShipment(db, doc.id, current, 'stale-matching');
+      if (parked?.parked) swept += 1;
+      continue;
+    }
     if (current.offeredCarrierId && !offerIsOpen(current)) {
       const declined = new Set((current.declinedCarrierIds || []).map((id) => String(id || '')));
       declined.add(String(current.offeredCarrierId));
@@ -1827,17 +1936,23 @@ async function advanceCarrierOffers(db) {
     if (result?.matched) advanced += 1;
   }
 
-  // Orders whose create trigger never wrote carrierShipments stay invisible to the queries above.
+  // Only fresh orphan creates (trigger miss) — never scan old pending_assignment piles.
+  const orphanSince = Timestamp.fromMillis(Date.now() - FRESH_ORDER_MATCH_MS);
   const orphanOrdersSnap = await db
     .collection('orders')
     .where('flow', '==', 'parcel')
     .where('parcelScope', '==', 'outside')
     .where('status', '==', 'pending_assignment')
+    .where('createdAt', '>=', orphanSince)
     .limit(30)
-    .get();
+    .get()
+    .catch(async () =>
+      // Fallback if composite index is missing: scan a small page and filter in memory.
+      db.collection('orders').where('flow', '==', 'parcel').where('parcelScope', '==', 'outside').where('status', '==', 'pending_assignment').limit(30).get()
+    );
   for (const doc of orphanOrdersSnap.docs) {
     const order = { id: doc.id, ...doc.data() };
-    if (!isBusParcel(order)) continue;
+    if (!isBusParcel(order) || !isFreshForOffer(order, null)) continue;
     const shipmentSnap = await db.collection('carrierShipments').doc(doc.id).get();
     if (shipmentSnap.exists) continue;
     const result = await matchOrderById(db, doc.id);
@@ -1867,6 +1982,7 @@ async function advanceCarrierOffers(db) {
 
 module.exports = {
   CAPACITY_HOLD_STATUSES,
+  FRESH_ORDER_MATCH_MS,
   HAUL_FEE_RATE,
   MAX_OFFERS,
   NEW_DESK_FAIRNESS_BONUS,
@@ -1878,9 +1994,11 @@ module.exports = {
   accountCanTakeOffers,
   claimOpenOffersForCarrier,
   isCarrierLive,
+  isFreshForOffer,
   offerDeadlineMs,
   offerIsOpen,
   offerTimedOut,
+  parkStaleShipment,
   pickExclusiveCarrier,
   shouldReleaseOpenOffer,
   advanceCarrierOffers,

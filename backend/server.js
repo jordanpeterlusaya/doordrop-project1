@@ -58,6 +58,7 @@ const {
 } = require('./carrier-commission');
 const {
   handlePortalAccept,
+  handlePortalAdminMatch,
   handlePortalDeliver,
   handlePortalFinance,
   handlePortalJourney,
@@ -784,6 +785,7 @@ async function requestListener(req, res) {
             'POST /carrier/portal/deliver',
             'POST /carrier/portal/tracking-link',
             'POST /carrier/portal/presence',
+            'POST /carrier/portal/admin/match',
             'GET /carrier/portal/finance',
             'GET /carrier/portal/photos',
             'POST /carrier/commission/ussd',
@@ -1031,6 +1033,10 @@ async function requestListener(req, res) {
       sendJson(res, 200, await handlePortalPresence(req), originHeader);
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/carrier/portal/admin/match') {
+      sendJson(res, 200, await handlePortalAdminMatch(req), originHeader);
+      return;
+    }
 
     if (req.method === 'POST' && url.pathname === '/carrier/commission/ussd') {
       const payload = await initiateCarrierCommissionPayment(req);
@@ -1150,7 +1156,13 @@ async function requestListener(req, res) {
       error: error instanceof Error ? error.message : 'Unexpected server error.',
     };
     if (error?.code) payload.code = error.code;
-    sendJson(res, statusCode, payload, originHeader);
+    const retryAfterSeconds = Math.ceil(Number(error?.retryAfterSeconds));
+    const extraHeaders = {};
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      payload.retryAfterSeconds = retryAfterSeconds;
+      extraHeaders['Retry-After'] = String(retryAfterSeconds);
+    }
+    sendJson(res, statusCode, payload, originHeader, extraHeaders);
   } finally {
     recordRequest(pathname, Date.now() - startedAt, res.statusCode || 200);
   }

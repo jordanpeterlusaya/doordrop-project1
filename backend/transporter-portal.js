@@ -779,6 +779,34 @@ async function handlePortalPresence(req) {
   return { ok: true, carrierId, onlineAt: at, claimed };
 }
 
+/**
+ * Admin-only: advance expired holds and match fresh waiting parcels server-side.
+ * Replaces the old portal client writer that raced the Cloud Functions matcher.
+ */
+async function handlePortalAdminMatch(req) {
+  const decoded = await requireAuthenticatedUser(req);
+  const config = require('./config');
+  const adminEmail = String(config.adminEmail || '').trim().toLowerCase();
+  const email = String(decoded.email || '').trim().toLowerCase();
+  if (!adminEmail || email !== adminEmail) {
+    throw forbidden('Only the Haul desk can run matching.');
+  }
+  const db = dbHandle();
+  const { advanceCarrierOffers } = require('./carrier-matching');
+  const result = await advanceCarrierOffers(db);
+  console.info('portal admin match', {
+    uid: decoded.uid,
+    advanced: result?.advanced || 0,
+    swept: result?.swept || 0,
+  });
+  return {
+    ok: true,
+    offered: Number(result?.advanced) || 0,
+    swept: Number(result?.swept) || 0,
+    releasedCustomerCancels: Number(result?.releasedCustomerCancels) || 0,
+  };
+}
+
 async function handlePortalFinance(req) {
   const { db, carrierId, carrier } = await requireCarrierContext(req);
   const snap = await db.collection('carrierShipments').where('carrierId', '==', carrierId).get();
@@ -811,6 +839,7 @@ module.exports = {
   eligibilityFor,
   financeRow,
   handlePortalAccept,
+  handlePortalAdminMatch,
   handlePortalDeliver,
   handlePortalFinance,
   handlePortalJourney,
