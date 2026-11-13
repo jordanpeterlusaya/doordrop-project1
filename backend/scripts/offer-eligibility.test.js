@@ -10,6 +10,7 @@ const {
   isBusParcel,
   isCarrierLive,
   isFreshForOffer,
+  isReclaimableParked,
   MAX_OFFERS,
   OFFER_TIMEOUT_MS,
   offerIsOpen,
@@ -186,7 +187,27 @@ assert(!isFreshForOffer(staleOrder, { shipmentStatus: 'matching' }, now), 'old m
 assert(!isFreshForOffer(freshOrder, { shipmentStatus: 'matching', carrierId: 'x' }, now), 'accepted shipment is not re-offered');
 assert(!isFreshForOffer({ ...freshOrder, status: 'cancelled', cancelledBy: 'customer' }, { shipmentStatus: 'matching' }, now), 'cancelled order is not offered');
 assert(!isFreshForOffer(staleOrder, { shipmentStatus: 'assigned', offeredCarrierId: approvedLive.id }, now), 'stale exclusive hold is not reoffered');
-assert(!isFreshForOffer(freshOrder, { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' }, now), 'parked shipment is not reoffered');
+assert(
+  isFreshForOffer(freshOrder, { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' }, now),
+  'parked still-pending order stays reclaimable inside the fresh window'
+);
+assert(
+  isReclaimableParked(freshOrder, { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' }, now),
+  'stale-parked pending_assignment is reclaimable'
+);
+assert(
+  !isFreshForOffer(
+    { ...freshOrder, status: 'cancelled', cancelledBy: 'customer' },
+    { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' },
+    now
+  ),
+  'parked cancelled order is not reoffered'
+);
+assert(
+  !isFreshForOffer(staleOrder, { shipmentStatus: 'expired', matchClosedReason: 'stale-matching' }, now),
+  'parked order beyond the fresh window is not reoffered'
+);
+assert(FRESH_ORDER_MATCH_MS >= 24 * 60 * 60 * 1000, 'fresh window covers a full day for offline desks');
 
 assert(OFFER_TIMEOUT_MS === 75 * 1000, 'OFFER_TIMEOUT_MS is the exclusive hold window');
 assert(MAX_OFFERS >= 50, 'decline chain is not capped at a tiny MAX_OFFERS');

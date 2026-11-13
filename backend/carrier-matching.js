@@ -7,8 +7,10 @@ const PORTAL_ONLINE_MS = 3 * 60 * 1000;
 /**
  * Only freshly created customer orders may be offered / claimed / rematched.
  * Stale matching rows must not flood live desks as if they were new.
+ * Window is long enough for a verified desk to reopen the portal after a gap;
+ * shorter windows parked still-pending customer orders that then never reappeared.
  */
-const FRESH_ORDER_MATCH_MS = 2 * 60 * 60 * 1000;
+const FRESH_ORDER_MATCH_MS = 24 * 60 * 60 * 1000;
 /** High-cancel penalty. Normal streak tiers are lower. */
 const HAUL_FEE_RATE = 0.15;
 /**
@@ -563,19 +565,63 @@ function orderCreatedMs(order, shipment) {
 }
 
 /**
+ * True when a stale-parked shipment may be reopened for a still-open customer order.
+ * Portal presence + cron reclaim these so desks that were offline during the first
+ * match window still see the job instead of a permanent empty inbox.
+ */
+function isReclaimableParked(order, shipment, now = Date.now()) {
+  const { isCustomerCancelledRecord } = require('./carrier-cancel');
+  if (!order || !shipment) return false;
+  if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) return false;
+  if (shipment.carrierId) return false;
+  if (normalize(shipment.shipmentStatus) !== 'expired') return false;
+  if (!String(shipment.matchClosedReason || '').startsWith('stale')) return false;
+  if (String(order.status || '').trim() !== 'pending_assignment') return false;
+  if (!isBusParcel(order)) return false;
+  const created = orderCreatedMs(order, shipment);
+  if (!created) return false;
+  return now - created <= FRESH_ORDER_MATCH_MS;
+}
+
+/**
  * True when this order is still eligible to be offered to companies.
  * Cancelled / accepted work never qualifies. Missing createdAt is treated as
  * not fresh for claim/cron (create-trigger match still runs for the new id).
+ * Stale-parked rows for still-pending customer orders stay eligible inside the
+ * fresh window so a returning live desk can reclaim them.
  */
 function isFreshForOffer(order, shipment, now = Date.now()) {
   const { isCustomerCancelledRecord } = require('./carrier-cancel');
   if (isCustomerCancelledRecord(order) || isCustomerCancelledRecord(shipment)) return false;
   if (shipment?.carrierId) return false;
   const status = normalize(shipment?.shipmentStatus);
-  if (status === 'expired' || status === 'delivered' || status === 'cancelled') return false;
+  if (status === 'delivered' || status === 'cancelled') return false;
+  if (status === 'expired') {
+    if (!isReclaimableParked(order, shipment, now)) return false;
+  }
   const created = orderCreatedMs(order, shipment);
   if (!created) return false;
   return now - created <= FRESH_ORDER_MATCH_MS;
+}
+
+/** Clear a stale park so offerNext / claim can assign the still-open order again. */
+async function unparkShipmentForReclaim(db, orderId, shipment) {
+  if (shipment?.carrierId) return { skipped: true, reason: 'accepted' };
+  if (normalize(shipment?.shipmentStatus) !== 'expired') return { skipped: true, reason: 'not-parked' };
+  await db.collection('carrierShipments').doc(orderId).set(
+    {
+      shipmentStatus: 'matching',
+      offeredCarrierId: null,
+      offerExpiresAt: null,
+      matchClosedReason: FieldValue.delete(),
+      matchClosedAt: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
+      statusHistory: FieldValue.arrayUnion(historyEntry('matching', 'system-reclaim')),
+    },
+    { merge: true }
+  );
+  console.info('carrier shipment reclaimed', { orderId, reason: shipment?.matchClosedReason || 'stale' });
+  return { reclaimed: true };
 }
 
 /** Park a never-accepted stale row so desks and cron stop seeing it. */
@@ -965,11 +1011,14 @@ function shipmentPayload(order, orderId, shipment) {
     updatedAt: FieldValue.serverTimestamp(),
     createdAt: shipment?.createdAt || FieldValue.serverTimestamp(),
     // Keep customer create time on the shipment so freshness checks survive order reads failing.
-    orderCreatedAt:
-      shipment?.orderCreatedAt ||
-      order?.createdAt ||
-      shipment?.createdAt ||
-      FieldValue.serverTimestamp(),
+    orderCreatedAt: (() => {
+      if (shipment?.orderCreatedAt) return shipment.orderCreatedAt;
+      const fromOrder = expiryMs(order?.createdAt);
+      if (fromOrder) return Timestamp.fromMillis(fromOrder);
+      const fromShip = expiryMs(shipment?.createdAt);
+      if (fromShip) return Timestamp.fromMillis(fromShip);
+      return FieldValue.serverTimestamp();
+    })(),
   };
 }
 
@@ -1639,14 +1688,37 @@ async function claimOpenOffersForCarrier(db, carrierId) {
   const block = accountBlockReason(carrier);
   if (block) return { claimed: 0, reason: block };
   if (!isCarrierLive(carrier)) return { claimed: 0, reason: 'offline' };
-  const waiting = await db.collection('carrierShipments').where('shipmentStatus', 'in', ['matching', 'assigned']).limit(30).get();
+  const [waiting, parkedSnap] = await Promise.all([
+    db.collection('carrierShipments').where('shipmentStatus', 'in', ['matching', 'assigned']).limit(30).get(),
+    // Reclaim stale-parked rows for still-pending customer orders (offline desk gap).
+    db.collection('carrierShipments').where('shipmentStatus', '==', 'expired').limit(40).get(),
+  ]);
+  const docs = [...waiting.docs];
+  for (const doc of parkedSnap.docs) {
+    if (docs.some((row) => row.id === doc.id)) continue;
+    docs.push(doc);
+  }
   let claimed = 0;
   let skippedStale = 0;
-  for (const doc of waiting.docs) {
-    const shipment = doc.data() || {};
+  let reclaimed = 0;
+  for (const doc of docs) {
+    let shipment = doc.data() || {};
     if (shipment.carrierId) continue;
     const orderSnap = await db.collection('orders').doc(doc.id).get();
     const order = orderSnap.exists ? { id: orderSnap.id, ...orderSnap.data() } : null;
+    if (isReclaimableParked(order, shipment)) {
+      const lifted = await unparkShipmentForReclaim(db, doc.id, shipment);
+      if (lifted?.reclaimed) {
+        reclaimed += 1;
+        shipment = {
+          ...shipment,
+          shipmentStatus: 'matching',
+          offeredCarrierId: null,
+          offerExpiresAt: null,
+          matchClosedReason: null,
+        };
+      }
+    }
     if (!isFreshForOffer(order, shipment)) {
       skippedStale += 1;
       if (normalize(shipment.shipmentStatus) === 'matching' || (normalize(shipment.shipmentStatus) === 'assigned' && !shipment.carrierId)) {
@@ -1665,8 +1737,8 @@ async function claimOpenOffersForCarrier(db, carrierId) {
     if (result?.matched && String(result.carrierId || '') === id) claimed += 1;
     if (claimed >= 5) break;
   }
-  console.info('carrier approval claim', { carrierId: id, claimed, skippedStale });
-  return { claimed, skippedStale };
+  console.info('carrier approval claim', { carrierId: id, claimed, skippedStale, reclaimed });
+  return { claimed, skippedStale, reclaimed };
 }
 
 /** Accept an open parcel offer from the carrier WebSocket (same write as the agents desk). */
@@ -2090,7 +2162,13 @@ async function advanceCarrierOffers(db) {
     });
     if (result?.matched) advanced += 1;
   }
-  for (const doc of waitingSnap.docs) {
+  const parkedSnap = await db.collection('carrierShipments').where('shipmentStatus', '==', 'expired').limit(40).get();
+  const waitingDocs = [...waitingSnap.docs];
+  for (const doc of parkedSnap.docs) {
+    if (waitingDocs.some((row) => row.id === doc.id)) continue;
+    waitingDocs.push(doc);
+  }
+  for (const doc of waitingDocs) {
     const shipment = { id: doc.id, ...(doc.data() || {}) };
     const orderSnap = await db.collection('orders').doc(doc.id).get();
     if (!orderSnap.exists) continue;
@@ -2103,7 +2181,21 @@ async function advanceCarrierOffers(db) {
     if (!isBusParcel(waitingOrder)) continue;
     let current = shipment;
     if (current.carrierId) continue;
+    if (isReclaimableParked(waitingOrder, current)) {
+      const lifted = await unparkShipmentForReclaim(db, doc.id, current);
+      if (lifted?.reclaimed) {
+        swept += 1;
+        current = {
+          ...current,
+          shipmentStatus: 'matching',
+          offeredCarrierId: null,
+          offerExpiresAt: null,
+          matchClosedReason: null,
+        };
+      }
+    }
     if (!isFreshForOffer(waitingOrder, current)) {
+      if (normalize(current.shipmentStatus) === 'expired') continue;
       const parked = await parkStaleShipment(db, doc.id, current, 'stale-matching');
       if (parked?.parked) swept += 1;
       continue;
@@ -2198,10 +2290,12 @@ module.exports = {
   claimOpenOffersForCarrier,
   isCarrierLive,
   isFreshForOffer,
+  isReclaimableParked,
   offerDeadlineMs,
   offerIsOpen,
   offerTimedOut,
   parkStaleShipment,
+  unparkShipmentForReclaim,
   pickExclusiveCarrier,
   shouldReleaseOpenOffer,
   advanceCarrierOffers,
